@@ -4,7 +4,7 @@
 
 ## Provenance
 
-Indy est un fork privé de Minions 0.1.27, sous licence MIT. Le socle upstream est conservé dans l'historique de cette branche; les adaptations Propul'SEO vivent sous le préfixe de branche `codex/`.
+Indy est un fork privé de [Minions 0.1.27](https://github.com/agent37-platform/minions), sous licence MIT, importé depuis le commit `a0787971cb207fd80f7e54991a52665874fe914a`. Le socle upstream est conservé dans l'historique de cette branche; les adaptations Propul'SEO vivent sous le préfixe de branche `codex/`.
 
 Hermes Agent is powerful, but running real work on it means juggling terminal sessions, losing track of which job finished, and manually checking on long-running tasks. The more you delegate, the harder it gets to manage.
 
