@@ -1,5 +1,5 @@
 import type { Mission, Provenance } from "@/types/domain";
-import { daysAgo, hoursAgo, inHours, minutesAgo } from "./clock";
+import { daysAgo, hoursAgo, inHours, inMinutes, minutesAgo } from "./clock";
 
 const hermes = (reference: string, syncedAt: string): Provenance => ({
   system: "hermes",
@@ -897,6 +897,9 @@ export const missions: Mission[] = [
     effort: "leger",
     startedAt: minutesAgo(52),
     lastActivityAt: minutesAgo(6),
+    // Échéance dépassée : la mission tourne toujours, mais elle n'a pas rendu son
+    // résultat dans le temps annoncé. C'est le témoin de la remontée « échéance ».
+    dueAt: minutesAgo(25),
     progress: { done: 22, total: 31, unit: "leads" },
     duration: { elapsedMin: 52, capMin: 90 },
     attempts: { current: 1, max: 2 },
@@ -958,7 +961,8 @@ export const missions: Mission[] = [
     autonomy: "encadree",
     effort: "standard",
     lastActivityAt: minutesAgo(35),
-    dueAt: inHours(8),
+    // Échéance dans moins d'une heure : témoin de la remontée en « attention ».
+    dueAt: inMinutes(42),
     progress: { done: 0, total: 12, unit: "fiches" },
     duration: { elapsedMin: 0, capMin: 240 },
     attempts: { current: 0, max: 2 },

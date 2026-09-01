@@ -18,7 +18,14 @@ import {
   projects,
 } from "@/fixtures";
 import { canSeeTask, visibleProjectIds } from "./access";
-import { formatDuration, minutesSince, plural, ratio } from "./format";
+import {
+  formatDayTime,
+  formatDuration,
+  formatRelative,
+  minutesSince,
+  plural,
+  ratio,
+} from "./format";
 import { notableOutcomes, type Tone } from "./status";
 
 /**
@@ -126,6 +133,12 @@ export function visibleTasks(data: Dataset, viewer: Person): ObsidianTask[] {
  */
 export const STALE_AFTER_MIN = 45;
 
+/**
+ * À partir de quand une échéance qui approche est signalée. En dessous du seuil,
+ * elle est écrite en « attention » ; passée, elle devient un incident.
+ */
+export const DUE_SOON_MIN = 60;
+
 /** Exécutants qui travaillent en ce moment sur la mission. */
 export function activeAgentCount(mission: Mission): number {
   return mission.agents.filter((agent) => agent.state === "actif").length;
@@ -148,6 +161,7 @@ export type AttentionKind =
   | "decision"
   | "blocage"
   | "echec"
+  | "echeance"
   | "inactivite"
   | "limite"
   | "automatisation";
@@ -170,9 +184,10 @@ const KIND_WEIGHT: Record<AttentionKind, number> = {
   decision: 0,
   blocage: 1,
   echec: 2,
-  inactivite: 3,
-  limite: 4,
-  automatisation: 5,
+  echeance: 3,
+  inactivite: 4,
+  limite: 5,
+  automatisation: 6,
 };
 
 /** Minuscule initiale, pour composer une phrase autour d'un titre de mission. */
@@ -310,7 +325,43 @@ export function attentionItems(data: Dataset, viewer: Person): AttentionItem[] {
     }
   }
 
-  // 4. Automatisations qui sortent de leur routine.
+  // 4. Échéances dépassées ou imminentes. Ce passage vient après les autres :
+  // une mission déjà remontée pour une raison plus pressante ne produit pas de
+  // seconde ligne, son échéance est rappelée dans le complément.
+  for (const mission of visible) {
+    if (seenMissions.has(mission.id)) continue;
+    if (!mission.dueAt) continue;
+    if (
+      mission.status === "terminee" ||
+      mission.status === "echouee" ||
+      mission.status === "annulee"
+    ) {
+      continue;
+    }
+
+    const lateMin = minutesSince(mission.dueAt);
+    if (lateMin < -DUE_SOON_MIN) continue;
+
+    const overdue = lateMin >= 1;
+    seenMissions.add(mission.id);
+    items.push({
+      id: `att-due-${mission.id}`,
+      kind: "echeance",
+      headline: overdue
+        ? `Échéance dépassée : ${lower(mission.title)}`
+        : `Échéance proche : ${lower(mission.title)}`,
+      detail: overdue
+        ? `Échéance ${formatDayTime(mission.dueAt)}, dépassée de ${formatDuration(lateMin)}. La mission n'a pas rendu son résultat dans le temps annoncé.`
+        : `Échéance ${formatDayTime(mission.dueAt)}, ${formatRelative(mission.dueAt)}.`,
+      href: `/missions/${mission.id}`,
+      tone: overdue ? "danger" : "attention",
+      at: mission.dueAt,
+      projectId: mission.projectId,
+      missionId: mission.id,
+    });
+  }
+
+  // 5. Automatisations qui sortent de leur routine.
   for (const automation of visibleAutomations(data, viewer)) {
     if (automation.health === "saine") continue;
     const run = automation.runs[0];
@@ -332,18 +383,34 @@ export function attentionItems(data: Dataset, viewer: Person): AttentionItem[] {
     });
   }
 
-  // La déduplication ferait disparaître l'automatisation d'origine : on la nomme
-  // sur la ligne de la mission plutôt que d'ajouter une seconde ligne.
+  // La déduplication ferait disparaître l'automatisation d'origine et l'échéance :
+  // on les rappelle sur la ligne de la mission plutôt que d'ajouter une seconde ligne.
   const automationNames = new Map(
     data.automations.map((automation) => [automation.id, automation.name]),
   );
   const withOrigin = items.map((item) => {
     if (!item.missionId) return item;
     const mission = visible.find((entry) => entry.id === item.missionId);
-    const name = mission?.automationId
+    if (!mission) return item;
+
+    const extra: string[] = [];
+    const name = mission.automationId
       ? automationNames.get(mission.automationId)
       : undefined;
-    return name ? { ...item, detail: `${item.detail} Issue de « ${name} ».` } : item;
+    if (name) extra.push(`Issue de « ${name} ».`);
+
+    if (item.kind !== "echeance" && mission.dueAt) {
+      const lateMin = minutesSince(mission.dueAt);
+      if (lateMin >= 1) {
+        extra.push(`Échéance dépassée de ${formatDuration(lateMin)}.`);
+      } else if (lateMin >= -DUE_SOON_MIN) {
+        extra.push(`Échéance ${formatRelative(mission.dueAt)}.`);
+      }
+    }
+
+    return extra.length === 0
+      ? item
+      : { ...item, detail: [item.detail, ...extra].join(" ") };
   });
 
   return withOrigin.sort((a, b) => {
