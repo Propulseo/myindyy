@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS mission_runs (
   id                TEXT PRIMARY KEY,
   mission_id        TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   session_id        TEXT NOT NULL,
+  session_confirmed_at INTEGER,
   attempt           INTEGER NOT NULL CHECK(attempt > 0),
   provider          TEXT NOT NULL,
   model             TEXT NOT NULL,

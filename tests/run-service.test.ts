@@ -54,6 +54,7 @@ describe('durable run service', () => {
         id: 'run-1',
         missionId: 'mission-1',
         sessionId: 'indy:mission-1:run-1',
+        sessionConfirmedAt: null,
         attempt: 1,
         provider: 'openai-codex',
         model: 'gpt-5.6-sol',
@@ -141,6 +142,87 @@ describe('durable run service', () => {
     ]);
     expect(repository.listRunEvents(started.runId).filter((event) => event.type === 'run.completed'))
       .toHaveLength(1);
+  });
+
+  it('keeps goal transport completions non-terminal until one explicit completion', () => {
+    const started = service.startMission({
+      missionId: 'mission-1', provider: 'openai-codex', model: 'gpt-5.6-sol',
+    });
+
+    service.consumeEvent(started.runId, {
+      type: 'done', sessionId: 'native-goal', context: { used_tokens: 5, window_tokens: 100 },
+    }, { terminal: false });
+    service.consumeEvent(started.runId, {
+      type: 'done', sessionId: 'native-goal', context: { used_tokens: 8, window_tokens: 100 },
+    }, { terminal: false });
+
+    expect(repository.getRunRecord(started.runId)).toMatchObject({ status: 'running' });
+    expect(repository.listRunEvents(started.runId).slice(-2)).toMatchObject([
+      {
+        type: 'run.heartbeat',
+        payload: {
+          transportDone: true,
+          sessionId: 'native-goal',
+          context: { used_tokens: '[REDACTED]', window_tokens: '[REDACTED]' },
+        },
+      },
+      {
+        type: 'run.heartbeat',
+        payload: {
+          transportDone: true,
+          sessionId: 'native-goal',
+          context: { used_tokens: '[REDACTED]', window_tokens: '[REDACTED]' },
+        },
+      },
+    ]);
+    expect(repository.listRunEvents(started.runId).filter((event) =>
+      ['run.completed', 'run.cancelled', 'run.failed'].includes(event.type),
+    )).toHaveLength(0);
+
+    service.complete(started.runId);
+
+    expect(repository.listRunEvents(started.runId).filter((event) => event.type === 'run.completed'))
+      .toHaveLength(1);
+    expect(repository.getRunRecord(started.runId)).toMatchObject({ status: 'completed' });
+  });
+
+  it('falls back to the latest confirmed session when a newer attempt fails before done', () => {
+    const first = service.startMission({
+      missionId: 'mission-1', provider: 'openai-codex', model: 'gpt-5.6-sol',
+    });
+    service.consumeEvent(first.runId, { type: 'done', sessionId: 'native-1' });
+    service.complete(first.runId);
+    const second = service.startMission({
+      missionId: 'mission-1', provider: 'openai-codex', model: 'gpt-5.6-sol',
+    });
+    service.fail(second.runId, 'provider unavailable');
+
+    expect(service.getLatestConfirmedSessionId('mission-1')).toBe('native-1');
+    expect(repository.getRunRecord(second.runId)).toMatchObject({ sessionConfirmedAt: null });
+  });
+
+  it('confirms a Hermes session even when done returns the provisional id unchanged', () => {
+    const started = service.startMission({
+      missionId: 'mission-1', provider: 'openai-codex', model: 'gpt-5.6-sol',
+    });
+
+    service.consumeEvent(started.runId, {
+      type: 'done', sessionId: started.sessionId,
+    }, { terminal: false });
+
+    expect(repository.getRunRecord(started.runId)?.sessionConfirmedAt).not.toBeNull();
+    expect(service.getLatestConfirmedSessionId('mission-1')).toBe(started.sessionId);
+  });
+
+  it('does not infer session confirmation when no Hermes done supplied a session id', () => {
+    const started = service.startMission({
+      missionId: 'mission-1', provider: 'openai-codex', model: 'gpt-5.6-sol',
+    });
+
+    service.complete(started.runId);
+
+    expect(repository.getRunRecord(started.runId)?.sessionConfirmedAt).toBeNull();
+    expect(service.getLatestConfirmedSessionId('mission-1')).toBeUndefined();
   });
 
   it('keeps a failed stream terminally consistent and reloadable from a new service instance', () => {

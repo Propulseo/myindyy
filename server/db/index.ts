@@ -17,6 +17,7 @@ export function initializeDatabase(database: import('better-sqlite3').Database):
   database.exec(schema);
 
   ensureColumn(database, 'tasks', 'agent_provider', 'TEXT');
+  ensureColumn(database, 'mission_runs', 'session_confirmed_at', 'INTEGER');
 }
 
 function ensureColumn(

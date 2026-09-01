@@ -23,11 +23,16 @@ export interface MissionRunHistory {
 
 export interface RunService {
   startMission(input: StartMissionInput): StartedMission;
-  consumeEvent(runId: string, event: StreamEvent): RunEvent;
+  consumeEvent(runId: string, event: StreamEvent, options?: ConsumeEventOptions): RunEvent;
   complete(runId: string, event?: StreamEvent & { type: 'done' }): RunEvent;
   fail(runId: string, error: unknown): RunEvent;
   getMissionHistory(missionId: string): MissionRunHistory;
   getLatestRun(missionId: string): MissionRun | undefined;
+  getLatestConfirmedSessionId(missionId: string): string | undefined;
+}
+
+export interface ConsumeEventOptions {
+  readonly terminal?: boolean;
 }
 
 export interface RunServiceOptions {
@@ -86,13 +91,29 @@ export function createRunService(
     });
   }
 
-  function consumeEvent(runId: string, event: StreamEvent): RunEvent {
+  function consumeEvent(
+    runId: string,
+    event: StreamEvent,
+    consumeOptions: ConsumeEventOptions = {},
+  ): RunEvent {
     const run = requireRun(runId);
-    const persisted = persist(run, event);
-    if (event.type === 'done') {
-      if (event.sessionId && event.sessionId !== run.sessionId) {
-        repository.updateRunSession(runId, event.sessionId);
-      }
+    const persisted = event.type === 'done' && consumeOptions.terminal === false
+      ? persistNormalized(run, {
+          type: 'run.heartbeat',
+          payload: Object.fromEntries(Object.entries({
+            transportDone: true,
+            sessionId: event.sessionId,
+            context: event.context,
+            interrupted: event.interrupted,
+          }).filter(([, value]) => value !== undefined)),
+        })
+      : persist(run, event);
+    if (event.type === 'done' && event.sessionId) {
+      repository.updateRunSession(
+        runId,
+        event.sessionId,
+        persisted.occurredAt,
+      );
     }
     return persisted;
   }
@@ -153,6 +174,12 @@ export function createRunService(
 
     getLatestRun(missionId): MissionRun | undefined {
       return repository.listMissionRuns(missionId).at(-1);
+    },
+
+    getLatestConfirmedSessionId(missionId): string | undefined {
+      const confirmedRuns = repository.listMissionRuns(missionId)
+        .filter((run) => run.sessionConfirmedAt !== null);
+      return confirmedRuns.at(-1)?.sessionId;
     },
   };
 }

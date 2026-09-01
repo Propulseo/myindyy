@@ -19,6 +19,7 @@ interface MissionRunRow {
   id: string;
   mission_id: string;
   session_id: string;
+  session_confirmed_at: number | null;
   attempt: number;
   provider: string;
   model: string;
@@ -76,6 +77,7 @@ function toRun(row: MissionRunRow): MissionRun {
     id: row.id,
     missionId: row.mission_id,
     sessionId: row.session_id,
+    sessionConfirmedAt: row.session_confirmed_at,
     attempt: row.attempt,
     provider: row.provider,
     model: row.model,
@@ -132,7 +134,9 @@ export function createRunRepository(
   `);
   const getRun = database.prepare('SELECT * FROM mission_runs WHERE id = ?');
   const updateSession = database.prepare(`
-    UPDATE mission_runs SET session_id = ? WHERE id = ?
+    UPDATE mission_runs
+    SET session_id = @session_id, session_confirmed_at = @session_confirmed_at
+    WHERE id = @run_id
   `);
   const finishRun = database.prepare(`
     UPDATE mission_runs
@@ -271,8 +275,12 @@ export function createRunRepository(
       return getRunRecord(input.runId)!;
     },
 
-    updateRunSession(runId: string, sessionId: string): MissionRun {
-      const result = updateSession.run(sessionId, runId);
+    updateRunSession(runId: string, sessionId: string, confirmedAt = now()): MissionRun {
+      const result = updateSession.run({
+        run_id: runId,
+        session_id: sessionId,
+        session_confirmed_at: confirmedAt,
+      });
       if (result.changes === 0) throw new Error(`Unknown mission run: ${runId}`);
       return getRunRecord(runId)!;
     },

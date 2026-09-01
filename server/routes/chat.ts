@@ -34,8 +34,8 @@ export const chatRouter: ExpressRouter = Router();
 
 const runService = createRunService(createRunRepository(db));
 
-function latestSessionId(missionId: string): string | undefined {
-  return runService.getLatestRun(missionId)?.sessionId;
+function latestConfirmedSessionId(missionId: string): string | undefined {
+  return runService.getLatestConfirmedSessionId(missionId);
 }
 
 function isTaskRunActive(status: ReturnType<typeof getRunStatus>): boolean {
@@ -67,7 +67,7 @@ chatRouter.get('/:id/messages', async (req, res) => {
   const liveContext = getRunContext(task.id);
   const context = liveContext !== undefined ? liveContext : contextFromTask(task);
   const history = runService.getMissionHistory(task.id);
-  const sessionId = history.runs.at(-1)?.sessionId;
+  const sessionId = latestConfirmedSessionId(task.id);
   if (!sessionId) return res.json({ messages: [], context, ...history });
 
   try {
@@ -86,7 +86,7 @@ chatRouter.get('/:id/messages', async (req, res) => {
 chatRouter.get('/:id/session', async (req, res) => {
   const task = getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found' });
-  const sessionId = latestSessionId(task.id);
+  const sessionId = latestConfirmedSessionId(task.id);
   if (!sessionId) return res.json({ session: null });
 
   try {
@@ -186,7 +186,7 @@ async function streamChatTurn(
         if (event.sessionId) resolvedSessionId = event.sessionId;
         if (event.interrupted) interrupted = true;
         if (!options.completeOnDone) {
-          runService.consumeEvent(runId, event);
+          runService.consumeEvent(runId, event, { terminal: false });
           updateRunContext(runTask.id, event.context, event.sessionId);
           continue;
         }
@@ -407,7 +407,7 @@ chatRouter.post('/:id/interrupt', async (req, res) => {
     : undefined;
 
   try {
-    const sessionId = getRun(task.id)?.sessionId ?? latestSessionId(task.id);
+    const sessionId = getRun(task.id)?.sessionId ?? latestConfirmedSessionId(task.id);
     if (!sessionId) return res.status(409).json({ error: 'This task has no Hermes session to stop' });
     const interrupted = await adapter.interruptChat(sessionId, reason);
     if (!interrupted) {
@@ -434,7 +434,7 @@ chatRouter.post('/:id/compact', async (req, res) => {
 
   const focusTopic = typeof req.body?.focusTopic === 'string' ? req.body.focusTopic.trim() || null : null;
   const currentTokens = task.last_context_used_tokens ?? undefined;
-  const sessionId = latestSessionId(task.id);
+  const sessionId = latestConfirmedSessionId(task.id);
   if (!sessionId) return res.status(409).json({ error: 'This task has no Hermes session to compact' });
   const { snapshot, state } = startCompactionRun(task.id, sessionId);
   broadcast({ type: 'task_run_updated', run: state });

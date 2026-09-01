@@ -39,6 +39,7 @@ describe('run repository', () => {
       id: 'run-1',
       missionId: 'mission-1',
       sessionId: 'hermes-session-1',
+      sessionConfirmedAt: null,
       attempt: 1,
       provider: 'openai-codex',
       model: 'gpt-5.6-sol',

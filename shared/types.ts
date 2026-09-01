@@ -32,6 +32,7 @@ export interface MissionRun {
   readonly id: string;
   readonly missionId: string;
   readonly sessionId: string;
+  readonly sessionConfirmedAt: number | null;
   readonly attempt: number;
   readonly provider: string;
   readonly model: string;

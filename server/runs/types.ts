@@ -73,7 +73,7 @@ export interface RunRepository {
   createRun(input: CreateRunInput): MissionRun;
   appendRunEvent(input: AppendRunEventInput): boolean;
   finishRunRecord(input: FinishRunRecordInput): MissionRun;
-  updateRunSession(runId: string, sessionId: string): MissionRun;
+  updateRunSession(runId: string, sessionId: string, confirmedAt?: number): MissionRun;
   getRunRecord(runId: string): MissionRun | undefined;
   listMissionRuns(missionId: string): MissionRun[];
   listRunEvents(runId: string): RunEvent[];
