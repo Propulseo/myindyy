@@ -17,20 +17,26 @@ import { KeyValue } from "@/components/primitives/Layout";
 import { useCockpit } from "@/lib/cockpit";
 import { can, capabilityDenial } from "@/lib/access";
 import { projectsById } from "@/fixtures";
-import { decisionKindMeta, toneClasses } from "@/lib/status";
-import type { Capability, DecisionKind } from "@/types/domain";
+import { sensitiveKindMeta, toneClasses, type SensitiveKind } from "@/lib/status";
+import type { Capability } from "@/types/domain";
 
 /**
  * Description complète d'une action sensible. Tout ce qui est ici s'affiche à l'écran
  * avant confirmation : on ne demande jamais « Êtes-vous sûr ? ».
  */
 export interface SensitiveActionRequest {
-  kind: DecisionKind;
+  kind: SensitiveKind;
+  /**
+   * Confirmer l'action, ou la refuser. Un refus affiche les mêmes lignes et la
+   * conséquence du refus, sans jamais demander de mot à saisir.
+   */
+  intent?: SensitiveIntent;
   /** L'action, à l'infinitif. */
   action: string;
   /** La cible exacte : un domaine, une liste de destinataires, un dépôt. */
   target: string;
-  projectId: string;
+  /** Absent pour ce qui n'appartient à aucun projet : une tâche personnelle. */
+  projectId?: string;
   environment: string;
   /** La révision de code, ou l'extrait du contenu qui partira. */
   revision: string;
@@ -42,6 +48,8 @@ export interface SensitiveActionRequest {
   typeToConfirm?: string;
   onConfirm: () => void;
 }
+
+export type SensitiveIntent = "confirmation" | "refus";
 
 interface SensitiveActionValue {
   request: (input: SensitiveActionRequest) => void;
@@ -90,12 +98,16 @@ function SensitiveActionPanel({
   const [typed, setTyped] = useState("");
 
   const open = request !== null;
-  const meta = request ? decisionKindMeta[request.kind] : null;
+  const meta = request ? sensitiveKindMeta[request.kind] : null;
   const allowed = request ? can(viewer, request.requiredCapability) : false;
-  const project = request ? projectsById[request.projectId] : undefined;
-  const needsTyping = Boolean(request?.typeToConfirm);
+  const project = request?.projectId ? projectsById[request.projectId] : undefined;
+  const refusing = request?.intent === "refus";
+  // Un refus n'écrit rien à l'extérieur : il n'a jamais de mot à saisir.
+  const needsTyping = !refusing && Boolean(request?.typeToConfirm);
   const typingSatisfied =
     !needsTyping || typed.trim() === request?.typeToConfirm?.trim();
+  // Refuser n'est pas destructeur : la conséquence se lit en attention, pas en danger.
+  const tone = refusing ? "attention" : (meta?.tone ?? "attention");
 
   function handleOpenChange(next: boolean) {
     if (!next) {
@@ -117,9 +129,11 @@ function SensitiveActionPanel({
       onOpenChange={handleOpenChange}
       title={request?.action ?? ""}
       description={
-        allowed
-          ? "Vérifiez chaque ligne avant de confirmer. Cette action sort d'Indy."
-          : "Cette action existe, mais votre rôle ne permet pas de la confirmer."
+        !allowed
+          ? "Cette action existe, mais votre rôle ne permet pas d'y répondre."
+          : refusing
+            ? "Vérifiez ce que le refus entraîne. Aucun mot à saisir : rien ne part vers l'extérieur."
+            : "Vérifiez chaque ligne avant de confirmer. Cette action sort d'Indy."
       }
       eyebrow={
         meta ? (
@@ -127,13 +141,14 @@ function SensitiveActionPanel({
             className={cn(
               "inline-flex items-center gap-1.5 rounded-xs border px-1.5 py-0.5",
               "font-mono text-[0.625rem] tracking-[0.08em] uppercase",
-              toneClasses[meta.tone].chip,
-              toneClasses[meta.tone].border,
-              toneClasses[meta.tone].text,
+              toneClasses[tone].chip,
+              toneClasses[tone].border,
+              toneClasses[tone].text,
             )}
           >
             <ShieldAlert aria-hidden size={11} strokeWidth={2} />
             {meta.label}
+            {refusing ? " · refus" : null}
           </span>
         ) : null
       }
@@ -144,7 +159,7 @@ function SensitiveActionPanel({
           </Button>
           {allowed ? (
             <Button
-              variant={meta?.tone === "danger" ? "danger" : "primary"}
+              variant={refusing || meta?.tone === "danger" ? "danger" : "primary"}
               onClick={confirm}
               disabled={!typingSatisfied}
             >
@@ -168,7 +183,9 @@ function SensitiveActionPanel({
             <KeyValue label="Cible">
               <span className="font-mono text-[0.8125rem]">{request.target}</span>
             </KeyValue>
-            <KeyValue label="Projet">{project?.name ?? request.projectId}</KeyValue>
+            <KeyValue label="Projet">
+              {project?.name ?? (request.projectId ? request.projectId : "Personnel")}
+            </KeyValue>
             <KeyValue label="Environnement">
               <span className="font-mono text-[0.8125rem]">{request.environment}</span>
             </KeyValue>
@@ -184,8 +201,8 @@ function SensitiveActionPanel({
           <div
             className={cn(
               "rounded-sm border px-3.5 py-3",
-              toneClasses[meta?.tone ?? "attention"].border,
-              toneClasses[meta?.tone ?? "attention"].chip,
+              toneClasses[tone].border,
+              toneClasses[tone].chip,
             )}
           >
             <p className="label-mono">Conséquence</p>

@@ -22,6 +22,7 @@ import { useSensitiveAction } from "@/components/decision/SensitiveAction";
 import { peopleById, projectsById } from "@/fixtures";
 import { can } from "@/lib/access";
 import { useCockpit } from "@/lib/cockpit";
+import { refusalOutcome } from "@/lib/cockpit-state";
 import { formatDayTime, formatDuration, formatRelative, formatStamp, minutesSince } from "@/lib/format";
 import {
   STALE_AFTER_MIN,
@@ -210,7 +211,22 @@ function MissionScreen({
               onConfirm: () => resolveDecision(decision.id, true),
             })
           }
-          onRefuse={() => resolveDecision(decision.id, false)}
+          onRefuse={() => {
+            const outcome = refusalOutcome(decision, mission);
+            sensitive.request({
+              kind: decision.kind,
+              intent: "refus",
+              action: `Refuser : ${lowerFirst(decision.title)}`,
+              target: decision.target,
+              projectId: decision.projectId,
+              environment: decision.environment,
+              revision: decision.revision,
+              consequence: outcome.consequence,
+              requiredCapability: decision.requiredCapability,
+              confirmLabel: "Refuser",
+              onConfirm: () => resolveDecision(decision.id, false),
+            });
+          }}
         />
       ))}
 
@@ -271,6 +287,11 @@ function MissionScreen({
       </Tabs.Root>
     </div>
   );
+}
+
+/** Minuscule initiale, pour composer une phrase autour d'un titre de décision. */
+function lowerFirst(text: string): string {
+  return text.charAt(0).toLowerCase() + text.slice(1);
 }
 
 function BackLink() {
@@ -399,7 +420,7 @@ function DecisionCallout({
               Examiner et approuver
             </Button>
             <Button variant="ghost" size="sm" onClick={onRefuse}>
-              Refuser
+              Examiner et refuser
             </Button>
           </>
         ) : (
