@@ -86,6 +86,7 @@ export interface RunRepository {
   getRunRecord(runId: string): MissionRun | undefined;
   listMissionRuns(missionId: string): MissionRun[];
   listRunEvents(runId: string): RunEvent[];
+  hasInactiveBlockEvent(runId: string): boolean;
   findActiveRuns(missionId?: string): MissionRun[];
   claimCommand(input: ClaimCommandInput): CommandClaimResult;
   completeCommand(input: CompleteCommandInput): OperatorCommand;

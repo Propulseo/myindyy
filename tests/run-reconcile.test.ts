@@ -165,6 +165,29 @@ describe('mission run reconciliation', () => {
       event.type === 'run.blocked' && event.payload.reason === 'inactive')).toHaveLength(1);
   });
 
+  it('keeps inactive blocking idempotent across restart and independent per run', async () => {
+    createRunningRun('run-1', 'first-unknown-session');
+    createRunningRun('run-2', 'second-unknown-session');
+    repository.appendRunEvent({
+      id: 'first-inactive-block',
+      runId: 'run-1',
+      type: 'run.blocked',
+      occurredAt: 20,
+      payload: { reason: 'inactive' },
+    });
+    repository.updateRunStatus('run-1', 'unknown');
+
+    repository = createRunRepository(database);
+    let nextId = 0;
+    await runWatchdogOnce(repository, inspectorReturning({}), 20 + INACTIVE_AFTER_MS, () =>
+      `post-restart-${++nextId}`);
+
+    expect(repository.listRunEvents('run-1').filter((event) =>
+      event.type === 'run.blocked' && event.payload.reason === 'inactive')).toHaveLength(1);
+    expect(repository.listRunEvents('run-2').filter((event) =>
+      event.type === 'run.blocked' && event.payload.reason === 'inactive')).toHaveLength(1);
+  });
+
   it('rechecks activity after inspection before blocking a stale snapshot', async () => {
     createRunningRun('run-1', 'unknown-session');
     const now = 10 + INACTIVE_AFTER_MS;

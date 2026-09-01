@@ -14,13 +14,6 @@ export function classifyInactiveRuns(lastActivityAt: number, now: number): boole
   return now - lastActivityAt >= INACTIVE_AFTER_MS;
 }
 
-function isAlreadyBlockedInactive(repository: RunRepository, runId: string): boolean {
-  const run = repository.getRunRecord(runId);
-  if (run?.status !== 'blocked') return false;
-  return repository.listRunEvents(runId).some((event) =>
-    event.type === 'run.blocked' && event.payload.reason === 'inactive');
-}
-
 export async function runWatchdogOnce(
   repository: RunRepository,
   inspector: RuntimeSessionInspector,
@@ -29,7 +22,7 @@ export async function runWatchdogOnce(
 ): Promise<void> {
   for (const run of repository.findActiveRuns()) {
     if (!classifyInactiveRuns(run.lastActivityAt, now)) continue;
-    if (isAlreadyBlockedInactive(repository, run.id)) continue;
+    if (repository.hasInactiveBlockEvent(run.id)) continue;
 
     const inspection = await inspectRun(inspector, run);
     if (inspection.state === 'active' || inspection.state === 'completed') {
@@ -43,7 +36,7 @@ export async function runWatchdogOnce(
 
     const current = repository.getRunRecord(run.id);
     if (!current || !classifyInactiveRuns(current.lastActivityAt, now)) continue;
-    if (isAlreadyBlockedInactive(repository, current.id)) continue;
+    if (repository.hasInactiveBlockEvent(current.id)) continue;
 
     repository.appendRunEvent({
       id: generateId(),

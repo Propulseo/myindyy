@@ -174,6 +174,13 @@ export function createRunRepository(
     WHERE mission_id = ?
     ORDER BY attempt ASC, id ASC
   `);
+  const findInactiveBlockEvent = database.prepare(`
+    SELECT 1 FROM run_events
+    WHERE run_id = ?
+      AND type = 'run.blocked'
+      AND json_extract(payload_json, '$.reason') = 'inactive'
+    LIMIT 1
+  `);
   const listActiveRuns = database.prepare(`
     SELECT * FROM mission_runs
     WHERE status NOT IN ('completed', 'failed', 'cancelled')
@@ -306,6 +313,10 @@ export function createRunRepository(
 
     listRunEvents(runId: string): RunEvent[] {
       return (listEvents.all(runId) as RunEventRow[]).map(toEvent);
+    },
+
+    hasInactiveBlockEvent(runId: string): boolean {
+      return findInactiveBlockEvent.get(runId) !== undefined;
     },
 
     findActiveRuns(missionId?: string): MissionRun[] {
