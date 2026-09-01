@@ -194,17 +194,22 @@ Vérification menée contre les réflexes habituels d'un tableau de bord :
 - Lien d'évitement vers le contenu principal en première tabulation.
 - Modales et panneaux Radix : piège de focus, `Échap`, restitution du focus à l'ouvrant.
 - Les listes annoncent leur nombre d'éléments ; les changements d'état passent par `aria-live`.
+- Chaque état de tâche — à faire, en cours, faite, annulée — est écrit à côté de sa pastille.
+  Une tâche annulée reste listée, barrée et nommée : rien ne disparaît en silence.
+- Les commandes d'une tâche vivent dans un menu déclenché par un bouton nommé. Hors du
+  périmètre du rôle, le menu affiche l'explication écrite au lieu de disparaître.
 - États **vide**, **chargement** et **erreur** dessinés pour chaque écran, et déclenchables
   depuis Réglages › Démonstration pour pouvoir être présentés.
 
 ---
 
-## 9. Garde-fous, pas budget
+## 9. Garde-fous opérationnels, aucun budget financier
 
 Codex tourne derrière Indy sur l'abonnement ChatGPT de l'utilisateur. Le cockpit n'a
 donc **aucun coût à afficher** : pas de prix par mission, pas de prix par jeton, pas de
-plafond en euros. Toute référence financière a été retirée du modèle, des fixtures et de
-l'interface.
+plafond en euros. **Aucun budget financier n'existe dans le modèle métier ni dans
+l'interface.** Dans ce document, le mot « budget » ne subsiste que dans cette section,
+pour dire ce qui a été retiré et par quoi il a été remplacé.
 
 Ce qui encadre une mission est opérationnel :
 
@@ -212,13 +217,13 @@ Ce qui encadre une mission est opérationnel :
 |---|---|
 | Durée maximale | Jauge sur la mission, formulaire de création. Les listes montrent la durée écoulée |
 | Nombre maximal de tentatives | Jauge sur la mission, colonne de droite des listes, formulaire de création |
-| Agents en parallèle | Panneau de garde-fous de la mission : actifs sur total, maximum autorisé |
-| Échéance | En-tête de la mission, quand elle en a une |
+| Agents en parallèle | Choisi à la création, de 1 à 4, un par défaut. Panneau de garde-fous de la mission : actifs sur total, maximum autorisé |
+| Échéance | Facultative, choisie à la création avec sa date et son heure. En-tête de la mission, et remontée sur « Aujourd'hui » quand elle approche ou passe |
 | Niveau d'effort | En-tête de la mission, formulaire de création |
 | Dernière activité | Colonne de droite des listes, panneau de garde-fous |
 | Blocage et inactivité | Statut `bloquée`, et remontée automatique au-delà de 45 min sans le moindre évènement |
 
-Trois conséquences sur la logique :
+Quatre conséquences sur la logique :
 
 1. La décision sensible « dépassement de budget » devient une **prolongation** :
    repousser la durée ou accorder une tentative de plus. Elle reste réservée au
@@ -226,10 +231,82 @@ Trois conséquences sur la logique :
 2. Une mission qui ne donne plus signe de vie n'est plus comptée comme *active* dans le
    Pouls : elle bascule dans les incidents. La compter ailleurs rendrait la bande
    rassurante à tort.
-3. Sur un projet, « budget agent consommé » devient **activité des agents** : nombre de
-   missions, taux de réussite, durée médiane, interventions humaines, missions bloquées.
-   Tout est recalculé à partir des missions affichées, jamais stocké — les chiffres ne
-   peuvent donc pas contredire la liste juste à côté.
+3. Sur un projet, l'ancienne mesure de consommation devient **activité des agents** :
+   nombre de missions, taux de réussite, durée médiane, interventions humaines, missions
+   bloquées. Tout est recalculé à partir des missions affichées, jamais stocké — les
+   chiffres ne peuvent donc pas contredire la liste juste à côté.
+4. Une échéance dépassée est un **incident** : ligne écrite, ton danger, sur
+   « Aujourd'hui ». À moins d'une heure, elle passe en **attention**. Une mission déjà
+   remontée pour plus pressant — décision, blocage, échec — ne produit pas de seconde
+   ligne : son échéance est rappelée dans le complément de la première.
+
+---
+
+## 10. Confirmer et refuser
+
+Le panneau sensible est unique et sert dans les deux sens. Confirmer une action et la
+refuser affichent exactement les mêmes lignes — action, cible, projet, environnement,
+révision ou contenu, personne qui confirme, conséquence — parce que refuser est une
+décision, pas un renoncement.
+
+| | Confirmer | Refuser |
+|---|---|---|
+| Bandeau | famille de la décision, dans son ton | même famille, suivie de « · refus », en ton attention |
+| Mot à saisir | pour un déploiement en production | **jamais** : un refus n'écrit rien à l'extérieur |
+| Bouton | plein, ou rouge si l'action est destructrice | rouge, libellé « Refuser » |
+
+Ce qu'un refus entraîne est écrit avant de cliquer, et journalisé ensuite :
+
+| Décision refusée | Décision | Mission |
+|---|---|---|
+| Déploiement, publication, communication externe | `refusée` | `en attente`, étapes et livrables conservés, attend une nouvelle instruction |
+| Prolongation | `refusée` | continue avec ses limites actuelles, puis rend la main à la limite |
+
+**Refuser n'annule jamais une mission.** L'annulation complète est une action séparée,
+déclenchée depuis l'en-tête de la mission, avec son propre panneau et sa propre
+conséquence. La règle qui transformait tout refus hors prolongation en `annulée` a été
+retirée.
+
+Les mêmes permissions gouvernent les deux sens : c'est le rôle qui a la charge de la
+décision, dans un projet qui lui est visible, qui répond — qu'il approuve ou qu'il refuse.
+
+---
+
+## 11. Les tâches Obsidian, et qui écrit dans le coffre
+
+Obsidian est la source de vérité des tâches. Indy ne prétend jamais y écrire : il compose
+une commande et la transmet à Hermes, qui l'applique. Le vocabulaire de l'interface le dit
+— « Commande Hermes » en tête du menu, le nom de la commande sous chaque entrée, et la
+provenance d'une tâche modifiée devient `Hermes · todo.… → Obsidian · …`.
+
+| Commande | Geste | Conséquence écrite |
+|---|---|---|
+| `todo.capture` | « Capturer une tâche » | Crée la tâche dans le coffre |
+| `todo.triage` | « Trier ou modifier » | Met à jour projet, responsable, échéance, note |
+| `todo.complete` | « Terminer » | Coche la tâche |
+| `todo.cancel` | « Annuler la tâche » | Marque la tâche annulée **sans la supprimer** — passe par le panneau sensible |
+
+Périmètre :
+
+- Étienne gère ses tâches personnelles et toutes les tâches partagées ;
+- Lyes et Lucas ne voient jamais une tâche personnelle ;
+- Lyes et Lucas gèrent les tâches partagées de leurs seuls projets affectés ;
+- un projet non affecté n'apparaît ni dans les listes, ni dans le champ « Projet ».
+
+Dans ce prototype, les quatre commandes sont simulées dans l'état React de la session :
+rien ne part, rien n'est écrit, rien ne survit à un rechargement.
+
+---
+
+## 12. Où vivent les règles
+
+Toutes les mutations passent par un réducteur pur, `src/lib/cockpit-state.ts` : conséquence
+d'un refus, limites d'une prolongation, mission créée, commandes de tâches. Le fournisseur
+React ne fait que dispatcher. Deux effets : la règle se lit à un seul endroit, et elle se
+vérifie sans monter un composant. Les tests (`pnpm test`, Vitest) portent sur ce module,
+sur les permissions et sur les sélecteurs — jamais sur le rendu.
+
+---
 
 ### Utilisation du forfait
 
