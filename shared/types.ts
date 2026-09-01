@@ -4,6 +4,54 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
+export type MissionRunStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_approval'
+  | 'blocked'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'unknown';
+
+export type RunEventType =
+  | 'run.queued'
+  | 'run.started'
+  | 'run.heartbeat'
+  | 'step.started'
+  | 'tool.started'
+  | 'tool.completed'
+  | 'artifact.produced'
+  | 'run.waiting_approval'
+  | 'run.blocked'
+  | 'run.failed'
+  | 'run.cancelled'
+  | 'run.completed';
+
+export interface MissionRun {
+  readonly id: string;
+  readonly missionId: string;
+  readonly sessionId: string;
+  readonly attempt: number;
+  readonly provider: string;
+  readonly model: string;
+  readonly reasoningEffort: ReasoningEffort | null;
+  readonly status: MissionRunStatus;
+  readonly startedAt: number | null;
+  readonly lastActivityAt: number;
+  readonly finishedAt: number | null;
+  readonly finishReason: string | null;
+  readonly previousRunId: string | null;
+}
+
+export interface RunEvent {
+  readonly id: string;
+  readonly runId: string;
+  readonly type: RunEventType;
+  readonly occurredAt: number;
+  readonly payload: Readonly<Record<string, unknown>>;
+}
+
 export interface AppVersion {
   name: string;
   version: string;

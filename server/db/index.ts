@@ -5,26 +5,38 @@ import { fileURLToPath } from 'node:url';
 import { resolveMinionsDbPath, ensureMinionsStateDirs } from '../paths.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const schema = readFileSync(join(__dirname, 'schema.sql'), 'utf-8');
 
 ensureMinionsStateDirs();
 
 const dbPath = resolveMinionsDbPath();
 
-const db: import('better-sqlite3').Database = new Database(dbPath);
+export function initializeDatabase(database: import('better-sqlite3').Database): void {
+  database.pragma('journal_mode = WAL');
+  database.pragma('foreign_keys = ON');
+  database.exec(schema);
 
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+  ensureColumn(database, 'tasks', 'agent_provider', 'TEXT');
+}
 
-const schema = readFileSync(join(__dirname, 'schema.sql'), 'utf-8');
-db.exec(schema);
-
-function ensureColumn(table: string, column: string, ddl: string): void {
-  const info = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+function ensureColumn(
+  database: import('better-sqlite3').Database,
+  table: string,
+  column: string,
+  ddl: string,
+): void {
+  const info = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   if (!info.some((row) => row.name === column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
   }
 }
 
-ensureColumn('tasks', 'agent_provider', 'TEXT');
+export function createDatabase(path: string): import('better-sqlite3').Database {
+  const database = new Database(path);
+  initializeDatabase(database);
+  return database;
+}
+
+const db: import('better-sqlite3').Database = createDatabase(dbPath);
 
 export default db;
