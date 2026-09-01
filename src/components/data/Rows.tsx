@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { FileText, GitBranch, Image as ImageIcon, Send, NotebookPen } from "lucide-react";
 import { cn } from "@/components/primitives/cn";
 import { StatusMark, StatusRail } from "@/components/status/StatusMark";
@@ -6,17 +7,24 @@ import { SourceTag } from "@/components/status/Meter";
 import { peopleById, projectsById } from "@/fixtures";
 import { formatDuration, formatRelative, formatStamp } from "@/lib/format";
 import type { HistoryEntry } from "@/lib/selectors";
-import { taskStateMeta } from "@/lib/status";
+import { taskStateMeta, toneClasses } from "@/lib/status";
 import type { Deliverable, DeliverableFormat, ObsidianTask } from "@/types/domain";
 
 /* ------------------------------------------------------------------ */
 /* Tâches Obsidian                                                     */
 /* ------------------------------------------------------------------ */
 
-export function TaskRow({ task }: { task: ObsidianTask }) {
+export function TaskRow({
+  task,
+  actions,
+}: {
+  task: ObsidianTask;
+  /** Menu de commandes, quand l'écran en propose. */
+  actions?: ReactNode;
+}) {
   const meta = taskStateMeta[task.state];
   const project = task.projectId ? projectsById[task.projectId] : undefined;
-  const done = task.state === "fait";
+  const closed = task.state === "fait" || task.state === "annulee";
 
   return (
     <li className="flex items-start gap-3 py-2.5">
@@ -29,7 +37,7 @@ export function TaskRow({ task }: { task: ObsidianTask }) {
         <p
           className={cn(
             "text-[0.8125rem] leading-snug",
-            done ? "text-muted line-through decoration-line-strong" : "text-ivory",
+            closed ? "text-muted line-through decoration-line-strong" : "text-ivory",
           )}
         >
           {task.title}
@@ -38,6 +46,9 @@ export function TaskRow({ task }: { task: ObsidianTask }) {
           <span>{project ? project.name : "Personnel"}</span>
           <span className="text-line-strong">·</span>
           <span>{peopleById[task.ownerId]?.name}</span>
+          <span className="text-line-strong">·</span>
+          {/* L'état est toujours écrit : la pastille et sa couleur ne le portent jamais seules. */}
+          <span className={toneClasses[meta.tone].text}>{meta.label}</span>
           {task.note ? (
             <>
               <span className="text-line-strong">·</span>
@@ -46,9 +57,10 @@ export function TaskRow({ task }: { task: ObsidianTask }) {
           ) : null}
         </p>
       </div>
-      <span className="shrink-0 font-mono text-[0.625rem] whitespace-nowrap text-muted tabular-nums">
-        {done ? meta.label : formatStamp(task.dueAt)}
+      <span className="mt-0.5 shrink-0 font-mono text-[0.625rem] whitespace-nowrap text-muted tabular-nums">
+        {formatStamp(task.dueAt)}
       </span>
+      {actions ? <div className="shrink-0">{actions}</div> : null}
     </li>
   );
 }

@@ -19,6 +19,10 @@ const CAPABILITY_ROWS: { capability: Capability; label: string }[] = [
   { capability: "comms.external.send", label: "Publier ou envoyer à l'extérieur" },
   { capability: "limits.override", label: "Prolonger une mission au-delà de ses limites" },
   { capability: "secrets.view", label: "Voir les identifiants des sources" },
+  {
+    capability: "tasks.manage",
+    label: "Capturer, trier, terminer ou annuler une tâche",
+  },
   { capability: "tasks.personal.view", label: "Voir les tâches personnelles" },
   { capability: "projects.viewAll", label: "Voir tous les projets" },
 ];
@@ -86,6 +90,12 @@ export default function SettingsPage() {
       </Section>
 
       <Section id="permissions" title="Ce que chaque rôle peut faire">
+        <p className="max-w-2xl pt-3 text-xs leading-relaxed text-muted">
+          Une permission cochée s&apos;applique dans le périmètre du rôle : un projet
+          non affecté n&apos;apparaît nulle part, et les tâches partagées d&apos;un tel
+          projet restent hors de portée. Les tâches personnelles n&apos;appartiennent
+          qu&apos;à leur propriétaire.
+        </p>
         <div className="overflow-x-auto py-2">
           <table className="w-full min-w-[34rem] border-collapse text-left">
             <caption className="sr-only">
@@ -315,9 +325,10 @@ export default function SettingsPage() {
         <ul className="space-y-2.5 py-4">
           {[
             "Aucun backend, aucune base de données, aucun appel réseau vers les systèmes réels.",
-            "Aucun coût affiché : Codex tourne sur l'abonnement de l'utilisateur, et le cockpit n'estime rien.",
+            "Aucun coût affiché : Codex tourne sur l'abonnement de l'utilisateur, et le cockpit n'estime rien. Aucun budget financier n'existe dans le modèle métier ni à l'écran.",
             "Les données sont fictives et figées à une journée de démonstration.",
             "Les actions modifient l'écran, elles ne déclenchent rien à l'extérieur.",
+            "Les commandes de tâches — todo.capture, todo.triage, todo.complete, todo.cancel — sont simulées : rien n'est transmis à Hermes, rien n'est écrit dans Obsidian.",
             "Le sélecteur de rôle simule un point de vue, ce n'est pas une authentification.",
           ].map((line) => (
             <li key={line} className="flex items-start gap-2.5">
