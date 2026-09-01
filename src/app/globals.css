@@ -1,0 +1,120 @@
+@import "tailwindcss";
+
+@theme {
+  /* --- Fonds --- */
+  --color-obsidian: #0b0c10;
+  --color-surface: #13151b;
+  --color-raised: #1a1d25;
+  --color-line: #262a34;
+  --color-line-strong: #333846;
+
+  /* --- Texte --- */
+  --color-ivory: #eeeae2;
+  --color-muted: #858b9c;
+
+  /* --- Accent --- */
+  --color-indy: #7895f8;
+  --color-indy-deep: #2c3a6d;
+
+  /* --- États (contrastes vérifiés >= 4.9:1 sur les trois fonds) --- */
+  --color-ok: #5fd39b;
+  --color-attention: #e8b45f;
+  --color-danger: #f4796b;
+  --color-waiting: #b49bf0;
+
+  /* --- Familles --- */
+  --font-display: var(--font-fraunces), ui-serif, Georgia, "Times New Roman", serif;
+  --font-sans: var(--font-hanken), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  /* --- Rythme --- */
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    /* Durée de référence du Pouls. Neutralisée sous prefers-reduced-motion. */
+    --pulse-duration: 26s;
+    --sweep-duration: 7s;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background-color: var(--color-obsidian);
+    color: var(--color-ivory);
+    font-family: var(--font-sans);
+    font-size: 0.9375rem;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  * {
+    min-width: 0;
+  }
+
+  /* Un seul style de focus dans toute l'application. */
+  :focus-visible {
+    outline: 2px solid var(--color-indy);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs);
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--color-indy) 32%, transparent);
+    color: var(--color-ivory);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-line-strong);
+    border: 3px solid var(--color-obsidian);
+    border-radius: 99px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-muted);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :root {
+      --pulse-duration: 0s;
+      --sweep-duration: 0s;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@utility label-mono {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+@utility hairline-y {
+  border-top: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+}
