@@ -197,10 +197,10 @@ describe('durable run service', () => {
     service.consumeEvent(started.runId, {
       type: 'done', sessionId: 'native-goal', context, interrupted: true,
     }, { terminal: false });
-    updateRunContext('mission-1', context, 'native-goal');
+    updateRunContext('mission-1', started.runId, context, 'native-goal');
     service.cancel(started.runId, 'operator-interrupt');
     service.cancel(started.runId, 'operator-interrupt');
-    updateRunStatus('mission-1', 'stopped', { context });
+    updateRunStatus('mission-1', started.runId, 'stopped', { context });
 
     expect(getRun('mission-1')).toMatchObject({
       runId: started.runId, sessionId: 'native-goal', status: 'stopped', context,

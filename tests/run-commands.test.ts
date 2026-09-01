@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentAdapter } from '../server/adapters/types.js';
 import { createRunsRouter, type LaunchCommandRun } from '../server/routes/runs.js';
 import { createRunRepository, type RunRepository } from '../server/runs/repository.js';
@@ -109,6 +109,120 @@ describe('operator run commands', () => {
 
     expect(response.status).toBe(404);
     expect(response.body).toEqual({ error: 'Mission not found' });
+  });
+
+  it('keeps a corrected successor streaming when the interrupted goal finishes late', async () => {
+    process.env.MINIONS_HOME ||= mkdtempSync(join(tmpdir(), 'indy-run-race-'));
+    const [{ default: productionApp, adapter }, { default: productionDb }, liveChat] = await Promise.all([
+      import('../server/app.js'),
+      import('../server/db/index.js'),
+      import('../server/live-chat.js'),
+    ]);
+    const taskId = `mission-race-${Date.now()}`;
+    productionDb.prepare(`
+      INSERT INTO tasks (
+        id, title, description, status, agent_model, agent_provider, reasoning_effort,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, 'in_progress', ?, ?, ?, 1, 1)
+    `).run(taskId, 'Race mission', 'Keep working', 'gpt-race', 'openai-codex', 'high');
+
+    let releaseOld!: () => void;
+    let oldDoneConsumed!: () => void;
+    let releaseSuccessor!: () => void;
+    const oldRelease = new Promise<void>((resolve) => { releaseOld = resolve; });
+    const oldConsumed = new Promise<void>((resolve) => { oldDoneConsumed = resolve; });
+    const successorRelease = new Promise<void>((resolve) => { releaseSuccessor = resolve; });
+    let streamCall = 0;
+    async function* oldGoalStream() {
+      yield {
+        type: 'done' as const,
+        sessionId: 'native-race-session',
+        interrupted: true,
+      };
+      oldDoneConsumed();
+      await oldRelease;
+      yield {
+        type: 'done' as const,
+        sessionId: 'late-old-session',
+        context: { used_tokens: 7, window_tokens: 100 },
+        interrupted: true,
+      };
+    }
+    async function* successorStream() {
+      await successorRelease;
+      yield { type: 'done' as const, sessionId: 'native-race-session' };
+    }
+
+    const chatStreamSpy = vi.spyOn(adapter, 'chatStream').mockImplementation(() => (
+      streamCall++ === 0 ? oldGoalStream() : successorStream()
+    ));
+    const setGoalSpy = vi.spyOn(adapter, 'setGoal').mockResolvedValue({
+      goal: 'Original goal',
+      status: 'active',
+      turnsUsed: 0,
+      maxTurns: 20,
+      lastReason: null,
+      pausedReason: null,
+    });
+    const interruptSpy = vi.spyOn(adapter, 'interruptChat').mockResolvedValue(true);
+    const writes: string[] = [];
+    let closeSubscriber = () => {};
+
+    try {
+      const goal = await request(productionApp)
+        .post(`/api/tasks/${taskId}/messages`)
+        .send({ content: 'Original goal', mode: 'goal' });
+      expect(goal.status).toBe(202);
+      await oldConsumed;
+
+      const correction = await request(productionApp)
+        .post(`/api/missions/${taskId}/commands`)
+        .set('Idempotency-Key', `correct-race-${taskId}`)
+        .send({ type: 'correct', runId: goal.body.runId, reason: 'Corrected instruction' });
+      expect(correction.status).toBe(202);
+      expect(liveChat.getRunStatus(taskId)).toMatchObject({
+        runId: correction.body.runId,
+        status: 'streaming',
+      });
+      expect(liveChat.getRun(taskId)).toMatchObject({
+        sessionId: 'native-race-session',
+        context: null,
+      });
+
+      const fakeResponse = {
+        write(chunk: string) {
+          writes.push(chunk);
+          return true;
+        },
+        on(event: string, callback: () => void) {
+          if (event === 'close') closeSubscriber = callback;
+          return this;
+        },
+      } as unknown as import('express').Response;
+      liveChat.subscribe(taskId, fakeResponse);
+
+      releaseOld();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(liveChat.getRunStatus(taskId)).toMatchObject({
+        runId: correction.body.runId,
+        status: 'streaming',
+      });
+      expect(writes.join('')).not.toContain('"status":"stopped"');
+
+      const concurrent = await request(productionApp)
+        .post(`/api/tasks/${taskId}/messages`)
+        .send({ content: 'Concurrent launch' });
+      expect(concurrent.status).toBe(409);
+    } finally {
+      releaseOld();
+      releaseSuccessor();
+      closeSubscriber();
+      chatStreamSpy.mockRestore();
+      setGoalSpy.mockRestore();
+      interruptSpy.mockRestore();
+    }
   });
 
   it('returns the durable prior result for a duplicate and rejects a changed payload without a second effect', async () => {

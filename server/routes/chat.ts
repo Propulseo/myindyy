@@ -51,12 +51,12 @@ function completeTaskRun(
   runId: string,
   status: 'done' | 'error',
   ttlMs: number,
-  options?: Parameters<typeof updateRunStatus>[2],
+  options?: Parameters<typeof updateRunStatus>[3],
 ): void {
-  const updated = updateRunStatus(taskId, status, options);
+  const updated = updateRunStatus(taskId, runId, status, options);
   if (updated) {
     broadcast({ type: 'task_run_updated', run: updated });
-    broadcastRunSnapshot(taskId);
+    broadcastRunSnapshot(taskId, runId);
   }
   finishRun(taskId, ttlMs, runId);
 }
@@ -108,9 +108,11 @@ function parseChatRunMode(body: unknown): ChatRunMode {
   throw new Error(`mode must be one of: ${CHAT_RUN_MODES.join(', ')}`);
 }
 
-function broadcastRunSnapshot(taskId: string): void {
+function broadcastRunSnapshot(taskId: string, expectedRunId: string): void {
   const liveRun = getRun(taskId);
-  if (liveRun) broadcastLive(taskId, { type: 'snapshot', run: liveRun });
+  if (liveRun?.runId === expectedRunId) {
+    broadcastLive(taskId, { type: 'snapshot', run: liveRun });
+  }
 }
 
 interface StreamChatTurnResult {
@@ -135,6 +137,7 @@ function recordCompletedAgentRun(taskId: string, context: ContextUsage | null): 
 
 function settleRun(taskId: string, runId: string, context: ContextUsage | null): void {
   const status = getRunStatus(taskId);
+  if (status?.runId !== runId) return;
   if (status) broadcast({ type: 'task_run_updated', run: status });
 
   if (status?.status === 'done') {
@@ -169,8 +172,7 @@ async function streamChatTurn(
 
   const persistApplyBroadcast = (event: StreamEvent): void => {
     runService.consumeEvent(runId, event);
-    if (getRunStatus(runTask.id)?.runId === runId) {
-      applyEvent(runTask.id, event);
+    if (applyEvent(runTask.id, runId, event)) {
       broadcastLive(runTask.id, event);
     }
   };
@@ -193,7 +195,7 @@ async function streamChatTurn(
         if (event.interrupted) interrupted = true;
         if (!options.completeOnDone) {
           runService.consumeEvent(runId, event, { terminal: false });
-          updateRunContext(runTask.id, event.context, event.sessionId);
+          updateRunContext(runTask.id, runId, event.context, event.sessionId);
           continue;
         }
       }
@@ -211,7 +213,7 @@ async function streamChatTurn(
   }
 
   const finalRun = getRunStatus(runTask.id);
-  if (!sawDone && !hadError && finalRun?.status === 'streaming') {
+  if (!sawDone && !hadError && finalRun?.runId === runId && finalRun.status === 'streaming') {
     if (options.completeOnDone) {
       const event: StreamEvent = { type: 'done', sessionId, context: doneContext };
       sawDone = true;
@@ -284,11 +286,15 @@ async function consumeGoalRun(runTask: Task, sessionId: string, initialContent: 
   try {
     while (turnContent) {
       if (++turnCount > MINIONS_GOAL_MAX_TURNS) {
-        appendSystemMessage(runTask.id, 'Goal turn limit reached');
+        appendSystemMessage(runTask.id, runId, 'Goal turn limit reached');
         break;
       }
-      appendUserMessage(runTask.id, turnContent);
-      startAssistantMessage(runTask.id);
+      if (getRunStatus(runTask.id)?.runId !== runId) {
+        wasInterrupted = true;
+        break;
+      }
+      appendUserMessage(runTask.id, runId, turnContent);
+      startAssistantMessage(runTask.id, runId);
 
       const turn = await streamChatTurn(runTask, runId, currentSessionId, turnContent, {
         completeOnDone: false,
@@ -297,6 +303,10 @@ async function consumeGoalRun(runTask: Task, sessionId: string, initialContent: 
       currentSessionId = turn.sessionId;
       if (turn.context !== undefined) finalContext = turn.context;
       const currentRun = getRunStatus(runTask.id);
+      if (currentRun?.runId !== runId) {
+        wasInterrupted = true;
+        break;
+      }
       if (turn.hadError || currentRun?.status === 'error') {
         hadError = true;
         failureReason = turn.failureReason;
@@ -310,15 +320,15 @@ async function consumeGoalRun(runTask: Task, sessionId: string, initialContent: 
       const decision = await adapter.evaluateGoal(currentSessionId, turn.responseText);
       let shouldBroadcastSnapshot = false;
       if (decision.state) {
-        const goalRun = updateRunGoal(runTask.id, decision.state);
+        const goalRun = updateRunGoal(runTask.id, runId, decision.state);
         if (goalRun) broadcast({ type: 'task_run_updated', run: goalRun });
-        shouldBroadcastSnapshot = true;
+        shouldBroadcastSnapshot = goalRun !== undefined;
       }
       if (decision.message) {
-        appendSystemMessage(runTask.id, decision.message);
-        shouldBroadcastSnapshot = true;
+        appendSystemMessage(runTask.id, runId, decision.message);
+        shouldBroadcastSnapshot = getRunStatus(runTask.id)?.runId === runId;
       }
-      if (shouldBroadcastSnapshot) broadcastRunSnapshot(runTask.id);
+      if (shouldBroadcastSnapshot) broadcastRunSnapshot(runTask.id, runId);
 
       if (!decision.shouldContinue) break;
 
@@ -329,19 +339,24 @@ async function consumeGoalRun(runTask: Task, sessionId: string, initialContent: 
     failureReason = toErrorMessage(error, 'Hermes goal loop failed');
     const event: StreamEvent = { type: 'error', error: failureReason };
     runService.consumeEvent(runId, event);
-    applyEvent(runTask.id, event);
-    broadcastLive(runTask.id, event);
+    if (applyEvent(runTask.id, runId, event)) broadcastLive(runTask.id, event);
   } finally {
     if (hadError) runService.fail(runId, failureReason);
     else if (wasInterrupted) runService.cancel(runId, 'operator-interrupt');
     else runService.complete(runId);
-    if (!hadError && getRunStatus(runTask.id)?.status === 'streaming') {
-      updateRunStatus(runTask.id, wasInterrupted ? 'stopped' : 'done', { context: finalContext ?? null });
+    const finalLiveRun = getRunStatus(runTask.id);
+    if (!hadError && finalLiveRun?.runId === runId && finalLiveRun.status === 'streaming') {
+      updateRunStatus(
+        runTask.id,
+        runId,
+        wasInterrupted ? 'stopped' : 'done',
+        { context: finalContext ?? null },
+      );
     }
     // Goal-turn `done` events are swallowed (completeOnDone=false), so the live
     // channel never sees the terminal status — push a final snapshot for it. The
     // error path already delivered a terminal `error` event, so skip it there.
-    if (!hadError) broadcastRunSnapshot(runTask.id);
+    if (!hadError) broadcastRunSnapshot(runTask.id, runId);
     settleRun(runTask.id, runId, finalContext ?? null);
   }
 }

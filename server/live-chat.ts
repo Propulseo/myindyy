@@ -181,53 +181,59 @@ export function startCompactionRun(taskId: string, sessionId: string): RunStart 
 
 function appendMessage(
   taskId: string,
+  expectedRunId: string,
   role: LiveChatMessage['role'],
   content: string,
   extra?: Partial<LiveChatMessage>,
 ): void {
   const run = runs.get(taskId);
-  if (!run) return;
+  if (!run || run.runId !== expectedRunId) return;
   const now = Date.now();
   run.messages.push({ id: uuid(), task_id: taskId, role, content, created_at: now, ...extra });
   run.updatedAt = now;
 }
 
-export function appendUserMessage(taskId: string, content: string): void {
-  appendMessage(taskId, 'user', content);
+export function appendUserMessage(taskId: string, expectedRunId: string, content: string): void {
+  appendMessage(taskId, expectedRunId, 'user', content);
 }
 
-export function appendSystemMessage(taskId: string, content: string): void {
-  appendMessage(taskId, 'system', content);
+export function appendSystemMessage(taskId: string, expectedRunId: string, content: string): void {
+  appendMessage(taskId, expectedRunId, 'system', content);
 }
 
-export function startAssistantMessage(taskId: string): void {
-  appendMessage(taskId, 'assistant', '', { tools: [] });
+export function startAssistantMessage(taskId: string, expectedRunId: string): void {
+  appendMessage(taskId, expectedRunId, 'assistant', '', { tools: [] });
 }
 
 export function updateRunContext(
   taskId: string,
+  expectedRunId: string,
   context: LiveChatRun['context'],
   sessionId?: string,
 ): TaskRunState | undefined {
   const run = runs.get(taskId);
-  if (!run) return undefined;
+  if (!run || run.runId !== expectedRunId) return undefined;
   if (sessionId) run.sessionId = sessionId;
   if (context !== undefined) run.context = context;
   run.updatedAt = Date.now();
   return runState(run);
 }
 
-export function updateRunGoal(taskId: string, goal: GoalStateSnapshot | null): TaskRunState | undefined {
+export function updateRunGoal(
+  taskId: string,
+  expectedRunId: string,
+  goal: GoalStateSnapshot | null,
+): TaskRunState | undefined {
   const run = runs.get(taskId);
-  if (!run) return undefined;
+  if (!run || run.runId !== expectedRunId) return undefined;
   run.goal = goal ? { ...goal } : null;
   run.updatedAt = Date.now();
   return runState(run);
 }
 
-export function applyEvent(taskId: string, event: StreamEvent): void {
+export function applyEvent(taskId: string, expectedRunId: string, event: StreamEvent): boolean {
   const run = runs.get(taskId);
-  if (!run) return;
+  if (!run || run.runId !== expectedRunId) return false;
 
   const assistant = assistantMessage(run);
 
@@ -256,6 +262,7 @@ export function applyEvent(taskId: string, event: StreamEvent): void {
   }
 
   run.updatedAt = Date.now();
+  return true;
 }
 
 export function getRun(taskId: string): LiveChatRun | undefined {
@@ -278,11 +285,12 @@ export function getRunStatuses(): TaskRunState[] {
 
 export function updateRunStatus(
   taskId: string,
+  expectedRunId: string,
   status: Extract<LiveChatRunStatus, 'done' | 'error' | 'stopped'>,
   options?: { context?: LiveChatRun['context']; error?: string },
 ): TaskRunState | undefined {
   const run = runs.get(taskId);
-  if (!run) return undefined;
+  if (!run || run.runId !== expectedRunId) return undefined;
 
   run.status = status;
   run.updatedAt = Date.now();
@@ -322,7 +330,7 @@ export function broadcast(taskId: string, event: LiveChatEvent): void {
 }
 
 export function finishRun(taskId: string, ttlMs: number, runId: string): void {
-  if (!runs.has(taskId)) return;
+  if (runs.get(taskId)?.runId !== runId) return;
   clearExpiry(taskId);
 
   const timer = setTimeout(() => {
