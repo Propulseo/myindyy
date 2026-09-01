@@ -17,6 +17,17 @@
   }
 
   :root {
+    --cockpit-ink: #0b0d12;
+    --cockpit-panel: #151821;
+    --cockpit-panel-line: #2a2e3a;
+    --cockpit-fog: #eceaf5;
+    --cockpit-fog-muted: #9b9aa6;
+    --cockpit-periwinkle: #7c96ff;
+    --cockpit-amber: #e6a85c;
+    --cockpit-amber-muted: #725736;
+    --cockpit-amber-wash: #201a14;
+    --cockpit-stable: #65c18c;
+    --cockpit-mission-font: "Iowan Old Style", "Palatino Linotype", serif;
     --background: 0 0% 100%;
     --foreground: 240 10% 3.9%;
     --border: 240 5.9% 90%;
@@ -41,6 +52,39 @@
     --sidebar: 240 5.9% 10%;
     --surface: 0 0% 12%;
   }
+}
+
+.cockpit-shell {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+.mission-pulse {
+  background: var(--cockpit-fog-muted);
+  opacity: 0.5;
+}
+
+.mission-pulse[data-priority="decision"],
+.mission-pulse[data-priority="blocked"] {
+  background: var(--cockpit-amber);
+  opacity: 1;
+}
+
+.mission-pulse[data-priority="running"] {
+  background: var(--cockpit-periwinkle);
+  opacity: 0.85;
+}
+
+.mission-pulse[data-priority="review"] {
+  background: var(--cockpit-stable);
+  opacity: 0.75;
+}
+
+.mission-pulse-live {
+  animation: mission-pulse-live 1.8s ease-in-out infinite;
+}
+
+@keyframes mission-pulse-live {
+  50% { opacity: 0.35; }
 }
 
 @layer utilities {
@@ -133,6 +177,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .mission-pulse-live {
+    animation: none;
+  }
   .rename-title-layout-hidden {
     opacity: 1;
   }

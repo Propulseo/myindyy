@@ -8,6 +8,6 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['tests/**/*.test.ts'],
+    include: ['tests/**/*.test.ts', 'client/src/**/*.test.ts', 'client/src/**/*.test.tsx'],
   },
 });

@@ -12,13 +12,14 @@ import type {
   FileRenameResponse,
   FileUploadResponse,
   FileWriteResponse,
-  ContextUsage,
   SessionMetadata,
   Task,
   TaskAgentSettings,
-  TaskMessage,
+  TaskMessagesResponse,
   TaskStatus,
   ReasoningEffort,
+  RunCommandBody,
+  RunCommandResult,
   ScheduledTask,
   ScheduledTaskInput,
   ScheduledTaskRun,
@@ -32,6 +33,22 @@ import type {
 export type { SkillMeta, SkillInstallResult };
 
 export type { AgentRunSettings };
+
+export interface RuntimeModel {
+  id: string;
+  label: string;
+  reasoningEfforts: ReasoningEffort[] | null;
+}
+
+export interface RuntimeStatus {
+  provider: 'openai-codex';
+  profileId: string | null;
+  authState: 'connected' | 'expired' | 'missing' | 'error';
+  checkedAt: string;
+  models: RuntimeModel[];
+}
+
+export type RunCommandRequest = RunCommandBody & { idempotencyKey: string };
 
 export const BASE = '/api';
 
@@ -107,7 +124,20 @@ export function createTask(
 }
 
 export function fetchMessages(taskId: string) {
-  return request<{ messages: TaskMessage[]; context?: ContextUsage | null }>(`/tasks/${taskId}/messages`);
+  return request<TaskMessagesResponse>(`/tasks/${taskId}/messages`);
+}
+
+export function fetchRuntime() {
+  return request<RuntimeStatus>('/runtime');
+}
+
+export function commandMission(missionId: string, command: RunCommandRequest) {
+  const { idempotencyKey, ...body } = command;
+  return request<RunCommandResult>(`/missions/${encodeURIComponent(missionId)}/commands`, {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify(body),
+  });
 }
 
 export function fetchSession(taskId: string) {

@@ -12,7 +12,10 @@ import { timeAgo } from '../lib/format';
 import { isEditableTarget } from '../lib/keyboard';
 import { TaskChat } from './TaskChat';
 import { RenameReveal, useRenameAnimation } from './RenameTitle';
-import type { AgentRunSettings } from '../lib/api';
+import { RunControls } from './RunControls';
+import { RunTimeline } from './RunTimeline';
+import { RuntimeBadge } from './RuntimeBadge';
+import { commandMission, fetchMessages, fetchRuntime, type AgentRunSettings, type RunCommandRequest, type RuntimeStatus } from '../lib/api';
 import type { TaskStatus } from '@shared/types';
 
 export function TaskDetailPage() {
@@ -26,6 +29,8 @@ export function TaskDetailPage() {
   const tasksLoaded = useStore((s) => s.tasksLoaded);
   const upsertTask = useStore((s) => s.upsertTask);
   const removeTask = useStore((s) => s.removeTask);
+  const history = useStore((s) => taskId ? s.missionHistories.get(taskId) : undefined);
+  const setMissionHistory = useStore((s) => s.setMissionHistory);
 
   const [titleDraft, setTitleDraft] = useState('');
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -35,6 +40,22 @@ export function TaskDetailPage() {
   const menuRef = useRef<HTMLDivElement>(null);
   const markViewedInFlightRef = useRef<string | null>(null);
   const titleAnimation = useRenameAnimation(task?.title ?? '', task?.id ?? null);
+  const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
+
+  const refreshHistory = useCallback(async () => {
+    if (!taskId) return;
+    const response = await fetchMessages(taskId);
+    setMissionHistory(taskId, {
+      runs: response.runs,
+      events: response.events,
+      loadedForTaskUpdatedAt: task?.updated_at ?? Date.now(),
+    });
+  }, [setMissionHistory, task?.updated_at, taskId]);
+
+  useEffect(() => {
+    void refreshHistory().catch(() => {});
+    void fetchRuntime().then(setRuntime).catch(() => {});
+  }, [refreshHistory]);
 
   useEffect(() => {
     if (task) setTitleDraft(task.title);
@@ -138,6 +159,12 @@ export function TaskDetailPage() {
       navigate('/');
     } catch {}
   }, [task, removeTask, navigate]);
+
+  const handleCommand = useCallback(async (command: RunCommandRequest) => {
+    if (!task) return;
+    await commandMission(task.id, command);
+    await refreshHistory();
+  }, [refreshHistory, task]);
 
   if (!task) {
     if (!tasksLoaded) {
@@ -279,8 +306,22 @@ export function TaskDetailPage() {
         </div>
       </div>
 
-      <div className="w-full flex-1 flex flex-col min-h-0">
-        <TaskChat taskId={task.id} initialMessage={initialMessage} initialSettings={initialSettings} />
+      <div className="grid min-h-0 w-full flex-1 lg:grid-cols-[minmax(0,1fr)_24rem]">
+        <div className="flex min-h-[28rem] min-w-0 flex-col border-t border-[var(--cockpit-panel-line)] lg:min-h-0 lg:border-r">
+          <TaskChat taskId={task.id} initialMessage={initialMessage} initialSettings={initialSettings} />
+        </div>
+        <aside className="cockpit-shell overflow-y-auto bg-[var(--cockpit-ink)] p-5 text-[var(--cockpit-fog)] sm:p-6" aria-label="Exécution de la mission">
+          <div className="mb-5">
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--cockpit-periwinkle)]">Exécution</p>
+            <RuntimeBadge status={runtime} run={history?.runs[history.runs.length - 1] ?? null} />
+          </div>
+          {history?.runs.length ? (
+            <RunControls run={history.runs.reduce((latest, run) => run.attempt > latest.attempt ? run : latest)} onCommand={handleCommand} />
+          ) : null}
+          <div className="mt-6">
+            <RunTimeline runs={history?.runs ?? []} events={history?.events ?? []} />
+          </div>
+        </aside>
       </div>
 
       {showDeleteConfirm && (

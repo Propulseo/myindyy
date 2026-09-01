@@ -1,7 +1,7 @@
 import { BrowserRouter, Navigate, Routes, Route } from 'react-router-dom';
 import { Header, HeaderProvider } from './components/Header';
 import { Sidebar } from './components/Sidebar';
-import { Board } from './components/Board';
+import { TodayPage } from './components/TodayPage';
 import { NewTaskPage } from './components/NewTaskPage';
 import { TaskDetailPage } from './components/TaskDetailPage';
 import { SettingsPage } from './components/SettingsPage';
@@ -23,7 +23,7 @@ function AppShell() {
         <HeaderProvider>
           <Header />
           <Routes>
-            <Route path="/" element={<Board />} />
+            <Route path="/" element={<TodayPage />} />
             <Route path="/tasks/new" element={<NewTaskPage />} />
             <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
             <Route path="/cron" element={<Navigate to="/scheduled-tasks" replace />} />

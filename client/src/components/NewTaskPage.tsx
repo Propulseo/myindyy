@@ -1,14 +1,13 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ArrowUp, Loader2 } from 'lucide-react';
-import { InputToolbar } from './InputToolbar';
 import { AttachButton, AttachDropOverlay, AttachmentTray, UploadErrorBar } from './ChatAttachments';
-import { createTask } from '../lib/api';
-import { useAgentConfig } from '../hooks/useAgentConfig';
+import { RuntimeBadge } from './RuntimeBadge';
+import { createTask, fetchRuntime, type RuntimeStatus } from '../lib/api';
 import { useFileAttachments } from '../hooks/useFileAttachments';
-import { isEditableTarget, handleChatKeyDown, toggleRunMode } from '../lib/keyboard';
-import { GOAL_MODE_PLACEHOLDER, toErrorMessage } from '../lib/format';
-import type { ChatRunMode } from '@shared/types';
+import { isEditableTarget, handleChatKeyDown } from '../lib/keyboard';
+import { toErrorMessage } from '../lib/format';
+import type { ReasoningEffort } from '@shared/types';
 
 type NewTaskLocationState = {
   draft?: string;
@@ -25,9 +24,10 @@ export function NewTaskPage() {
   const initialDraftRef = useRef(draftFromLocationState(location.state));
   const lastAppliedKeyRef = useRef(location.key);
   const [input, setInput] = useState(initialDraftRef.current);
-  const [runMode, setRunMode] = useState<ChatRunMode>('task');
   const [isCreating, setIsCreating] = useState(false);
-  const { defaults, modelGroups, model, setModel, provider, setProvider, reasoningEffort, setReasoningEffort, isLoading } = useAgentConfig();
+  const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
+  const [model, setModel] = useState('');
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort | null>(null);
   const uploadBucketRef = useRef<string | null>(null);
   if (uploadBucketRef.current === null) uploadBucketRef.current = `draft-${crypto.randomUUID()}`;
   const uploadBucketId = uploadBucketRef.current;
@@ -47,6 +47,23 @@ export function NewTaskPage() {
     handlePaste,
   } = useFileAttachments(uploadBucketId);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const selectedModel = runtime?.models.find((candidate) => candidate.id === model) ?? null;
+  const runtimeConnected = runtime?.authState === 'connected';
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchRuntime()
+      .then((status) => {
+        if (cancelled) return;
+        setRuntime(status);
+        setModel(status.models[0]?.id ?? '');
+      })
+      .catch(() => {
+        if (!cancelled) setRuntime({ provider: 'openai-codex', profileId: null, authState: 'error', checkedAt: new Date().toISOString(), models: [] });
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -72,7 +89,7 @@ export function NewTaskPage() {
   const handleSubmit = useCallback(async () => {
     const text = input.trim();
     const hasFiles = pendingFiles.length > 0;
-    if ((!text && !hasFiles) || isCreating || (!defaults && isLoading) || uploadBlocksSend) return;
+    if ((!text && !hasFiles) || isCreating || !runtimeConnected || !model || uploadBlocksSend) return;
 
     setIsCreating(true);
     setUploadError(null);
@@ -83,72 +100,76 @@ export function NewTaskPage() {
       navigate(`/tasks/${task.id}`, {
         state: {
           initialMessage,
-          initialSettings: { model, provider, reasoningEffort, mode: runMode },
+          initialSettings: { model, provider: 'openai-codex', reasoningEffort, mode: 'task' },
         },
       });
     } catch (err) {
       setUploadError(toErrorMessage(err, 'Failed to create task'));
       setIsCreating(false);
     }
-  }, [defaults, uploadBlocksSend, input, isCreating, isLoading, model, provider, navigate, pendingFiles, reasoningEffort, runMode, submitWithAttachments, setUploadError]);
-
-  const handleToggleGoalMode = useCallback(() => setRunMode(toggleRunMode), []);
+  }, [uploadBlocksSend, input, isCreating, model, navigate, pendingFiles, reasoningEffort, runtimeConnected, submitWithAttachments, setUploadError]);
 
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => handleChatKeyDown(e, handleSubmit, {
-      onGoalToggle: handleToggleGoalMode,
-      goalToggleDisabled: isCreating,
-    }),
-    [handleSubmit, handleToggleGoalMode, isCreating],
+    (e: React.KeyboardEvent) => handleChatKeyDown(e, handleSubmit),
+    [handleSubmit],
   );
 
   return (
-    <div className="relative flex-1 flex flex-col items-center justify-center px-6 pb-24" {...(isCreating ? {} : dragHandlers)}>
+    <div className="cockpit-shell relative flex flex-1 flex-col items-center justify-center bg-[var(--cockpit-ink)] px-6 pb-24 text-[var(--cockpit-fog)]" {...(isCreating ? {} : dragHandlers)}>
       {dragOver && !isCreating && <AttachDropOverlay />}
-      <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100 mb-6">
-        What do you need done?
+      <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--cockpit-periwinkle)]">Nouvelle mission</p>
+      <h1 className="mb-6 font-[var(--cockpit-mission-font)] text-3xl sm:text-4xl">
+        Que faut-il accomplir ?
       </h1>
 
       <div className="w-full max-w-2xl">
-        <div className="rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 shadow-sm">
+        <div className="mb-3 flex justify-between gap-3">
+          <RuntimeBadge status={runtime} />
+          <span className="font-mono text-[10px] text-[color:var(--cockpit-fog-muted)]">etienne-openai</span>
+        </div>
+        <div className="rounded-xl border border-[var(--cockpit-panel-line)] bg-[var(--cockpit-panel)]">
           <textarea
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             onPaste={isCreating ? undefined : handlePaste}
-            placeholder={runMode === 'goal' ? GOAL_MODE_PLACEHOLDER : 'Describe your task in detail...'}
+            placeholder="Décrivez le résultat attendu, le contexte et les limites…"
             rows={4}
-            className="w-full resize-none bg-transparent px-5 pt-4 pb-2 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none leading-relaxed"
+            className="w-full resize-none bg-transparent px-5 pb-2 pt-4 text-sm leading-relaxed text-[var(--cockpit-fog)] placeholder:text-[color:var(--cockpit-fog-muted)] focus:outline-none"
           />
           <AttachmentTray files={pendingFiles} onRemove={removeFile} onRetry={retryFile} />
           {uploadError && <UploadErrorBar error={uploadError} onDismiss={() => setUploadError(null)} />}
           <div className="flex items-center justify-between gap-2 px-3 pb-3 sm:gap-3 sm:px-4">
             <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
               <AttachButton onFiles={addFiles} disabled={isCreating} />
-              <InputToolbar
-                model={model}
-                provider={provider}
-                reasoningEffort={reasoningEffort}
-                runMode={runMode}
-                defaults={defaults}
-                modelGroups={modelGroups}
-                disabled={isCreating}
-                compactMobile
-                onModelChange={(nextModel, nextProvider) => {
-                  setModel(nextModel);
-                  setProvider(nextProvider ?? null);
-                }}
-                onReasoningEffortChange={setReasoningEffort}
-                onRunModeChange={setRunMode}
-              />
+              <select
+                aria-label="Modèle Codex"
+                value={model}
+                disabled={isCreating || !runtimeConnected}
+                onChange={(event) => { setModel(event.target.value); setReasoningEffort(null); }}
+                className="min-h-9 min-w-0 rounded-md border border-[var(--cockpit-panel-line)] bg-[var(--cockpit-ink)] px-2 font-mono text-[11px] text-[var(--cockpit-fog)]"
+              >
+                <option value="">Choisir un modèle</option>
+                {runtime?.models.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+              </select>
+              <select
+                aria-label="Effort de raisonnement"
+                value={reasoningEffort ?? ''}
+                disabled={isCreating || !runtimeConnected || !model}
+                onChange={(event) => setReasoningEffort(event.target.value ? event.target.value as ReasoningEffort : null)}
+                className="min-h-9 min-w-0 rounded-md border border-[var(--cockpit-panel-line)] bg-[var(--cockpit-ink)] px-2 font-mono text-[11px] text-[var(--cockpit-fog)]"
+              >
+                <option value="">Réglage global</option>
+                {selectedModel?.reasoningEfforts?.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
+              </select>
             </div>
             <button
               onClick={handleSubmit}
-              disabled={(!input.trim() && pendingFiles.length === 0) || isCreating || (!defaults && isLoading) || uploadBlocksSend}
-              title={sendBlockedLabel ?? 'Send message'}
-              aria-label={sendBlockedLabel ?? 'Send message'}
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-white transition-colors hover:bg-zinc-700 disabled:opacity-30 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+              disabled={(!input.trim() && pendingFiles.length === 0) || isCreating || !runtimeConnected || !model || uploadBlocksSend}
+              title={sendBlockedLabel ?? (runtimeConnected ? 'Créer la mission' : 'Connectez Codex OAuth pour créer une mission')}
+              aria-label={sendBlockedLabel ?? 'Créer la mission'}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--cockpit-periwinkle)] text-[var(--cockpit-ink)] transition-opacity hover:opacity-90 disabled:opacity-30"
             >
               {isCreating || hasUploadingFiles ? (
                 <Loader2 size={16} className="animate-spin" />
@@ -158,8 +179,8 @@ export function NewTaskPage() {
             </button>
           </div>
         </div>
-        <p className="text-xs text-zinc-400 dark:text-zinc-500 text-center mt-3">
-          The more context you give, the better your assistant will do.
+        <p className="mt-3 text-center text-xs text-[color:var(--cockpit-fog-muted)]">
+          Donnez le contexte utile : l’agent démarre avec ce modèle et ce périmètre.
         </p>
       </div>
     </div>

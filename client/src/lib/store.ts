@@ -1,9 +1,16 @@
 import { create } from 'zustand';
-import type { Task, TaskRunState, TaskStatus } from '@shared/types';
+import type { MissionRun, RunEvent, Task, TaskRunState, TaskStatus } from '@shared/types';
+
+export interface MissionHistory {
+  runs: MissionRun[];
+  events: RunEvent[];
+  loadedForTaskUpdatedAt: number;
+}
 
 interface AppState {
   tasks: Task[];
   taskRuns: Map<string, TaskRunState>;
+  missionHistories: Map<string, MissionHistory>;
   tasksLoaded: boolean;
   sidebarCollapsed: boolean;
 
@@ -12,6 +19,7 @@ interface AppState {
   removeTask: (taskId: string) => void;
   setTaskRuns: (runs: TaskRunState[]) => void;
   setTaskRun: (run: TaskRunState) => void;
+  setMissionHistory: (taskId: string, history: MissionHistory) => void;
   toggleSidebar: () => void;
 }
 
@@ -38,6 +46,7 @@ function taskRunEqual(a: TaskRunState | undefined, b: TaskRunState): boolean {
 export const useStore = create<AppState>((set) => ({
   tasks: [],
   taskRuns: new Map<string, TaskRunState>(),
+  missionHistories: new Map<string, MissionHistory>(),
   tasksLoaded: false,
   sidebarCollapsed: localStorage.getItem('sidebarCollapsed') === 'true',
 
@@ -57,10 +66,11 @@ export const useStore = create<AppState>((set) => ({
   removeTask: (taskId) =>
     set((state) => {
       const tasks = state.tasks.filter((t) => t.id !== taskId);
-      if (!state.taskRuns.has(taskId)) return { tasks };
       const taskRuns = new Map(state.taskRuns);
+      const missionHistories = new Map(state.missionHistories);
       taskRuns.delete(taskId);
-      return { tasks, taskRuns };
+      missionHistories.delete(taskId);
+      return { tasks, taskRuns, missionHistories };
     }),
 
   setTaskRuns: (runs) =>
@@ -90,6 +100,13 @@ export const useStore = create<AppState>((set) => ({
       if (shouldStore) taskRuns.set(run.taskId, run);
       else taskRuns.delete(run.taskId);
       return { taskRuns };
+    }),
+
+  setMissionHistory: (taskId, history) =>
+    set((state) => {
+      const missionHistories = new Map(state.missionHistories);
+      missionHistories.set(taskId, history);
+      return { missionHistories };
     }),
 
   toggleSidebar: () =>
