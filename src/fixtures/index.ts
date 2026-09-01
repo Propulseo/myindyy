@@ -5,7 +5,14 @@
  * puis par les sélecteurs de `@/lib/selectors` qui appliquent les permissions du rôle
  * connecté. Remplacer ce module par des appels réseau ne toucherait aucun composant.
  */
-export { DEMO_NOW_ISO, daysAgo, hoursAgo, inHours, minutesAgo } from "./clock";
+export {
+  DEMO_NOW_ISO,
+  daysAgo,
+  hoursAgo,
+  inHours,
+  inMinutes,
+  minutesAgo,
+} from "./clock";
 export { automations, automationsById } from "./automations";
 export { decisions, decisionsById } from "./decisions";
 export { deliverables, deliverablesById } from "./deliverables";

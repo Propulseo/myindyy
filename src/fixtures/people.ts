@@ -13,7 +13,7 @@ export const people: Person[] = [
     initials: "EG",
     role: "Propriétaire",
     roleSummary:
-      "Accès complet. Voit tous les projets, les tâches personnelles et les sources connectées.",
+      "Accès complet. Voit tous les projets, gère toutes les tâches — partagées comme personnelles — et voit les sources connectées.",
     capabilities: [
       "missions.create",
       "missions.control",
@@ -23,6 +23,7 @@ export const people: Person[] = [
       "comms.external.send",
       "limits.override",
       "secrets.view",
+      "tasks.manage",
       "tasks.personal.view",
       "projects.viewAll",
     ],
@@ -35,7 +36,7 @@ export const people: Person[] = [
     initials: "LB",
     role: "Développeur",
     roleSummary:
-      "Projets techniques affectés uniquement. Contrôle ses missions, déploie en production, publie pour ses projets.",
+      "Projets techniques affectés uniquement. Contrôle ses missions, déploie en production, publie et gère les tâches partagées de ses projets.",
     capabilities: [
       "missions.create",
       "missions.control",
@@ -43,6 +44,7 @@ export const people: Person[] = [
       "missions.approve",
       "deploy.production",
       "comms.external.send",
+      "tasks.manage",
     ],
     projectIds: ["propulseo", "tao", "coproflex", "ocean"],
     source: { system: "erp", reference: "ERP · membre 014", syncedAt: hoursAgo(2) },
@@ -53,13 +55,14 @@ export const people: Person[] = [
     initials: "LM",
     role: "Business developer",
     roleSummary:
-      "Projets et leads commerciaux affectés uniquement. Contrôle ses missions, approuve et envoie les communications externes.",
+      "Projets et leads commerciaux affectés uniquement. Contrôle ses missions, envoie les communications externes, gère les tâches partagées de ses projets.",
     capabilities: [
       "missions.create",
       "missions.control",
       "missions.cancel",
       "missions.approve",
       "comms.external.send",
+      "tasks.manage",
     ],
     projectIds: ["propulseo", "vernay"],
     source: { system: "erp", reference: "ERP · membre 021", syncedAt: hoursAgo(2) },

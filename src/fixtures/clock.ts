@@ -23,5 +23,6 @@ export const minutesAgo = (n: number): string => shift(n * MINUTE);
 export const hoursAgo = (n: number): string => shift(n * HOUR);
 export const daysAgo = (n: number): string => shift(n * DAY);
 
-/** Échéance dans le futur, utilisée par les tâches Obsidian du jour. */
+/** Échéance dans le futur, utilisée par les tâches et les missions du jour. */
+export const inMinutes = (n: number): string => shift(-n * MINUTE);
 export const inHours = (n: number): string => shift(-n * HOUR);

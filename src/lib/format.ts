@@ -98,6 +98,60 @@ export function plural(count: number, singular: string, pluralForm?: string): st
   return `${count} ${word}`;
 }
 
+/* ------------------------------------------------------------------ */
+/* Saisie d'une date et d'une heure                                    */
+/* ------------------------------------------------------------------ */
+
+const parisParts = new Intl.DateTimeFormat("en-CA", {
+  timeZone: TIME_ZONE,
+  hour12: false,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+/** Heure murale parisienne d'un instant, relue comme si elle était en UTC. */
+function parisWallClockMs(ms: number): number {
+  const parts = parisParts.formatToParts(new Date(ms));
+  const read = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((part) => part.type === type)?.value ?? "0");
+  return Date.UTC(
+    read("year"),
+    read("month") - 1,
+    read("day"),
+    read("hour") % 24,
+    read("minute"),
+  );
+}
+
+/**
+ * « 2026-09-01T18:00 », saisi dans un champ `datetime-local`, devient un instant ISO.
+ *
+ * La valeur est toujours lue comme une heure de Paris, quel que soit le fuseau de la
+ * machine : tout le cockpit affiche l'heure de Paris, la saisie doit dire la même
+ * chose. Deux passes suffisent à absorber un changement d'heure.
+ */
+export function isoFromLocalInput(value: string): string | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return undefined;
+  const wanted = Date.parse(`${value}:00.000Z`);
+  if (Number.isNaN(wanted)) return undefined;
+
+  let instant = wanted;
+  for (let pass = 0; pass < 2; pass += 1) {
+    instant = wanted - (parisWallClockMs(instant) - instant);
+  }
+  return new Date(instant).toISOString();
+}
+
+/** L'inverse : un instant ISO devient « 2026-09-01T18:00 » pour un champ de saisie. */
+export function localInputFromIso(iso: string): string {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return "";
+  return new Date(parisWallClockMs(ms)).toISOString().slice(0, 16);
+}
+
 export const DEMO_DAY_LABEL = new Intl.DateTimeFormat(LOCALE, {
   weekday: "long",
   day: "numeric",

@@ -49,6 +49,11 @@ export type Capability =
   | "limits.override"
   /** Voir les identifiants et jetons des sources connectées. */
   | "secrets.view"
+  /**
+   * Capturer, trier, terminer ou annuler une tâche Obsidian, dans la limite des
+   * projets visibles. La commande part vers Hermes, jamais vers le coffre.
+   */
+  | "tasks.manage"
   /** Voir les tâches personnelles du propriétaire. */
   | "tasks.personal.view"
   /** Voir tous les projets, y compris ceux qui ne sont pas affectés. */
@@ -317,7 +322,11 @@ export interface Automation {
 /* Tâches Obsidian                                                     */
 /* ------------------------------------------------------------------ */
 
-export type TaskState = "a_faire" | "en_cours" | "fait";
+/**
+ * Une tâche annulée reste dans l'état de démonstration avec un statut écrit :
+ * elle n'est jamais retirée en silence.
+ */
+export type TaskState = "a_faire" | "en_cours" | "fait" | "annulee";
 
 export interface ObsidianTask {
   id: string;
@@ -331,6 +340,16 @@ export interface ObsidianTask {
   note?: string;
   source: Provenance;
 }
+
+/**
+ * Commande de tâche envoyée à Hermes. Obsidian reste la source de vérité :
+ * Indy ne touche pas au coffre, il demande à Hermes de le faire.
+ */
+export type TaskCommand =
+  | "todo.capture"
+  | "todo.triage"
+  | "todo.complete"
+  | "todo.cancel";
 
 /* ------------------------------------------------------------------ */
 /* Modèles de mission                                                  */

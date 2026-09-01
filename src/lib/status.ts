@@ -7,6 +7,7 @@ import type {
   RunOutcome,
   SourceSystem,
   StepState,
+  TaskCommand,
   TaskState,
 } from "@/types/domain";
 
@@ -225,6 +226,35 @@ export const taskStateMeta: Record<TaskState, StatusMeta> = {
   a_faire: { label: "À faire", tone: "waiting", shape: "ring", hint: "Pas commencée" },
   en_cours: { label: "En cours", tone: "active", shape: "filled", hint: "Commencée" },
   fait: { label: "Faite", tone: "success", shape: "filled", hint: "Terminée" },
+  annulee: {
+    label: "Annulée",
+    tone: "neutral",
+    shape: "dash",
+    hint: "Retirée du jour, conservée dans le coffre",
+  },
+};
+
+/**
+ * Ce que fait chaque commande de tâche, écrit pour un humain. Indy ne touche pas
+ * au coffre Obsidian : il transmet la commande à Hermes, qui l'applique.
+ */
+export const taskCommandMeta: Record<TaskCommand, { label: string; hint: string }> = {
+  "todo.capture": {
+    label: "todo.capture",
+    hint: "Crée la tâche dans le coffre Obsidian.",
+  },
+  "todo.triage": {
+    label: "todo.triage",
+    hint: "Met à jour le projet, le responsable, l'échéance ou la note.",
+  },
+  "todo.complete": {
+    label: "todo.complete",
+    hint: "Coche la tâche dans le coffre Obsidian.",
+  },
+  "todo.cancel": {
+    label: "todo.cancel",
+    hint: "Marque la tâche annulée sans la supprimer.",
+  },
 };
 
 export const decisionKindMeta: Record<
@@ -259,6 +289,25 @@ export const decisionKindMeta: Record<
     label: "Prolongation d'une mission",
     verb: "Prolonger",
     confirmLabel: "Prolonger la mission",
+    tone: "attention",
+  },
+};
+
+/**
+ * Tout ce qui passe par le panneau sensible : les décisions d'une mission, plus
+ * l'annulation d'une tâche, qui sort elle aussi vers un système extérieur.
+ */
+export type SensitiveKind = DecisionKind | "annulation_tache";
+
+export const sensitiveKindMeta: Record<
+  SensitiveKind,
+  { label: string; verb: string; confirmLabel: string; tone: Tone }
+> = {
+  ...decisionKindMeta,
+  annulation_tache: {
+    label: "Annulation d'une tâche",
+    verb: "Annuler",
+    confirmLabel: "Annuler la tâche",
     tone: "attention",
   },
 };

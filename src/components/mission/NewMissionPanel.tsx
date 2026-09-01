@@ -10,19 +10,31 @@ import {
   Segmented,
   SelectInput,
   TextArea,
+  TextInput,
 } from "@/components/primitives/Form";
 import { Sheet } from "@/components/primitives/Overlay";
 import { StateBlock } from "@/components/primitives/Layout";
 import { missionTemplates } from "@/fixtures";
 import { can } from "@/lib/access";
 import { useCockpit } from "@/lib/cockpit";
-import { formatDuration, plural } from "@/lib/format";
+import {
+  formatDayTime,
+  formatDuration,
+  isoFromLocalInput,
+  localInputFromIso,
+  plural,
+} from "@/lib/format";
 import { visibleProjects } from "@/lib/selectors";
 import { autonomyMeta, effortMeta } from "@/lib/status";
+import { DEMO_NOW_ISO } from "@/fixtures";
 import type { AutonomyLevel, EffortLevel } from "@/types/domain";
 
 const DURATION_CHOICES = [30, 60, 90, 180, 240, 300, 480];
 const ATTEMPT_CHOICES = [1, 2, 3, 5];
+/** Au-delà de quatre exécutants, la mission se surveille mal : on ne le propose pas. */
+const PARALLEL_CHOICES = [1, 2, 3, 4];
+/** Valeurs sûres par défaut : un seul exécutant, aucune échéance. */
+const DEFAULT_PARALLEL = 1;
 
 export function NewMissionPanel({
   open,
@@ -45,6 +57,8 @@ export function NewMissionPanel({
   const [templateId, setTemplateId] = useState("");
   const [duration, setDuration] = useState(180);
   const [attempts, setAttempts] = useState(2);
+  const [parallelAgents, setParallelAgents] = useState(DEFAULT_PARALLEL);
+  const [due, setDue] = useState("");
   const [effort, setEffort] = useState<EffortLevel>("standard");
   const [autonomy, setAutonomy] = useState<AutonomyLevel>("encadree");
 
@@ -58,6 +72,8 @@ export function NewMissionPanel({
       setTemplateId("");
       setDuration(180);
       setAttempts(2);
+      setParallelAgents(DEFAULT_PARALLEL);
+      setDue("");
       setEffort("standard");
       setAutonomy("encadree");
       setProjectId(initialProjectId ?? projects[0]?.id ?? "");
@@ -75,6 +91,9 @@ export function NewMissionPanel({
     setAutonomy(template.defaultAutonomy);
   }
 
+  // Une échéance vide reste vide : aucune date n'est inventée à la place de l'auteur.
+  const dueAt = due ? isoFromLocalInput(due) : undefined;
+
   function launch() {
     if (!objective.trim() || !projectId) return;
     const id = createMission({
@@ -83,6 +102,8 @@ export function NewMissionPanel({
       templateId: templateId || null,
       durationMin: duration,
       maxAttempts: attempts,
+      parallelAgents,
+      dueAt,
       effort,
       autonomy,
     });
@@ -218,6 +239,42 @@ export function NewMissionPanel({
                 </SelectInput>
               )}
             </Field>
+
+            <Field
+              label="Agents en parallèle"
+              hint="Exécutants autorisés à travailler en même temps. Au-delà, la mission se surveille mal."
+            >
+              {(props) => (
+                <SelectInput
+                  {...props}
+                  value={String(parallelAgents)}
+                  onChange={(event) => setParallelAgents(Number(event.target.value))}
+                >
+                  {PARALLEL_CHOICES.map((count) => (
+                    <option key={count} value={count}>
+                      {plural(count, "agent")}
+                    </option>
+                  ))}
+                </SelectInput>
+              )}
+            </Field>
+
+            <Field
+              label="Échéance"
+              optional
+              hint="Date et heure attendues. Une échéance dépassée ou proche remonte sur « Aujourd'hui »."
+            >
+              {(props) => (
+                <TextInput
+                  {...props}
+                  type="datetime-local"
+                  value={due}
+                  min={localInputFromIso(DEMO_NOW_ISO)}
+                  onChange={(event) => setDue(event.target.value)}
+                  className="font-mono"
+                />
+              )}
+            </Field>
           </div>
 
           <div className="space-y-2">
@@ -252,7 +309,12 @@ export function NewMissionPanel({
             />
           </div>
 
-          <PermissionSummary duration={duration} attempts={attempts} />
+          <PermissionSummary
+            duration={duration}
+            attempts={attempts}
+            parallelAgents={parallelAgents}
+            dueAt={dueAt}
+          />
         </div>
       )}
     </Sheet>
@@ -263,9 +325,13 @@ export function NewMissionPanel({
 function PermissionSummary({
   duration,
   attempts,
+  parallelAgents,
+  dueAt,
 }: {
   duration: number;
   attempts: number;
+  parallelAgents: number;
+  dueAt?: string;
 }) {
   const { viewer } = useCockpit();
 
@@ -276,8 +342,15 @@ function PermissionSummary({
       allowed: true,
     },
     {
-      label: "Exécutants en parallèle",
-      value: "1 au lancement, visible ensuite dans les garde-fous de la mission",
+      label: "Agents en parallèle",
+      value: `${plural(parallelAgents, "agent")} au maximum, repris dans les garde-fous de la mission`,
+      allowed: true,
+    },
+    {
+      label: "Échéance",
+      value: dueAt
+        ? `${formatDayTime(dueAt)} — remontée sur « Aujourd'hui » si elle approche ou passe`
+        : "Aucune : la mission n'est attendue pour aucune heure précise",
       allowed: true,
     },
     {

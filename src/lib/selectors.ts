@@ -17,7 +17,7 @@ import {
   obsidianTasks,
   projects,
 } from "@/fixtures";
-import { can, visibleProjectIds } from "./access";
+import { canSeeTask, visibleProjectIds } from "./access";
 import { formatDuration, minutesSince, plural, ratio } from "./format";
 import { notableOutcomes, type Tone } from "./status";
 
@@ -92,24 +92,25 @@ export function visibleAutomations(data: Dataset, viewer: Person): Automation[] 
   return data.automations.filter((automation) => allowed.has(automation.projectId));
 }
 
+/** Une tâche close ne remonte plus en tête de liste, mais elle ne disparaît pas. */
+function isTaskClosed(task: ObsidianTask): boolean {
+  return task.state === "fait" || task.state === "annulee";
+}
+
 /**
  * Tâches Obsidian du jour. Les tâches personnelles n'apparaissent que pour les rôles
- * qui possèdent `tasks.personal.view`, c'est-à-dire leur propriétaire.
+ * qui possèdent `tasks.personal.view`, c'est-à-dire leur propriétaire ; les tâches
+ * partagées suivent le périmètre des projets affectés.
+ *
+ * Les tâches terminées et annulées restent listées, en fin de liste et avec leur
+ * statut écrit : rien n'est retiré en silence.
  */
 export function visibleTasks(data: Dataset, viewer: Person): ObsidianTask[] {
-  const allowed = visibleProjectIds(viewer);
-  const seesPersonal = can(viewer, "tasks.personal.view");
-
   return data.tasks
-    .filter((task) => {
-      if (task.visibility === "personnelle") {
-        return seesPersonal && task.ownerId === viewer.id;
-      }
-      return task.projectId !== undefined && allowed.has(task.projectId);
-    })
+    .filter((task) => canSeeTask(viewer, task))
     .sort((a, b) => {
-      if (a.state === "fait" && b.state !== "fait") return 1;
-      if (b.state === "fait" && a.state !== "fait") return -1;
+      const closed = Number(isTaskClosed(a)) - Number(isTaskClosed(b));
+      if (closed !== 0) return closed;
       return Date.parse(a.dueAt) - Date.parse(b.dueAt);
     });
 }
