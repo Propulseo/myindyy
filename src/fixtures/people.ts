@@ -21,7 +21,7 @@ export const people: Person[] = [
       "missions.approve",
       "deploy.production",
       "comms.external.send",
-      "budget.override",
+      "limits.override",
       "secrets.view",
       "tasks.personal.view",
       "projects.viewAll",

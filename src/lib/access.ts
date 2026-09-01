@@ -35,7 +35,8 @@ export const capabilityDenial: Record<Capability, string> = {
     "Le déploiement en production est réservé aux rôles qui en ont la charge.",
   "comms.external.send":
     "L'envoi vers l'extérieur est réservé aux rôles qui en ont la charge.",
-  "budget.override": "Seul le propriétaire peut autoriser un dépassement de budget.",
+  "limits.override":
+    "Seul le propriétaire peut prolonger une mission au-delà de sa durée ou de ses tentatives.",
   "secrets.view": "Les identifiants des sources connectées ne sont visibles que du propriétaire.",
   "tasks.personal.view": "Les tâches personnelles ne sont visibles que de leur propriétaire.",
   "projects.viewAll": "Vous ne voyez que les projets qui vous sont affectés.",

@@ -19,7 +19,7 @@ Desktop : 1440 × 900. Mobile : 390 × 844.
 | `desktop-10-projet-commercial.png` | Projet client commercial (Vernay Immobilier) |
 | `desktop-11-livrables.png` | Livrables groupés par jour |
 | `desktop-12-historique.png` | Historique : missions closes, décisions, exécutions notables |
-| `desktop-13-reglages-permissions.png` | Réglages : matrice des permissions, sources, identité visuelle |
+| `desktop-13-reglages-permissions.png` | Réglages : permissions, sources, forfait Codex, identité visuelle |
 | `desktop-14-etat-chargement.png` | État de chargement |
 | `desktop-15-etat-vide.png` | États vides |
 | `desktop-16-etat-erreur.png` | État d'erreur |

@@ -72,16 +72,16 @@ export const decisions: Decision[] = [
     id: "dec-04",
     missionId: "m-251",
     projectId: "vernay",
-    kind: "depassement_budget",
-    title: "Autoriser 1,50 € de plus sur la recherche concurrents",
-    target: "Mission M-251 · plafond porté de 3,00 € à 4,50 €",
-    environment: "Budget agent du projet Vernay Immobilier",
+    kind: "prolongation",
+    title: "Prolonger la recherche concurrents d'une heure",
+    target: "Mission M-251 · durée portée de 4 h à 5 h, une tentative de plus",
+    environment: "Garde-fous de la mission",
     revision:
-      "Consommé 2,76 € sur 3,00 €. Il reste trois acteurs à comparer et la synthèse à rédiger.",
+      "226 minutes écoulées sur 240. Tentative 2 sur 3. Il reste trois acteurs à comparer et la synthèse à rédiger.",
     consequence:
-      "La mission reprend jusqu'au nouveau plafond. Le budget du projet passe de 34,90 € à 36,40 € sur 70,00 €.",
+      "La mission repart jusqu'à la nouvelle limite. Sans prolongation, elle s'arrête d'elle-même à 4 h et rend les onze comparaisons déjà faites, sans synthèse.",
     requestedAt: minutesAgo(9),
-    requiredCapability: "budget.override",
+    requiredCapability: "limits.override",
     state: "en_attente",
     source: {
       system: "hermes",

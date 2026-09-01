@@ -13,6 +13,7 @@ import type {
   ActivityEvent,
   AutonomyLevel,
   Decision,
+  EffortLevel,
   Mission,
   MissionStatus,
   Person,
@@ -41,14 +42,19 @@ export interface MissionDraft {
   objective: string;
   projectId: string;
   templateId: string | null;
-  budgetEur: number;
+  /** Garde-fou de temps, en minutes. */
   durationMin: number;
+  /** Nombre de reprises autorisées avant que la mission rende la main. */
+  maxAttempts: number;
+  effort: EffortLevel;
   autonomy: AutonomyLevel;
 }
 
 interface MissionPatch {
   status?: MissionStatus;
-  budgetCapEur?: number;
+  /** Garde-fous repoussés par une prolongation approuvée. */
+  durationCapMin?: number;
+  attemptsMax?: number;
   activity?: ActivityEvent[];
 }
 
@@ -144,9 +150,13 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
       return {
         ...mission,
         status: patch.status ?? mission.status,
-        budget: {
-          ...mission.budget,
-          capEur: patch.budgetCapEur ?? mission.budget.capEur,
+        duration: {
+          ...mission.duration,
+          capMin: patch.durationCapMin ?? mission.duration.capMin,
+        },
+        attempts: {
+          ...mission.attempts,
+          max: patch.attemptsMax ?? mission.attempts.max,
         },
         activity: patch.activity
           ? [...patch.activity, ...mission.activity]
@@ -223,19 +233,23 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
         },
       }));
 
+      // Refuser une prolongation ne tue pas la mission : elle continue jusqu'à sa
+      // limite actuelle, puis s'arrête d'elle-même avec ce qu'elle a produit.
       const nextStatus: MissionStatus = approve
         ? "en_cours"
-        : decision.kind === "depassement_budget"
+        : decision.kind === "prolongation"
           ? "en_cours"
           : "annulee";
+
+      const prolonged = approve && decision.kind === "prolongation";
 
       setMissionPatches((patches) => ({
         ...patches,
         [decision.missionId]: {
           ...patches[decision.missionId],
           status: nextStatus,
-          budgetCapEur:
-            approve && decision.kind === "depassement_budget" ? 4.5 : undefined,
+          durationCapMin: prolonged ? 300 : patches[decision.missionId]?.durationCapMin,
+          attemptsMax: prolonged ? 4 : patches[decision.missionId]?.attemptsMax,
           activity: [
             {
               id: nextId("act"),
@@ -303,9 +317,11 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
         ownerId: viewer.id,
         autonomy: draft.autonomy,
         lastActivityAt: DEMO_NOW_ISO,
+        effort: draft.effort,
         progress: { done: 0, total: 1, unit: "étapes" },
         duration: { elapsedMin: 0, capMin: draft.durationMin },
-        budget: { spentEur: 0, capEur: draft.budgetEur },
+        attempts: { current: 0, max: draft.maxAttempts },
+        parallelAgents: 1,
         steps: [{ id: `${id}-s1`, label: "Préparer la mission", state: "todo" }],
         agents: [],
         activity: [
@@ -329,7 +345,7 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
             at: DEMO_NOW_ISO,
             level: "info",
             scope: "file",
-            message: `queued budget_cap=${draft.budgetEur.toFixed(2)}EUR duration_cap=${draft.durationMin}min autonomy=${draft.autonomy}`,
+            message: `queued duration_cap=${draft.durationMin}min attempts_max=${draft.maxAttempts} effort=${draft.effort} autonomy=${draft.autonomy}`,
           },
         ],
         source: {

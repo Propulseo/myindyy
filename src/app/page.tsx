@@ -13,6 +13,7 @@ import { useCockpit } from "@/lib/cockpit";
 import { DEMO_DAY_LABEL, DEMO_TIME_LABEL, plural } from "@/lib/format";
 import {
   attentionItems,
+  isStalled,
   recentlyFinished,
   visibleTasks,
   workingMissions,
@@ -27,6 +28,13 @@ export default function TodayPage() {
   const tasks = useMemo(() => visibleTasks(data, viewer), [data, viewer]);
   const finished = useMemo(() => recentlyFinished(data, viewer), [data, viewer]);
 
+  // « En cours » regroupe aussi ce qui attend son tour ou ne bouge plus. La phrase de
+  // tête, elle, ne compte que ce qui travaille réellement — même définition que le Pouls,
+  // sinon l'en-tête annonce une activité que la bande contredit.
+  const reallyWorking = working.filter(
+    (mission) => mission.status === "en_cours" && !isStalled(mission),
+  ).length;
+
   return (
     <div className="space-y-9">
       <PageHeading
@@ -34,7 +42,7 @@ export default function TodayPage() {
         lede={
           hasError
             ? "Les sources n'ont pas répondu. Le cockpit préfère ne rien montrer plutôt qu'une vue partielle."
-            : buildLede(attention.length, working.length)
+            : buildLede(attention.length, reallyWorking)
         }
         aside={
           <p className="hidden font-mono text-[0.6875rem] text-muted sm:block">

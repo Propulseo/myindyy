@@ -5,16 +5,16 @@ import { useMemo } from "react";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/primitives/Button";
 import { KeyValue, PageHeading, Section, StateBlock } from "@/components/primitives/Layout";
-import { Meter } from "@/components/status/Meter";
+import { AgentActivityPanel } from "@/components/project/AgentActivity";
 import { MissionRow } from "@/components/mission/MissionRow";
 import { AutomationRow } from "@/components/automation/AutomationRow";
 import { DeliverableRow, TaskRow } from "@/components/data/Rows";
 import { useShellActions } from "@/components/shell/AppShell";
 import { peopleById } from "@/fixtures";
 import { useCockpit } from "@/lib/cockpit";
-import { formatEur, formatRelative, plural } from "@/lib/format";
+import { formatDayTime, formatRelative, plural } from "@/lib/format";
 import {
-  projectSpend,
+  projectAgentActivity,
   visibleAutomations,
   visibleDeliverables,
   visibleMissions,
@@ -76,7 +76,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
       mission.status === "bloquee",
   );
   const members = project.memberIds.map((id) => peopleById[id]).filter(Boolean);
-  const spend = projectSpend(data, project.id);
+  const activity = projectAgentActivity(data, project.id);
 
   return (
     <div className="space-y-8">
@@ -114,8 +114,10 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             ))}
           </span>
         </KeyValue>
-        <KeyValue label="Consommé par les missions">
-          <span className="font-mono text-[0.8125rem]">{formatEur(spend)}</span>
+        <KeyValue label="Dernière synchronisation">
+          <span className="font-mono text-[0.8125rem]">
+            {formatDayTime(project.source.syncedAt)}
+          </span>
         </KeyValue>
       </dl>
 
@@ -180,16 +182,11 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
         </div>
 
         <div className="space-y-7">
-          <div className="rounded-md border border-line bg-surface/60 p-4">
-            <Meter
-              label="Budget agent du projet"
-              kind="budget"
-              value={project.budgetSpentEur}
-              cap={project.budgetCapEur}
-            />
+          <div>
+            <AgentActivityPanel activity={activity} />
             <p className="mt-3 text-xs leading-relaxed text-muted">
-              Plafond mensuel défini dans l&apos;ERP. Au-delà, les missions du projet
-              s&apos;arrêtent tant que le propriétaire n&apos;a pas autorisé de dépassement.
+              Recalculé à partir des missions de ce projet. Une mission annulée compte
+              comme une intervention humaine, pas comme un échec des agents.
             </p>
           </div>
 

@@ -9,6 +9,13 @@ variable d'environnement, aucun appel réseau vers Hermes, Obsidian, GitHub, l'E
 Supabase, Coolify ou le VPS. Toutes les données sont fictives et vivent dans
 [`src/fixtures/`](src/fixtures/).
 
+**Aucun coût n'est affiché.** Codex tourne derrière Indy sur l'abonnement ChatGPT de
+l'utilisateur : le cockpit n'a ni prix par mission ni budget en euros. Ce qu'il encadre
+et ce qu'il montre sont des garde-fous opérationnels — durée maximale, tentatives
+autorisées, agents en parallèle, échéance, niveau d'effort, dernière activité, blocage et
+inactivité. Une consommation globale du forfait ne s'affiche que si Hermes ou Codex la
+fournit ; aucune estimation n'est fabriquée.
+
 ---
 
 ## Installation et lancement
@@ -39,7 +46,7 @@ Prérequis : Node 20.9 ou plus récent, pnpm 10 ou plus récent.
 | Missions | `/missions` | Recherche, quatre filtres, trois regroupements |
 | Détail d'une mission | `/missions/[id]` | Vue d'ensemble, Activité, Livrables, Diagnostic |
 | Automatisations | `/automatisations` | Une ligne par récurrence, historique replié |
-| Projets | `/projets`, `/projets/[id]` | Membres, missions, tâches, livrables, budget, sources |
+| Projets | `/projets`, `/projets/[id]` | Membres, missions, tâches, livrables, activité des agents, sources |
 | Livrables | `/livrables` | Ce que les missions ont produit, groupé par jour |
 | Historique | `/historique` | Missions closes, décisions prises, exécutions notables |
 | Réglages | `/reglages` | Matrice des permissions, sources, identité visuelle, états |
@@ -62,7 +69,7 @@ faire. Le choix est conservé dans le navigateur.
 | Piloter ses missions | oui | oui | oui |
 | Déployer en production | oui | oui | non |
 | Publier ou envoyer à l'extérieur | oui | oui | oui |
-| Autoriser un dépassement de budget | oui | non | non |
+| Prolonger une mission au-delà de ses limites | oui | non | non |
 | Voir les identifiants des sources | oui | non | non |
 | Voir les tâches personnelles | oui | non | non |
 
@@ -70,7 +77,8 @@ Un projet non affecté n'apparaît nulle part : ni dans les listes, ni dans les 
 en grisé. DocAgora n'est affecté qu'à Étienne : c'est le témoin de ce comportement.
 
 Toute action sensible — déploiement en production, publication, communication externe,
-annulation d'une mission, dépassement de budget — passe par un panneau unique qui affiche
+annulation d'une mission, prolongation au-delà des garde-fous — passe par un panneau
+unique qui affiche
 l'action, la cible, le projet, l'environnement, la révision ou le contenu, la personne qui
 confirme et la conséquence.
 
@@ -115,7 +123,7 @@ Captures desktop et mobile : [`docs/design/screenshots/`](docs/design/screenshot
 
 Trois familles, toutes sous SIL Open Font License 1.1, récupérées et auto-hébergées au
 build par `next/font/google` : **Fraunces** pour les titres, **Hanken Grotesk** pour
-l'interface, **JetBrains Mono** pour les statuts, durées et budgets.
+l'interface, **JetBrains Mono** pour les statuts, durées et tentatives.
 
 ---
 

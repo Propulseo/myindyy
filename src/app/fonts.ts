@@ -4,7 +4,7 @@
  *
  * - Fraunces        : serif expressive, réservée aux titres et aux chiffres de tête.
  * - Hanken Grotesk  : sans-serif d'interface, très lisible en corps de texte dense.
- * - JetBrains Mono  : monospace pour statuts, durées, budgets et références techniques.
+ * - JetBrains Mono  : monospace pour statuts, durées, tentatives et références techniques.
  */
 import { Fraunces, Hanken_Grotesk, JetBrains_Mono } from "next/font/google";
 

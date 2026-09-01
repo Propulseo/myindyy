@@ -1,4 +1,5 @@
 import type {
+  AgentActivity,
   Automation,
   AutomationRun,
   Decision,
@@ -17,7 +18,7 @@ import {
   projects,
 } from "@/fixtures";
 import { can, visibleProjectIds } from "./access";
-import { minutesSince, ratio } from "./format";
+import { formatDuration, minutesSince, plural, ratio } from "./format";
 import { notableOutcomes, type Tone } from "./status";
 
 /**
@@ -117,11 +118,37 @@ export function visibleTasks(data: Dataset, viewer: Person): ObsidianTask[] {
 /* Écran « Aujourd'hui »                                               */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Au-delà de quelle durée sans le moindre évènement une mission en cours est
+ * considérée comme inactive. C'est un garde-fou, pas une panne : la mission n'est
+ * pas arrêtée, elle est seulement remontée à un humain.
+ */
+export const STALE_AFTER_MIN = 45;
+
+/** Exécutants qui travaillent en ce moment sur la mission. */
+export function activeAgentCount(mission: Mission): number {
+  return mission.agents.filter((agent) => agent.state === "actif").length;
+}
+
+/** Une mission en cours qui n'a plus rien émis depuis le seuil d'inactivité. */
+export function isStalled(mission: Mission): boolean {
+  return (
+    mission.status === "en_cours" &&
+    minutesSince(mission.lastActivityAt) >= STALE_AFTER_MIN
+  );
+}
+
+/** La mission est sur sa dernière tentative autorisée. */
+export function isLastAttempt(mission: Mission): boolean {
+  return mission.attempts.current >= mission.attempts.max;
+}
+
 export type AttentionKind =
   | "decision"
   | "blocage"
   | "echec"
-  | "budget"
+  | "inactivite"
+  | "limite"
   | "automatisation";
 
 export interface AttentionItem {
@@ -142,8 +169,9 @@ const KIND_WEIGHT: Record<AttentionKind, number> = {
   decision: 0,
   blocage: 1,
   echec: 2,
-  budget: 3,
-  automatisation: 4,
+  inactivite: 3,
+  limite: 4,
+  automatisation: 5,
 };
 
 /** Minuscule initiale, pour composer une phrase autour d'un titre de mission. */
@@ -154,44 +182,72 @@ function lower(text: string): string {
 /**
  * Ce qui demande une attention humaine, et rien d'autre.
  *
- * Chaque problème n'apparaît qu'une fois : une mission au budget presque atteint qui
- * porte déjà une demande de dépassement produit une seule ligne, pas deux. Une
- * automatisation dont la dernière exécution a créé une mission déjà listée ne remonte
- * pas non plus.
+ * Chaque problème n'apparaît qu'une fois. Une mission qui touche plusieurs garde-fous
+ * à la fois — durée presque écoulée, dernière tentative, plus aucun signe de vie —
+ * produit une seule ligne : la raison la plus pressante en titre, les autres en
+ * complément. Une mission qui porte déjà une demande de prolongation ne produit pas
+ * non plus deux lignes. Une automatisation dont la dernière exécution a créé une
+ * mission déjà listée ne remonte pas.
  */
 export function attentionItems(data: Dataset, viewer: Person): AttentionItem[] {
   const items: AttentionItem[] = [];
   const seenMissions = new Set<string>();
-  const budgetDecisionMissions = new Set<string>();
+  const prolongationMissions = new Set<string>();
 
   const pending = pendingDecisions(data, viewer);
   const visible = visibleMissions(data, viewer);
 
-  // 1. Budget ou durée presque atteints, avec la demande de dépassement s'il y en a une.
+  // 1. Missions en cours qui touchent un garde-fou : inactivité, durée, tentatives.
   for (const mission of visible) {
     if (mission.status !== "en_cours") continue;
-    const budgetRatio = ratio(mission.budget.spentEur, mission.budget.capEur);
-    const durationRatio = ratio(mission.duration.elapsedMin, mission.duration.capMin);
-    if (budgetRatio < 0.85 && durationRatio < 0.85) continue;
 
+    const durationRatio = ratio(mission.duration.elapsedMin, mission.duration.capMin);
+    const idleMin = minutesSince(mission.lastActivityAt);
+    const stalled = idleMin >= STALE_AFTER_MIN;
+    const lastAttempt = isLastAttempt(mission);
+    if (!stalled && durationRatio < 0.85 && !lastAttempt) continue;
+
+    const title = lower(mission.title);
+    const active = activeAgentCount(mission);
+
+    // Ordre d'urgence : plus rien ne bouge, puis le temps, puis les reprises.
+    const reasons: { kind: AttentionKind; headline: string; detail: string }[] = [];
+    if (stalled) {
+      reasons.push({
+        kind: "inactivite",
+        headline: `Mission inactive : ${title}`,
+        detail: `Aucune activité depuis ${formatDuration(idleMin)}, avec ${plural(active, "exécutant actif", "exécutants actifs")}.`,
+      });
+    }
+    if (durationRatio >= 0.85) {
+      reasons.push({
+        kind: "limite",
+        headline: `Durée presque atteinte : ${title}`,
+        detail: `${Math.round(durationRatio * 100)} % du temps alloué écoulé. Sans prolongation, la mission s'arrête d'elle-même à la limite.`,
+      });
+    }
+    if (lastAttempt) {
+      reasons.push({
+        kind: "limite",
+        headline: `Dernière tentative : ${title}`,
+        detail: `Tentative ${mission.attempts.current} sur ${mission.attempts.max}. Il n'en reste aucune si celle-ci n'aboutit pas.`,
+      });
+    }
+
+    const [main, ...rest] = reasons;
     const decision = pending.find(
-      (item) => item.missionId === mission.id && item.kind === "depassement_budget",
+      (item) => item.missionId === mission.id && item.kind === "prolongation",
     );
-    if (decision) budgetDecisionMissions.add(mission.id);
+    if (decision) prolongationMissions.add(mission.id);
     seenMissions.add(mission.id);
 
-    const overBudget = budgetRatio >= durationRatio;
     items.push({
-      id: `att-budget-${mission.id}`,
-      kind: "budget",
-      headline: overBudget
-        ? `Budget presque atteint : ${lower(mission.title)}`
-        : `Durée presque atteinte : ${lower(mission.title)}`,
-      detail: overBudget
-        ? `${Math.round(budgetRatio * 100)} % du budget consommé. La mission s'arrêtera d'elle-même au plafond.`
-        : `${Math.round(durationRatio * 100)} % du temps alloué écoulé.`,
+      id: `att-limite-${mission.id}`,
+      kind: main.kind,
+      headline: main.headline,
+      detail: [main.detail, ...rest.map((reason) => reason.detail)].join(" "),
       href: `/missions/${mission.id}`,
-      tone: "attention",
+      tone: main.kind === "inactivite" ? "danger" : "attention",
       at: mission.lastActivityAt,
       projectId: mission.projectId,
       missionId: mission.id,
@@ -201,7 +257,7 @@ export function attentionItems(data: Dataset, viewer: Person): AttentionItem[] {
 
   // 2. Décisions en attente.
   for (const decision of pending) {
-    if (budgetDecisionMissions.has(decision.missionId)) continue;
+    if (prolongationMissions.has(decision.missionId)) continue;
     seenMissions.add(decision.missionId);
     items.push({
       id: `att-dec-${decision.id}`,
@@ -336,9 +392,16 @@ export function pulseSnapshot(data: Dataset, viewer: Person): PulseSnapshot {
   const pending = pendingDecisions(data, viewer);
   const autos = visibleAutomations(data, viewer);
 
-  const active = forViewer.filter((mission) => mission.status === "en_cours");
+  // Une mission qui ne donne plus signe de vie n'est pas active : c'est un incident.
+  // La compter ailleurs rendrait le Pouls rassurant à tort.
+  const active = forViewer.filter(
+    (mission) => mission.status === "en_cours" && !isStalled(mission),
+  );
   const incidents = forViewer.filter(
-    (mission) => mission.status === "bloquee" || mission.status === "echouee",
+    (mission) =>
+      mission.status === "bloquee" ||
+      mission.status === "echouee" ||
+      isStalled(mission),
   );
   const failingAutomations = autos.filter(
     (automation) => automation.health === "en_echec",
@@ -490,11 +553,54 @@ export function isNotableRun(run: AutomationRun): boolean {
 }
 
 /* ------------------------------------------------------------------ */
-/* Budget agent consommé par projet                                    */
+/* Activité des agents sur un projet                                   */
 /* ------------------------------------------------------------------ */
 
-export function projectSpend(data: Dataset, projectId: string): number {
-  return data.missions
-    .filter((mission) => mission.projectId === projectId)
-    .reduce((total, mission) => total + mission.budget.spentEur, 0);
+/**
+ * Recalculée à chaque affichage à partir des missions du projet — jamais stockée, donc
+ * jamais en contradiction avec la liste affichée juste à côté.
+ *
+ * Le taux de réussite ne porte que sur ce que les agents ont mené à son terme ou raté.
+ * Une mission annulée est une décision humaine : elle compte dans les interventions,
+ * pas dans les échecs.
+ */
+export function projectAgentActivity(data: Dataset, projectId: string): AgentActivity {
+  const forProject = data.missions.filter(
+    (mission) => mission.projectId === projectId,
+  );
+
+  const closed = forProject.filter(
+    (mission) => mission.status === "terminee" || mission.status === "echouee",
+  );
+  const succeeded = closed.filter((mission) => mission.status === "terminee");
+  const cancelled = forProject.filter((mission) => mission.status === "annulee");
+
+  const durations = closed
+    .map((mission) => mission.duration.elapsedMin)
+    .sort((a, b) => a - b);
+  const middle = Math.floor(durations.length / 2);
+  const medianDurationMin =
+    durations.length === 0
+      ? null
+      : durations.length % 2 === 1
+        ? durations[middle]
+        : Math.round((durations[middle - 1] + durations[middle]) / 2);
+
+  const instructions = forProject.reduce(
+    (total, mission) =>
+      total + mission.activity.filter((event) => event.kind === "instruction").length,
+    0,
+  );
+  const resolvedDecisions = data.decisions.filter(
+    (decision) => decision.projectId === projectId && decision.state !== "en_attente",
+  ).length;
+
+  return {
+    missionCount: forProject.length,
+    closedCount: closed.length,
+    successRate: closed.length === 0 ? null : succeeded.length / closed.length,
+    medianDurationMin,
+    humanInterventions: instructions + resolvedDecisions + cancelled.length,
+    blockedMissions: forProject.filter((mission) => mission.status === "bloquee").length,
+  };
 }

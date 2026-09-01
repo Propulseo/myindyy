@@ -4,7 +4,7 @@ import { cn } from "@/components/primitives/cn";
 import { StatusMark, StatusPill, StatusRail } from "@/components/status/StatusMark";
 import { SourceTag } from "@/components/status/Meter";
 import { projectsById } from "@/fixtures";
-import { formatDuration, formatEur, formatRelative, formatStamp, plural } from "@/lib/format";
+import { formatDuration, formatRelative, formatStamp, plural } from "@/lib/format";
 import { automationHealthMeta, runOutcomeMeta } from "@/lib/status";
 import type { Automation } from "@/types/domain";
 
@@ -65,8 +65,8 @@ export function AutomationRow({ automation }: { automation: Automation }) {
             </span>
           </span>
           <span>
-            Coût habituel{" "}
-            <span className="text-ivory">{formatEur(automation.typicalCostEur)}</span>
+            Tentatives habituelles{" "}
+            <span className="text-ivory">{automation.typicalAttempts}</span>
           </span>
           <SourceTag source={automation.source} />
         </div>
@@ -88,9 +88,25 @@ export function AutomationRow({ automation }: { automation: Automation }) {
                   <p className="mt-0.5 font-mono text-[0.625rem] text-muted tabular-nums">
                     {formatStamp(run.at)}
                     <span className="mx-1.5 text-line-strong">·</span>
-                    {formatDuration(run.durationMin)}
+                    <span
+                      className={
+                        run.durationMin > automation.typicalDurationMin * 1.5
+                          ? "text-attention"
+                          : undefined
+                      }
+                    >
+                      {formatDuration(run.durationMin)}
+                    </span>
                     <span className="mx-1.5 text-line-strong">·</span>
-                    {formatEur(run.costEur)}
+                    <span
+                      className={
+                        run.attempts > automation.typicalAttempts
+                          ? "text-attention"
+                          : undefined
+                      }
+                    >
+                      {plural(run.attempts, "tentative")}
+                    </span>
                   </p>
                 </div>
                 {run.missionId ? (

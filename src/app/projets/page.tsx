@@ -3,11 +3,16 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import { PageHeading, Section } from "@/components/primitives/Layout";
-import { Meter } from "@/components/status/Meter";
+import { AgentActivitySummary } from "@/components/project/AgentActivity";
 import { ScreenState } from "@/components/shell/ScreenState";
 import { useCockpit } from "@/lib/cockpit";
 import { plural } from "@/lib/format";
-import { visibleMissions, visibleProjects } from "@/lib/selectors";
+import {
+  projectAgentActivity,
+  visibleMissions,
+  visibleProjects,
+} from "@/lib/selectors";
+import type { Dataset } from "@/lib/selectors";
 import type { Project } from "@/types/domain";
 
 const DOMAIN_LABEL = {
@@ -61,6 +66,7 @@ export default function ProjectsPage() {
                     key={project.id}
                     project={project}
                     active={activeCount(project.id)}
+                    data={data}
                   />
                 ))}
               </ul>
@@ -75,6 +81,7 @@ export default function ProjectsPage() {
                     key={project.id}
                     project={project}
                     active={activeCount(project.id)}
+                    data={data}
                   />
                 ))}
               </ul>
@@ -86,7 +93,16 @@ export default function ProjectsPage() {
   );
 }
 
-function ProjectRow({ project, active }: { project: Project; active: number }) {
+function ProjectRow({
+  project,
+  active,
+  data,
+}: {
+  project: Project;
+  active: number;
+  data: Dataset;
+}) {
+  const activity = projectAgentActivity(data, project.id);
   return (
     <li>
       <Link
@@ -112,13 +128,8 @@ function ProjectRow({ project, active }: { project: Project; active: number }) {
           </p>
         </div>
 
-        <div className="w-full shrink-0 sm:w-44">
-          <Meter
-            label="Budget agent"
-            kind="budget"
-            value={project.budgetSpentEur}
-            cap={project.budgetCapEur}
-          />
+        <div className="w-full shrink-0 sm:w-52">
+          <AgentActivitySummary activity={activity} />
         </div>
       </Link>
     </li>

@@ -70,8 +70,8 @@ Trois principes tenus sur tous les écrans :
 
 | État | Jeton | Valeur | Sens |
 |---|---|---|---|
-| Succès | `ok` | `#5FD39B` | Terminé, sain, dans le budget |
-| Attention | `attention` | `#E8B45F` | Attend une validation, dépasse sa durée ou son budget |
+| Succès | `ok` | `#5FD39B` | Terminé, sain, dans ses limites |
+| Attention | `attention` | `#E8B45F` | Attend une validation, approche sa durée ou sa dernière tentative |
 | Échec | `danger` | `#F4796B` | Bloqué, échoué |
 | Attente | `waiting` | `#B49BF0` | En file, planifié, pas encore démarré |
 
@@ -99,13 +99,13 @@ pastille distincte (pleine, anneau, barrée, losange, croix) et un libellé écr
 |---|---|---|---|
 | Serif expressive | **Fraunces** (variable) | SIL Open Font License 1.1 | Titres de page, titres de mission, chiffre de tête. Jamais sous 18 px |
 | Sans-serif d'interface | **Hanken Grotesk** | SIL Open Font License 1.1 | Tout le corps de texte, libellés, boutons |
-| Monospace | **JetBrains Mono** | SIL Open Font License 1.1 | Statuts, durées, budgets, horodatages, sources, références |
+| Monospace | **JetBrains Mono** | SIL Open Font License 1.1 | Statuts, durées, tentatives, horodatages, sources, références |
 
 Les trois sont récupérées et auto-hébergées au moment du build par `next/font/google` :
 aucun appel réseau à l'exécution, aucune dépendance à Google Fonts en production.
 
 Règle de partage : **la serif nomme, la sans explique, la mono mesure.** Un nombre susceptible de
-changer en direct (durée, coût, compteur) est toujours en monospace, pour éviter le tremblement
+changer en direct (durée, tentative, compteur) est toujours en monospace, pour éviter le tremblement
 de la ligne quand la valeur se met à jour.
 
 ---
@@ -195,3 +195,45 @@ Vérification menée contre les réflexes habituels d'un tableau de bord :
 - Les listes annoncent leur nombre d'éléments ; les changements d'état passent par `aria-live`.
 - États **vide**, **chargement** et **erreur** dessinés pour chaque écran, et déclenchables
   depuis Réglages › Démonstration pour pouvoir être présentés.
+
+---
+
+## 9. Garde-fous, pas budget
+
+Codex tourne derrière Indy sur l'abonnement ChatGPT de l'utilisateur. Le cockpit n'a
+donc **aucun coût à afficher** : pas de prix par mission, pas de prix par jeton, pas de
+plafond en euros. Toute référence financière a été retirée du modèle, des fixtures et de
+l'interface.
+
+Ce qui encadre une mission est opérationnel :
+
+| Garde-fou | Où il se voit |
+|---|---|
+| Durée maximale | Jauge sur la mission, colonne de droite des listes, formulaire de création |
+| Nombre maximal de tentatives | Jauge sur la mission, colonne de droite des listes, formulaire de création |
+| Agents en parallèle | Panneau de garde-fous de la mission : actifs sur total, maximum autorisé |
+| Échéance | En-tête de la mission, quand elle en a une |
+| Niveau d'effort | En-tête de la mission, formulaire de création |
+| Dernière activité | Colonne de droite des listes, panneau de garde-fous |
+| Blocage et inactivité | Statut `bloquée`, et remontée automatique au-delà de 45 min sans le moindre évènement |
+
+Trois conséquences sur la logique :
+
+1. La décision sensible « dépassement de budget » devient une **prolongation** :
+   repousser la durée ou accorder une tentative de plus. Elle reste réservée au
+   propriétaire.
+2. Une mission qui ne donne plus signe de vie n'est plus comptée comme *active* dans le
+   Pouls : elle bascule dans les incidents. La compter ailleurs rendrait la bande
+   rassurante à tort.
+3. Sur un projet, « budget agent consommé » devient **activité des agents** : nombre de
+   missions, taux de réussite, durée médiane, interventions humaines, missions bloquées.
+   Tout est recalculé à partir des missions affichées, jamais stocké — les chiffres ne
+   peuvent donc pas contredire la liste juste à côté.
+
+### Utilisation du forfait
+
+Une consommation globale du forfait Codex ne s'affiche **que** si Hermes ou Codex la
+fournit. Aucune estimation n'est fabriquée. Tant que la source ne l'expose pas, Réglages
+affiche un emplacement explicitement vide qui dit pourquoi. Le jour où la donnée existe,
+il suffit de la renseigner dans `src/fixtures/plan.ts` : l'écran bascule seul.
+

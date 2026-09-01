@@ -57,7 +57,7 @@ export function useSensitiveAction(): SensitiveActionValue {
 
 /**
  * Un seul panneau de confirmation pour tout le cockpit : déploiement, publication,
- * communication externe, annulation de mission, dépassement de budget.
+ * communication externe, annulation de mission, prolongation au-delà des garde-fous.
  */
 export function SensitiveActionProvider({ children }: { children: ReactNode }) {
   const [pending, setPending] = useState<SensitiveActionRequest | null>(null);

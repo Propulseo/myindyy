@@ -37,7 +37,7 @@ export const obsidianTasks: ObsidianTask[] = [
     ownerId: "lucas",
     state: "a_faire",
     dueAt: inHours(4),
-    note: "Deux contacts ont déclaré un budget.",
+    note: "Deux contacts ont un besoin daté.",
     source: { system: "obsidian", reference: "Obsidian · tâches/T-4201", syncedAt: minutesAgo(24) },
   },
   {
@@ -108,8 +108,9 @@ export const missionTemplates: MissionTemplate[] = [
     objective:
       "Rassembler les décisions en attente, les missions à surveiller et les rendez-vous de la journée.",
     usedFor: "Chaque matin, avant de commencer",
-    defaultBudgetEur: 0.5,
     defaultDurationMin: 20,
+    defaultAttempts: 1,
+    defaultEffort: "leger",
     defaultAutonomy: "autonome",
   },
   {
@@ -118,8 +119,9 @@ export const missionTemplates: MissionTemplate[] = [
     objective:
       "Cartographier un marché : acteurs, offres, tarifs, positionnement, et en tirer une synthèse.",
     usedFor: "Avant d'ouvrir un nouveau chantier produit",
-    defaultBudgetEur: 3,
     defaultDurationMin: 300,
+    defaultAttempts: 3,
+    defaultEffort: "approfondi",
     defaultAutonomy: "encadree",
   },
   {
@@ -128,8 +130,9 @@ export const missionTemplates: MissionTemplate[] = [
     objective:
       "Structurer une spécification produit et poser les questions restées sans réponse.",
     usedFor: "Au cadrage d'une fonctionnalité",
-    defaultBudgetEur: 2,
     defaultDurationMin: 180,
+    defaultAttempts: 2,
+    defaultEffort: "standard",
     defaultAutonomy: "supervisee",
   },
   {
@@ -138,8 +141,9 @@ export const missionTemplates: MissionTemplate[] = [
     objective:
       "Passer les pages publiques : structure, temps de chargement, maillage, contenus dupliqués.",
     usedFor: "Tous les trimestres, ou après une refonte",
-    defaultBudgetEur: 3,
     defaultDurationMin: 180,
+    defaultAttempts: 2,
+    defaultEffort: "standard",
     defaultAutonomy: "encadree",
   },
   {
@@ -148,8 +152,9 @@ export const missionTemplates: MissionTemplate[] = [
     objective:
       "Reprendre l'historique du compte, lister les opportunités ouvertes et les points de blocage.",
     usedFor: "La veille d'un rendez-vous client",
-    defaultBudgetEur: 2,
     defaultDurationMin: 90,
+    defaultAttempts: 2,
+    defaultEffort: "standard",
     defaultAutonomy: "encadree",
   },
 ];

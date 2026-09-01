@@ -5,18 +5,24 @@ import { useMemo, useRef, useState } from "react";
 import { Check, Lock } from "lucide-react";
 import { Button } from "@/components/primitives/Button";
 import { cn } from "@/components/primitives/cn";
-import { Field, Segmented, SelectInput, TextArea, TextInput } from "@/components/primitives/Form";
+import {
+  Field,
+  Segmented,
+  SelectInput,
+  TextArea,
+} from "@/components/primitives/Form";
 import { Sheet } from "@/components/primitives/Overlay";
 import { StateBlock } from "@/components/primitives/Layout";
 import { missionTemplates } from "@/fixtures";
 import { can } from "@/lib/access";
 import { useCockpit } from "@/lib/cockpit";
-import { formatDuration, formatEur } from "@/lib/format";
+import { formatDuration, plural } from "@/lib/format";
 import { visibleProjects } from "@/lib/selectors";
-import { autonomyMeta } from "@/lib/status";
-import type { AutonomyLevel } from "@/types/domain";
+import { autonomyMeta, effortMeta } from "@/lib/status";
+import type { AutonomyLevel, EffortLevel } from "@/types/domain";
 
 const DURATION_CHOICES = [30, 60, 90, 180, 240, 300, 480];
+const ATTEMPT_CHOICES = [1, 2, 3, 5];
 
 export function NewMissionPanel({
   open,
@@ -37,8 +43,9 @@ export function NewMissionPanel({
   const [objective, setObjective] = useState("");
   const [projectId, setProjectId] = useState(initialProjectId ?? projects[0]?.id ?? "");
   const [templateId, setTemplateId] = useState("");
-  const [budget, setBudget] = useState(3);
   const [duration, setDuration] = useState(180);
+  const [attempts, setAttempts] = useState(2);
+  const [effort, setEffort] = useState<EffortLevel>("standard");
   const [autonomy, setAutonomy] = useState<AutonomyLevel>("encadree");
 
   // Réinitialise le formulaire à chaque ouverture, en tenant compte du projet d'origine.
@@ -49,8 +56,9 @@ export function NewMissionPanel({
     if (open) {
       setObjective("");
       setTemplateId("");
-      setBudget(3);
       setDuration(180);
+      setAttempts(2);
+      setEffort("standard");
       setAutonomy("encadree");
       setProjectId(initialProjectId ?? projects[0]?.id ?? "");
     }
@@ -61,8 +69,9 @@ export function NewMissionPanel({
     const template = missionTemplates.find((item) => item.id === id);
     if (!template) return;
     setObjective(template.objective);
-    setBudget(template.defaultBudgetEur);
     setDuration(template.defaultDurationMin);
+    setAttempts(template.defaultAttempts);
+    setEffort(template.defaultEffort);
     setAutonomy(template.defaultAutonomy);
   }
 
@@ -72,8 +81,9 @@ export function NewMissionPanel({
       objective: objective.trim(),
       projectId,
       templateId: templateId || null,
-      budgetEur: budget,
       durationMin: duration,
+      maxAttempts: attempts,
+      effort,
       autonomy,
     });
     onOpenChange(false);
@@ -150,7 +160,11 @@ export function NewMissionPanel({
               )}
             </Field>
 
-            <Field label="Modèle" optional hint="Pré-remplit les limites et l'autonomie.">
+            <Field
+              label="Modèle"
+              optional
+              hint="Pré-remplit les garde-fous et l'autonomie."
+            >
               {(props) => (
                 <SelectInput
                   {...props}
@@ -167,30 +181,10 @@ export function NewMissionPanel({
               )}
             </Field>
 
-            <Field label="Budget maximum" hint="La mission s'arrête d'elle-même au plafond.">
-              {(props) => (
-                <div className="relative">
-                  <TextInput
-                    {...props}
-                    type="number"
-                    min={0.5}
-                    max={50}
-                    step={0.5}
-                    value={budget}
-                    onChange={(event) => setBudget(Number(event.target.value))}
-                    className="pr-9"
-                  />
-                  <span
-                    aria-hidden
-                    className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 font-mono text-xs text-muted"
-                  >
-                    EUR
-                  </span>
-                </div>
-              )}
-            </Field>
-
-            <Field label="Durée maximum">
+            <Field
+              label="Durée maximale"
+              hint="À la limite, la mission rend la main avec ce qu'elle a produit."
+            >
               {(props) => (
                 <SelectInput
                   {...props}
@@ -205,6 +199,41 @@ export function NewMissionPanel({
                 </SelectInput>
               )}
             </Field>
+
+            <Field
+              label="Tentatives autorisées"
+              hint="Nombre de reprises après une étape en échec."
+            >
+              {(props) => (
+                <SelectInput
+                  {...props}
+                  value={String(attempts)}
+                  onChange={(event) => setAttempts(Number(event.target.value))}
+                >
+                  {ATTEMPT_CHOICES.map((count) => (
+                    <option key={count} value={count}>
+                      {plural(count, "tentative")}
+                    </option>
+                  ))}
+                </SelectInput>
+              )}
+            </Field>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-[0.8125rem] font-medium text-ivory">
+              Niveau d&apos;effort
+            </p>
+            <Segmented
+              ariaLabel="Niveau d'effort"
+              value={effort}
+              onValueChange={setEffort}
+              options={(["leger", "standard", "approfondi"] as const).map((level) => ({
+                value: level,
+                label: effortMeta[level].label,
+                hint: effortMeta[level].hint,
+              }))}
+            />
           </div>
 
           <div className="space-y-2">
@@ -223,41 +252,38 @@ export function NewMissionPanel({
             />
           </div>
 
-          <PermissionSummary
-            autonomy={autonomy}
-            budget={budget}
-            duration={duration}
-          />
+          <PermissionSummary duration={duration} attempts={attempts} />
         </div>
       )}
     </Sheet>
   );
 }
 
-/** Résumé des permissions, affiché avant le lancement. */
+/** Résumé des garde-fous et des permissions, affiché avant le lancement. */
 function PermissionSummary({
-  autonomy,
-  budget,
   duration,
+  attempts,
 }: {
-  autonomy: AutonomyLevel;
-  budget: number;
   duration: number;
+  attempts: number;
 }) {
   const { viewer } = useCockpit();
 
   const rows: { label: string; value: string; allowed: boolean }[] = [
     {
       label: "Arrêt automatique",
-      value: `${formatEur(budget)} ou ${formatDuration(duration)}, au premier atteint`,
+      value: `${formatDuration(duration)} ou ${plural(attempts, "tentative")}, au premier atteint`,
+      allowed: true,
+    },
+    {
+      label: "Exécutants en parallèle",
+      value: "1 au lancement, visible ensuite dans les garde-fous de la mission",
       allowed: true,
     },
     {
       label: "Déploiement en production",
       value: can(viewer, "deploy.production")
-        ? autonomy === "autonome"
-          ? "Autorisé, mais toujours confirmé à la main"
-          : "Demandera votre confirmation"
+        ? "Demandera votre confirmation"
         : "Indisponible pour votre rôle",
       allowed: can(viewer, "deploy.production"),
     },
@@ -269,11 +295,11 @@ function PermissionSummary({
       allowed: can(viewer, "comms.external.send"),
     },
     {
-      label: "Dépassement de budget",
-      value: can(viewer, "budget.override")
-        ? "Vous pourrez l'autoriser au cas par cas"
-        : "Devra être autorisé par le propriétaire",
-      allowed: can(viewer, "budget.override"),
+      label: "Prolongation",
+      value: can(viewer, "limits.override")
+        ? "Vous pourrez repousser la limite au cas par cas"
+        : "Devra être autorisée par le propriétaire",
+      allowed: can(viewer, "limits.override"),
     },
   ];
 

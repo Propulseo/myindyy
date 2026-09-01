@@ -1,8 +1,7 @@
 import { cn } from "@/components/primitives/cn";
-import { formatDuration, formatEur, ratio } from "@/lib/format";
-import { toneClasses, type Tone } from "@/lib/status";
+import { formatDuration, ratio } from "@/lib/format";
+import { sourceMeta, toneClasses, type Tone } from "@/lib/status";
 import type { Provenance } from "@/types/domain";
-import { sourceMeta } from "@/lib/status";
 
 function meterTone(value: number): Tone {
   if (value >= 1) return "danger";
@@ -10,8 +9,15 @@ function meterTone(value: number): Tone {
   return "active";
 }
 
+export type MeterKind = "duree" | "tentatives";
+
+function formatValue(kind: MeterKind, value: number): string {
+  return kind === "duree" ? formatDuration(value) : String(value);
+}
+
 /**
- * Jauge d'un budget ou d'une durée. Deux pixels de haut : elle informe sans décorer.
+ * Jauge d'un garde-fou : la durée écoulée face à sa limite, la tentative en cours
+ * face au nombre autorisé. Deux pixels de haut : elle informe sans décorer.
  * La valeur chiffrée reste en monospace pour ne pas trembler quand elle change.
  */
 export function Meter({
@@ -24,15 +30,15 @@ export function Meter({
   label: string;
   value: number;
   cap: number;
-  kind: "budget" | "duree";
+  kind: MeterKind;
   className?: string;
 }) {
   const filled = ratio(value, cap);
   const tone = meterTone(filled);
   const readable =
-    kind === "budget"
-      ? `${formatEur(value)} sur ${formatEur(cap)}`
-      : `${formatDuration(value)} sur ${formatDuration(cap)}`;
+    kind === "duree"
+      ? `${formatDuration(value)} sur ${formatDuration(cap)}`
+      : `tentative ${value} sur ${cap}`;
 
   return (
     <div className={cn("min-w-0", className)}>
@@ -44,10 +50,10 @@ export function Meter({
             filled >= 0.85 ? toneClasses[tone].text : "text-ivory",
           )}
         >
-          {kind === "budget" ? formatEur(value) : formatDuration(value)}
+          {formatValue(kind, value)}
           <span className="text-muted">
             {" / "}
-            {kind === "budget" ? formatEur(cap) : formatDuration(cap)}
+            {formatValue(kind, cap)}
           </span>
         </span>
       </div>
@@ -104,6 +110,38 @@ export function Progress({
           style={{ width: `${Math.max(2, filled * 100)}%` }}
         />
       </div>
+    </div>
+  );
+}
+
+/** Couple libellé / valeur d'un garde-fou, sans jauge. */
+export function Readout({
+  label,
+  value,
+  tone,
+  hint,
+}: {
+  label: string;
+  value: string;
+  tone?: Tone;
+  hint?: string;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="label-mono">{label}</span>
+      <span className="min-w-0 text-right">
+        <span
+          className={cn(
+            "font-mono text-xs tabular-nums",
+            tone ? toneClasses[tone].text : "text-ivory",
+          )}
+        >
+          {value}
+        </span>
+        {hint ? (
+          <span className="mt-0.5 block text-[0.6875rem] text-muted">{hint}</span>
+        ) : null}
+      </span>
     </div>
   );
 }

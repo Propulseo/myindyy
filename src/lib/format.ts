@@ -26,10 +26,9 @@ const dayTimeFormatter = new Intl.DateTimeFormat(LOCALE, {
   timeZone: TIME_ZONE,
 });
 
-const euro = new Intl.NumberFormat(LOCALE, {
-  style: "currency",
-  currency: "EUR",
-  minimumFractionDigits: 2,
+const percent = new Intl.NumberFormat(LOCALE, {
+  style: "percent",
+  maximumFractionDigits: 0,
 });
 
 /** Écart en minutes entre l'instant de démonstration et une date. Positif = passé. */
@@ -68,9 +67,14 @@ export function formatStamp(iso: string): string {
   return minutesSince(iso) < 60 * 12 ? formatTime(iso) : formatDayTime(iso);
 }
 
-/** « 2,76 € » */
-export function formatEur(value: number): string {
-  return euro.format(value);
+/** « 83 % ». `null` quand la source ne fournit pas la valeur. */
+export function formatPercent(value: number | null): string {
+  return value === null ? "—" : percent.format(value);
+}
+
+/** « tentative 2 sur 3 » */
+export function formatAttempts(current: number, max: number): string {
+  return `tentative ${current} sur ${max}`;
 }
 
 /** « 2 h 48 », « 34 min », « — » */

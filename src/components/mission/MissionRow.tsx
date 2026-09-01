@@ -2,23 +2,28 @@ import Link from "next/link";
 import { cn } from "@/components/primitives/cn";
 import { StatusPill, StatusRail } from "@/components/status/StatusMark";
 import { peopleById, projectsById } from "@/fixtures";
-import { formatDuration, formatEur, formatRelative, ratio } from "@/lib/format";
+import { formatDuration, formatRelative, ratio } from "@/lib/format";
+import { isLastAttempt, isStalled } from "@/lib/selectors";
 import { missionStatusMeta } from "@/lib/status";
 import type { Mission } from "@/types/domain";
 
 /**
  * L'unité de base du cockpit : une ligne, pas une carte.
  *
- * Rail de statut à gauche, titre, ligne de contexte, et à droite les mesures en
- * monospace. Quinze lignes se lisent d'un coup d'œil ; quinze cartes, non.
+ * Rail de statut à gauche, titre, ligne de contexte, et à droite les garde-fous en
+ * monospace : durée écoulée, tentative en cours, dernière activité. Quinze lignes se
+ * lisent d'un coup d'œil ; quinze cartes, non.
  */
 export function MissionRow({ mission }: { mission: Mission }) {
   const meta = missionStatusMeta[mission.status];
   const project = projectsById[mission.projectId];
   const owner = peopleById[mission.ownerId];
   const running = mission.status === "en_cours";
-  const budgetRatio = ratio(mission.budget.spentEur, mission.budget.capEur);
-  const tight = budgetRatio >= 0.85;
+
+  const durationTight =
+    ratio(mission.duration.elapsedMin, mission.duration.capMin) >= 0.85;
+  const attemptsTight = isLastAttempt(mission) && mission.attempts.current > 0;
+  const stalled = isStalled(mission);
 
   return (
     <li>
@@ -29,7 +34,7 @@ export function MissionRow({ mission }: { mission: Mission }) {
           "hover:bg-raised/60",
         )}
       >
-        <StatusRail tone={meta.tone} />
+        <StatusRail tone={stalled ? "danger" : meta.tone} />
 
         <div className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-start sm:gap-4">
           <div className="min-w-0 flex-1">
@@ -47,20 +52,23 @@ export function MissionRow({ mission }: { mission: Mission }) {
             </p>
           </div>
 
-          {/* Une seule pastille : a droite en colonne sur desktop, sur une ligne
+          {/* Une seule pastille : à droite en colonne sur desktop, sur une ligne
               sous le titre sur mobile. */}
           <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 sm:flex-col sm:items-end sm:gap-1.5">
-            <StatusPill meta={meta} live={running} />
+            <StatusPill meta={meta} live={running && !stalled} />
             <span className="font-mono text-[0.6875rem] whitespace-nowrap text-muted tabular-nums">
-              <span className="text-ivory/80">
+              <span className={durationTight ? "text-attention" : "text-ivory/80"}>
                 {formatDuration(mission.duration.elapsedMin)}
               </span>
               <span className="mx-1.5 text-line-strong">·</span>
-              <span className={tight ? "text-attention" : "text-ivory/80"}>
-                {formatEur(mission.budget.spentEur)}
+              <span className={attemptsTight ? "text-attention" : "text-ivory/80"}>
+                {mission.attempts.current}/{mission.attempts.max}
+                <span className="text-muted"> tent.</span>
               </span>
               <span className="mx-1.5 text-line-strong">·</span>
-              {formatRelative(mission.lastActivityAt)}
+              <span className={stalled ? "text-danger" : undefined}>
+                {formatRelative(mission.lastActivityAt)}
+              </span>
             </span>
           </div>
         </div>

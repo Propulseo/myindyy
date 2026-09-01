@@ -4,7 +4,7 @@ import { Check, Lock, Minus } from "lucide-react";
 import { Segmented } from "@/components/primitives/Form";
 import { PageHeading, Section, StateBlock } from "@/components/primitives/Layout";
 import { cn } from "@/components/primitives/cn";
-import { people } from "@/fixtures";
+import { codexPlanUsage, people } from "@/fixtures";
 import { can } from "@/lib/access";
 import { useCockpit, type DisplayState } from "@/lib/cockpit";
 import { sourceMeta } from "@/lib/status";
@@ -17,7 +17,7 @@ const CAPABILITY_ROWS: { capability: Capability; label: string }[] = [
   { capability: "missions.approve", label: "Répondre à une décision" },
   { capability: "deploy.production", label: "Déployer en production" },
   { capability: "comms.external.send", label: "Publier ou envoyer à l'extérieur" },
-  { capability: "budget.override", label: "Autoriser un dépassement de budget" },
+  { capability: "limits.override", label: "Prolonger une mission au-delà de ses limites" },
   { capability: "secrets.view", label: "Voir les identifiants des sources" },
   { capability: "tasks.personal.view", label: "Voir les tâches personnelles" },
   { capability: "projects.viewAll", label: "Voir tous les projets" },
@@ -208,6 +208,43 @@ export default function SettingsPage() {
         </div>
       </Section>
 
+      <Section id="forfait" title="Utilisation du forfait Codex">
+        <div className="space-y-4 py-4">
+          <p className="max-w-2xl text-sm leading-relaxed text-muted">
+            Codex tourne derrière Indy sur l&apos;abonnement ChatGPT de
+            l&apos;utilisateur. Le cockpit ne compte donc aucun coût par mission : ce
+            qu&apos;il encadre, ce sont la durée, les tentatives, les agents en
+            parallèle et l&apos;effort.
+          </p>
+
+          {codexPlanUsage ? (
+            <div className="rounded-md border border-line bg-surface/60 p-4">
+              <p className="label-mono">Consommation globale</p>
+              <p className="mt-1.5 font-mono text-2xl text-ivory tabular-nums">
+                {codexPlanUsage.label}
+              </p>
+              <p className="mt-2 text-xs text-muted">
+                Fourni par {sourceMeta[codexPlanUsage.source.system].label}, sans
+                retraitement.
+              </p>
+            </div>
+          ) : (
+            <div className="rounded-md border border-dashed border-line px-5 py-6">
+              <p className="font-display text-lg text-ivory">
+                Donnée non fournie par la source.
+              </p>
+              <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted">
+                Ni Hermes ni Codex n&apos;exposent aujourd&apos;hui la part de forfait
+                consommée. Indy laisse donc cet emplacement vide plutôt que de
+                l&apos;estimer : un chiffre inventé serait pire qu&apos;une absence de
+                chiffre. Le jour où la source la publiera, elle s&apos;affichera ici
+                telle quelle.
+              </p>
+            </div>
+          )}
+        </div>
+      </Section>
+
       <Section id="identite" title="Identité visuelle">
         <div className="grid gap-6 py-4 lg:grid-cols-2">
           <div>
@@ -228,7 +265,7 @@ export default function SettingsPage() {
               <TypeRow
                 role="Données"
                 family="JetBrains Mono"
-                sample="2 h 48 · 1,84 € · M-248"
+                sample="2 h 48 · tentative 1/2 · M-248"
                 className="font-mono text-xs"
               />
             </dl>
@@ -278,6 +315,7 @@ export default function SettingsPage() {
         <ul className="space-y-2.5 py-4">
           {[
             "Aucun backend, aucune base de données, aucun appel réseau vers les systèmes réels.",
+            "Aucun coût affiché : Codex tourne sur l'abonnement de l'utilisateur, et le cockpit n'estime rien.",
             "Les données sont fictives et figées à une journée de démonstration.",
             "Les actions modifient l'écran, elles ne déclenchent rien à l'extérieur.",
             "Le sélecteur de rôle simule un point de vue, ce n'est pas une authentification.",

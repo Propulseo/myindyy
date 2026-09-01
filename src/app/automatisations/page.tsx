@@ -20,7 +20,7 @@ export default function AutomationsPage() {
     <div className="space-y-8">
       <PageHeading
         title="Automatisations"
-        lede="Les missions qui reviennent d'elles-mêmes. Une automatisation saine reste silencieuse : elle ne remonte sur Aujourd'hui que si elle échoue, détecte quelque chose, demande une décision, ou sort de sa durée ou de son budget habituels."
+        lede="Les missions qui reviennent d'elles-mêmes. Une automatisation saine reste silencieuse : elle ne remonte sur Aujourd'hui que si elle échoue, se bloque, détecte quelque chose, demande une décision, dépasse sa durée habituelle ou multiplie les tentatives."
       />
 
       <ScreenState

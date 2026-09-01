@@ -10,7 +10,8 @@ const SHAPE_BY_KIND: Record<AttentionItem["kind"], Shape> = {
   decision: "diamond",
   blocage: "bar",
   echec: "cross",
-  budget: "bar",
+  inactivite: "ring",
+  limite: "bar",
   automatisation: "diamond",
 };
 
@@ -18,7 +19,8 @@ const KIND_LABEL: Record<AttentionItem["kind"], string> = {
   decision: "Décision",
   blocage: "Blocage",
   echec: "Échec",
-  budget: "Limite",
+  inactivite: "Inactivité",
+  limite: "Garde-fou",
   automatisation: "Signalement",
 };
 

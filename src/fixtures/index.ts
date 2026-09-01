@@ -10,6 +10,7 @@ export { automations, automationsById } from "./automations";
 export { decisions, decisionsById } from "./decisions";
 export { deliverables, deliverablesById } from "./deliverables";
 export { missions, missionsById } from "./missions";
+export { codexPlanUsage } from "./plan";
 export { people, peopleById } from "./people";
 export { projects, projectsById } from "./projects";
 export { missionTemplates, obsidianTasks } from "./tasks";

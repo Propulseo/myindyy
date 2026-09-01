@@ -1,6 +1,8 @@
 import type {
+  AgentState,
   AutomationHealth,
   DecisionKind,
+  EffortLevel,
   MissionStatus,
   RunOutcome,
   SourceSystem,
@@ -141,7 +143,7 @@ export const automationHealthMeta: Record<AutomationHealth, StatusMeta> = {
     label: "À surveiller",
     tone: "attention",
     shape: "diamond",
-    hint: "Une détection ou un dépassement récent",
+    hint: "Une détection, une durée dépassée ou des tentatives répétées",
   },
   en_echec: {
     label: "En échec",
@@ -165,20 +167,37 @@ export const runOutcomeMeta: Record<RunOutcome, StatusMeta> = {
     shape: "diamond",
     hint: "Attend une réponse humaine",
   },
-  depassement: {
-    label: "Hors de son habitude",
+  duree: {
+    label: "Plus longue que d'habitude",
     tone: "attention",
     shape: "bar",
-    hint: "Durée ou budget nettement au-dessus de la moyenne",
+    hint: "Durée nettement au-dessus de son habitude",
+  },
+  tentatives: {
+    label: "Tentatives multipliées",
+    tone: "attention",
+    shape: "bar",
+    hint: "A dû reprendre plusieurs fois pour aboutir",
+  },
+  blocage: {
+    label: "Bloquée",
+    tone: "danger",
+    shape: "bar",
+    hint: "S'est arrêtée sans pouvoir continuer",
   },
   echec: { label: "Échec", tone: "danger", shape: "cross", hint: "Interrompue par une erreur" },
 };
 
-/** Une exécution ne remonte sur « Aujourd'hui » que si elle sort de l'ordinaire. */
+/**
+ * Une exécution ne remonte sur « Aujourd'hui » que si elle sort de l'ordinaire :
+ * échec, blocage, décision demandée, durée dépassée, tentatives multipliées.
+ */
 export const notableOutcomes: RunOutcome[] = [
   "detection",
   "decision",
-  "depassement",
+  "duree",
+  "tentatives",
+  "blocage",
   "echec",
 ];
 
@@ -224,10 +243,10 @@ export const decisionKindMeta: Record<
     confirmLabel: "Annuler la mission",
     tone: "danger",
   },
-  depassement_budget: {
-    label: "Dépassement de budget",
-    verb: "Autoriser",
-    confirmLabel: "Autoriser le dépassement",
+  prolongation: {
+    label: "Prolongation d'une mission",
+    verb: "Prolonger",
+    confirmLabel: "Prolonger la mission",
     tone: "attention",
   },
 };
@@ -252,6 +271,34 @@ export const autonomyMeta = {
   },
   autonome: {
     label: "Autonome",
-    hint: "Va au bout sans interruption, dans la limite du budget et de la durée.",
+    hint: "Va au bout sans interruption, dans la limite de la durée et des tentatives.",
   },
 } as const;
+
+/** Combien la mission a le droit de creuser avant de rendre la main. */
+export const effortMeta: Record<EffortLevel, { label: string; hint: string }> = {
+  leger: {
+    label: "Léger",
+    hint: "Va au plus direct, explore peu.",
+  },
+  standard: {
+    label: "Standard",
+    hint: "Explore, vérifie, reprend une fois si nécessaire.",
+  },
+  approfondi: {
+    label: "Approfondi",
+    hint: "Explore largement et contrôle son travail. Plus long.",
+  },
+};
+
+export const agentStateMeta: Record<AgentState, StatusMeta> = {
+  actif: { label: "Actif", tone: "active", shape: "filled", hint: "Travaille en ce moment" },
+  en_attente: {
+    label: "En attente",
+    tone: "waiting",
+    shape: "ring",
+    hint: "Prêt, attend son tour",
+  },
+  termine: { label: "Terminé", tone: "success", shape: "filled", hint: "A fini sa part" },
+  arrete: { label: "Arrêté", tone: "neutral", shape: "dash", hint: "N'a pas repris la main" },
+};

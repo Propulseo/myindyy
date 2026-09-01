@@ -3,6 +3,11 @@
  *
  * Indy n'est la source de vérité de rien : il agrège. Chaque objet porte donc une
  * `Provenance` qui dit d'où l'information vient et quand elle a été synchronisée.
+ *
+ * Codex tourne derrière Indy sur l'abonnement de l'utilisateur : le cockpit ne
+ * compte donc aucun coût. Ce qu'il encadre et ce qu'il montre sont des garde-fous
+ * opérationnels — durée, tentatives, agents en parallèle, échéance, niveau d'effort,
+ * dernière activité, blocage et inactivité.
  */
 
 export type SourceSystem =
@@ -40,8 +45,8 @@ export type Capability =
   | "deploy.production"
   /** Publier ou envoyer une communication vers l'extérieur. */
   | "comms.external.send"
-  /** Autoriser un dépassement de budget. */
-  | "budget.override"
+  /** Prolonger une mission au-delà de sa durée ou de ses tentatives. */
+  | "limits.override"
   /** Voir les identifiants et jetons des sources connectées. */
   | "secrets.view"
   /** Voir les tâches personnelles du propriétaire. */
@@ -78,10 +83,25 @@ export interface Project {
   summary: string;
   ownerId: PersonId;
   memberIds: PersonId[];
-  budgetSpentEur: number;
-  budgetCapEur: number;
   connectedSources: SourceSystem[];
   source: Provenance;
+}
+
+/**
+ * Activité des agents sur un projet. Entièrement recalculée à partir des missions
+ * affichées, jamais stockée : les chiffres ne peuvent pas contredire la liste.
+ */
+export interface AgentActivity {
+  missionCount: number;
+  /** Missions closes, base du taux de réussite. */
+  closedCount: number;
+  /** Entre 0 et 1. `null` tant qu'aucune mission n'est close. */
+  successRate: number | null;
+  /** Médiane des durées des missions closes, en minutes. `null` si aucune. */
+  medianDurationMin: number | null;
+  /** Instructions humaines et décisions tranchées. */
+  humanInterventions: number;
+  blockedMissions: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -99,6 +119,9 @@ export type MissionStatus =
 
 export type AutonomyLevel = "supervisee" | "encadree" | "autonome";
 
+/** Combien la mission a le droit de creuser avant de rendre la main. */
+export type EffortLevel = "leger" | "standard" | "approfondi";
+
 export type StepState = "done" | "current" | "todo" | "failed" | "skipped";
 
 export interface MissionStep {
@@ -110,6 +133,8 @@ export interface MissionStep {
   durationMin?: number;
 }
 
+export type AgentState = "actif" | "en_attente" | "termine" | "arrete";
+
 /**
  * Un exécutant. On le nomme par ce qu'il fait dans la mission, pas par son modèle :
  * le modèle est une donnée de diagnostic.
@@ -119,7 +144,9 @@ export interface MissionAgent {
   role: string;
   model: string;
   stepIds: string[];
-  costEur: number;
+  state: AgentState;
+  /** Nombre de tentatives déjà consommées par cet exécutant. */
+  attempts: number;
 }
 
 export type ActivityKind =
@@ -158,11 +185,18 @@ export interface Mission {
   ownerId: PersonId;
   automationId?: string;
   autonomy: AutonomyLevel;
+  effort: EffortLevel;
   startedAt?: string;
   lastActivityAt: string;
+  /** Échéance attendue, quand la mission en a une. */
+  dueAt?: string;
   progress: { done: number; total: number; unit: string };
+  /** Garde-fou de temps : temps écoulé et limite. */
   duration: { elapsedMin: number; capMin: number };
-  budget: { spentEur: number; capEur: number };
+  /** Garde-fou de reprise : tentative en cours et maximum autorisé. */
+  attempts: { current: number; max: number };
+  /** Nombre d'exécutants que la mission peut faire travailler en même temps. */
+  parallelAgents: number;
   steps: MissionStep[];
   agents: MissionAgent[];
   activity: ActivityEvent[];
@@ -181,7 +215,8 @@ export type DecisionKind =
   | "publication"
   | "communication_externe"
   | "annulation_mission"
-  | "depassement_budget";
+  /** Repousser la durée ou les tentatives d'une mission arrivée à sa limite. */
+  | "prolongation";
 
 export type DecisionState = "en_attente" | "approuvee" | "refusee";
 
@@ -192,10 +227,10 @@ export interface Decision {
   kind: DecisionKind;
   /** Ce que l'on s'apprête à faire, en une ligne. */
   title: string;
-  /** La cible exacte : un domaine, une liste, un dépôt. */
+  /** La cible exacte : un domaine, une liste, un dépôt, une mission. */
   target: string;
   environment: string;
-  /** Révision de code, ou extrait du contenu qui partira. */
+  /** Révision de code, extrait du contenu, ou état exact des garde-fous. */
   revision: string;
   /** Ce qui se produit une fois confirmé. Jamais « Êtes-vous sûr ? ». */
   consequence: string;
@@ -236,11 +271,17 @@ export interface Deliverable {
 
 export type AutomationHealth = "saine" | "attention" | "en_echec";
 
+/**
+ * Ce qu'une exécution a produit. Tout sauf `ok` remonte sur « Aujourd'hui » :
+ * échec, blocage, décision demandée, durée dépassée, tentatives multipliées.
+ */
 export type RunOutcome =
   | "ok"
   | "detection"
   | "decision"
-  | "depassement"
+  | "duree"
+  | "tentatives"
+  | "blocage"
   | "echec";
 
 export interface AutomationRun {
@@ -248,7 +289,8 @@ export interface AutomationRun {
   at: string;
   outcome: RunOutcome;
   durationMin: number;
-  costEur: number;
+  /** Tentatives consommées par cette exécution. */
+  attempts: number;
   note?: string;
   missionId?: string;
 }
@@ -264,8 +306,9 @@ export interface Automation {
   health: AutomationHealth;
   runCount: number;
   lastRunAt: string;
+  /** Repères de normalité, pour dire quand une exécution en sort. */
   typicalDurationMin: number;
-  typicalCostEur: number;
+  typicalAttempts: number;
   runs: AutomationRun[];
   source: Provenance;
 }
@@ -298,7 +341,27 @@ export interface MissionTemplate {
   name: string;
   objective: string;
   usedFor: string;
-  defaultBudgetEur: number;
   defaultDurationMin: number;
+  defaultAttempts: number;
+  defaultEffort: EffortLevel;
   defaultAutonomy: AutonomyLevel;
+}
+
+/* ------------------------------------------------------------------ */
+/* Utilisation du forfait Codex                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Consommation globale du forfait Codex.
+ *
+ * Indy ne la calcule pas et ne l'estime pas : il l'affiche seulement si Hermes ou
+ * Codex la fournit. Tant que la valeur vaut `null`, l'écran dit qu'elle n'est pas
+ * exposée, plutôt que d'inventer un chiffre.
+ */
+export interface PlanUsage {
+  /** Libellé fourni tel quel par la source, jamais reconstruit. */
+  label: string;
+  /** Entre 0 et 1, uniquement si la source la donne. */
+  ratio: number | null;
+  source: Provenance;
 }

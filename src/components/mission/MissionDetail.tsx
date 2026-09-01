@@ -15,18 +15,26 @@ import { Button } from "@/components/primitives/Button";
 import { cn } from "@/components/primitives/cn";
 import { TextArea } from "@/components/primitives/Form";
 import { KeyValue, Section, StateBlock } from "@/components/primitives/Layout";
-import { Meter, Progress, SourceTag } from "@/components/status/Meter";
+import { Meter, Progress, Readout, SourceTag } from "@/components/status/Meter";
 import { StatusMark, StatusPill } from "@/components/status/StatusMark";
 import { DeliverableRow } from "@/components/data/Rows";
 import { useSensitiveAction } from "@/components/decision/SensitiveAction";
 import { peopleById, projectsById } from "@/fixtures";
 import { can } from "@/lib/access";
 import { useCockpit } from "@/lib/cockpit";
-import { formatDayTime, formatRelative, formatStamp } from "@/lib/format";
-import { visibleDeliverables, visibleMissions } from "@/lib/selectors";
+import { formatDayTime, formatDuration, formatRelative, formatStamp, minutesSince } from "@/lib/format";
 import {
+  STALE_AFTER_MIN,
+  activeAgentCount,
+  isStalled,
+  visibleDeliverables,
+  visibleMissions,
+} from "@/lib/selectors";
+import {
+  agentStateMeta,
   autonomyMeta,
   decisionKindMeta,
+  effortMeta,
   missionStatusMeta,
   stepStateMeta,
   toneClasses,
@@ -158,6 +166,14 @@ function MissionScreen({
           </KeyValue>
           <KeyValue label="Responsable">{owner?.name}</KeyValue>
           <KeyValue label="Autonomie">{autonomyMeta[mission.autonomy].label}</KeyValue>
+          <KeyValue label="Niveau d'effort">{effortMeta[mission.effort].label}</KeyValue>
+          {mission.dueAt ? (
+            <KeyValue label="Échéance">
+              <span className="font-mono text-[0.8125rem]">
+                {formatDayTime(mission.dueAt)}
+              </span>
+            </KeyValue>
+          ) : null}
           <KeyValue label="Dernière synchronisation">
             <span className="font-mono text-[0.8125rem]">
               {formatDayTime(mission.source.syncedAt)}
@@ -409,6 +425,10 @@ function Overview({
   mission: Mission;
   deliverables: number;
 }) {
+  const activeAgents = activeAgentCount(mission);
+  const stalled = isStalled(mission);
+  const idleMin = minutesSince(mission.lastActivityAt);
+
   return (
     <div className="grid gap-8 lg:grid-cols-[1.4fr_1fr]">
       <div className="space-y-8">
@@ -458,17 +478,31 @@ function Overview({
             </p>
           ) : (
             <ul className="divide-y divide-line">
-              {mission.agents.map((agent) => (
-                <li key={agent.id} className="flex items-baseline gap-3 py-2.5">
-                  <span className="min-w-0 flex-1 text-[0.8125rem] text-ivory">
-                    {agent.role}
-                  </span>
-                  <span className="font-mono text-[0.625rem] text-muted">
-                    {agent.stepIds.length} étape
-                    {agent.stepIds.length > 1 ? "s" : ""}
-                  </span>
-                </li>
-              ))}
+              {mission.agents.map((agent) => {
+                const state = agentStateMeta[agent.state];
+                return (
+                  <li key={agent.id} className="flex items-start gap-3 py-2.5">
+                    <StatusMark
+                      shape={state.shape}
+                      tone={state.tone}
+                      live={agent.state === "actif"}
+                      className="mt-0.5 shrink-0"
+                    />
+                    <span className="min-w-0 flex-1 text-[0.8125rem] text-ivory">
+                      {agent.role}
+                      <span className="ml-2 font-mono text-[0.625rem] text-muted">
+                        {state.label.toLowerCase()}
+                      </span>
+                    </span>
+                    <span className="shrink-0 font-mono text-[0.625rem] whitespace-nowrap text-muted">
+                      {agent.stepIds.length} étape
+                      {agent.stepIds.length > 1 ? "s" : ""}
+                      <span className="mx-1.5 text-line-strong">·</span>
+                      {agent.attempts} tent.
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </Section>
@@ -476,22 +510,38 @@ function Overview({
 
       <div className="space-y-6">
         <div className="space-y-5 rounded-md border border-line bg-surface/60 p-4">
+          <p className="label-mono">Garde-fous</p>
           <Progress
             done={mission.progress.done}
             total={mission.progress.total}
             unit={mission.progress.unit}
           />
           <Meter
-            label="Budget"
-            kind="budget"
-            value={mission.budget.spentEur}
-            cap={mission.budget.capEur}
-          />
-          <Meter
             label="Durée"
             kind="duree"
             value={mission.duration.elapsedMin}
             cap={mission.duration.capMin}
+          />
+          <Meter
+            label="Tentative"
+            kind="tentatives"
+            value={mission.attempts.current}
+            cap={mission.attempts.max}
+          />
+          <Readout
+            label="Agents actifs"
+            value={`${activeAgents} / ${mission.agents.length}`}
+            hint={`${mission.parallelAgents} en parallèle au maximum`}
+          />
+          <Readout
+            label="Dernière activité"
+            value={formatRelative(mission.lastActivityAt)}
+            tone={stalled ? "danger" : undefined}
+            hint={
+              stalled
+                ? `sans signe de vie depuis ${formatDuration(idleMin)}`
+                : undefined
+            }
           />
         </div>
 
@@ -634,7 +684,8 @@ function Diagnostics({ mission }: { mission: Mission }) {
       <p className="max-w-2xl text-sm leading-relaxed text-muted">
         Le détail technique vit ici, et nulle part ailleurs : identifiants d&apos;exécution,
         profils, garde-fous déclenchés, mesures brutes. Le reste du cockpit en est
-        volontairement débarrassé.
+        volontairement débarrassé. Une mission en cours est signalée comme inactive
+        au-delà de {STALE_AFTER_MIN} minutes sans le moindre évènement.
       </p>
 
       <Section title="Journal d'exécution" count={mission.diagnostics.length}>
@@ -667,7 +718,7 @@ function Diagnostics({ mission }: { mission: Mission }) {
               <span className="text-[0.8125rem] text-ivory">{agent.role}</span>
               <span className="font-mono text-[0.6875rem] text-muted">{agent.model}</span>
               <span className="ml-auto font-mono text-[0.6875rem] text-muted tabular-nums">
-                {agent.costEur.toFixed(2)} EUR
+                state={agent.state} attempts={agent.attempts}
               </span>
             </li>
           ))}
