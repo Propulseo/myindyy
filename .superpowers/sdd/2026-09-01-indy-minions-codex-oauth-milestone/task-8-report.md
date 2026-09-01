@@ -74,3 +74,35 @@ La première passe risquait de transformer chaque priorité en carte interchange
 - `git diff --check` → aucune erreur.
 - `TaskDetailPage.tsx` atteint 341 lignes après intégration du rafraîchissement durable ; il reste sous le maximum autorisé de 350. Les deux zones de layout ont été extraites pour contenir cette croissance.
 - Auto-revue : une réponse réseau ancienne ne peut pas remplacer une révision SSE récente ; un événement board provoque au plus un fetch dans la page actuellement montée ; aucun état de succès local n’est simulé.
+
+## Fix round 2/5 — 2026-09-02
+
+### RED / GREEN
+
+- RED ciblé : le premier passage exécutable produit 5 fichiers en échec, 8 assertions rouges et 7 vertes. Les régressions reproduisent la réponse sœur abandonnée dans le batch Today, la navigation Detail bloquée entre deux missions à révision identique, le rail qui ne vieillit pas, le temps relatif anglais et le fallback de création absent. La nouvelle suite `useTasks` a d’abord révélé un prérequis jsdom (`localStorage`) corrigé dans son en-tête de test.
+- GREEN ciblé : `useTasks`, `TodayPage`, `TaskDetailPage`, `format` et `NewTaskPage` passent, 17 tests sur 17.
+- GREEN final après extraction de l’horloge : suite complète de 16 fichiers, 85 tests sur 85.
+
+### Corrections
+
+- Les snapshots `fetchTasks` initiaux et de reconnexion passent par `applyTaskSnapshot`. Une progression monotone de `updated_at` ou `last_agent_response_at` invalide l’historique durable, y compris lorsqu’un run terminé pendant la coupure n’apparaît plus dans le snapshot des runs actifs.
+- Le batch Today utilise une identité propre à chaque mission et révision. La résolution d’une requête ne rend plus obsolètes ses sœurs ; une réponse d’une ancienne identité ne peut pas remplacer la version courante.
+- Detail déduplique les requêtes avec la clé composée `taskId:revision`. Deux missions partageant la même révision chargent chacune leur historique, et le store continue de rejeter une réponse de révision périmée.
+- Une horloge partagée programme un seul timer sur la prochaine frontière réelle du rail. Elle bascule automatiquement `fresh` vers `warm` à 15 minutes puis `stale` à 45 minutes, sans animation supplémentaire ; la règle `prefers-reduced-motion` existante reste applicable au seul mouvement live.
+- `timeAgo` est désormais un formateur français commun et testable avec une horloge injectée. Le fallback de création visible devient « Impossible de créer la mission ».
+
+### Fichiers et vérifications
+
+- Créés : `useFreshnessClock.ts`, `useTasks.test.ts`, `TaskDetailPage.test.tsx`, `format.test.ts`, `NewTaskPage.test.ts`.
+- Modifiés : `useTasks.ts`, `TodayPage.tsx` et son test, `TaskDetailPage.tsx`, `NewTaskPage.tsx`, `format.ts`.
+- `pnpm test` → 16 fichiers, 85 tests PASS.
+- `pnpm typecheck` → TypeScript serveur et client, exit 0.
+- `pnpm build` → serveur, client et assets, exit 0 ; 2 600 modules transformés.
+- `git diff --check` → aucune erreur. `TodayPage.tsx` redescend à 227 lignes après extraction ; `TaskDetailPage.tsx` reste à 343 lignes, sous le maximum documenté de 350.
+
+### Auto-revue
+
+- Les invalidations de snapshot sont limitées aux signaux serveur strictement plus récents : un snapshot identique ne crée ni fetch ni boucle.
+- Les gardes asynchrones sont séparées par mission ; le nettoyage ne supprime une entrée que si son identité correspond encore à la requête terminée.
+- Le timer de fraîcheur est unique pour toute la page, s’arrête quand toutes les missions sont anciennes ou sans activité, et ses deux frontières exactes sont couvertes avec de faux timers.
+- Aucun succès optimiste, fixture ou état de run inventé n’a été ajouté. Préoccupation inchangée et hors Task 8 : Vite avertit toujours sur le chunk global historique `index` à environ 671 kB gzip.

@@ -18,6 +18,10 @@ function draftFromLocationState(state: unknown): string {
   return typeof draft === 'string' ? draft : '';
 }
 
+export function createTaskErrorMessage(error: unknown): string {
+  return toErrorMessage(error, 'Impossible de créer la mission');
+}
+
 export function NewTaskPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -104,7 +108,7 @@ export function NewTaskPage() {
         },
       });
     } catch (err) {
-      setUploadError(toErrorMessage(err, 'Failed to create task'));
+      setUploadError(createTaskErrorMessage(err));
       setIsCreating(false);
     }
   }, [uploadBlocksSend, input, isCreating, model, navigate, pendingFiles, reasoningEffort, runtimeReady, submitWithAttachments, setUploadError]);

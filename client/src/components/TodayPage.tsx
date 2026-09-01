@@ -2,29 +2,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, CircleAlert, CircleDot, Plus } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { MissionRun, Task } from '@shared/types';
+import { activityFreshness, type ActivityFreshness, useFreshnessClock } from '../hooks/useFreshnessClock';
 import { fetchMessages, fetchRuntime, type RuntimeStatus } from '../lib/api';
 import { useStore } from '../lib/store';
 import { RuntimeBadge } from './RuntimeBadge';
 
 export type Priority = 'decision' | 'blocked' | 'running' | 'review';
-export type ActivityFreshness = 'fresh' | 'warm' | 'stale';
-
-const FIFTEEN_MINUTES_MS = 15 * 60_000;
-const FORTY_FIVE_MINUTES_MS = 45 * 60_000;
 
 const FRESHNESS_LABEL: Record<ActivityFreshness, string> = {
   fresh: 'activité récente',
   warm: 'activité tiède',
   stale: 'activité ancienne',
 };
-
-export function activityFreshness(lastActivityAt: number | null, now = Date.now()): ActivityFreshness {
-  if (lastActivityAt === null) return 'stale';
-  const age = Math.max(0, now - lastActivityAt);
-  if (age < FIFTEEN_MINUTES_MS) return 'fresh';
-  if (age < FORTY_FIVE_MINUTES_MS) return 'warm';
-  return 'stale';
-}
 
 const SECTIONS: Array<{ id: Priority; label: string; empty: string }> = [
   { id: 'decision', label: 'À décider', empty: 'Aucune décision en attente.' },
@@ -73,7 +62,7 @@ export function TodayPage() {
   const taskRuns = useStore((state) => state.taskRuns);
   const setMissionHistory = useStore((state) => state.setMissionHistory);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
-  const pendingHistories = useRef(new Set<string>());
+  const pendingHistories = useRef(new Map<string, { revision: number; identity: symbol }>());
 
   useEffect(() => {
     let cancelled = false;
@@ -82,19 +71,19 @@ export function TodayPage() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
     const missing = tasks.filter((task) => {
       const history = histories.get(task.id);
       const revision = historyRevisions.get(task.id) ?? 0;
-      return (!history || history.revision !== revision) && !pendingHistories.current.has(`${task.id}:${revision}`);
+      const pending = pendingHistories.current.get(task.id);
+      return (!history || history.revision !== revision) && pending?.revision !== revision;
     });
     void Promise.all(missing.map(async (task) => {
       const revision = historyRevisions.get(task.id) ?? 0;
-      const requestKey = `${task.id}:${revision}`;
-      pendingHistories.current.add(requestKey);
+      const request = { revision, identity: Symbol(task.id) };
+      pendingHistories.current.set(task.id, request);
       try {
         const response = await fetchMessages(task.id);
-        if (!cancelled) setMissionHistory(task.id, {
+        if (pendingHistories.current.get(task.id)?.identity === request.identity) setMissionHistory(task.id, {
           runs: response.runs,
           events: response.events,
           revision,
@@ -102,10 +91,11 @@ export function TodayPage() {
       } catch {
         // The section keeps its directional empty state while the next SSE update retries.
       } finally {
-        pendingHistories.current.delete(requestKey);
+        if (pendingHistories.current.get(task.id)?.identity === request.identity) {
+          pendingHistories.current.delete(task.id);
+        }
       }
     }));
-    return () => { cancelled = true; };
   }, [histories, historyRevisions, setMissionHistory, tasks]);
 
   const groups = useMemo(() => {
@@ -125,11 +115,12 @@ export function TodayPage() {
   }, [histories, taskRuns, tasks]);
 
   const pulseMissions = SECTIONS.flatMap((section) => groups[section.id].map((mission) => ({ ...mission, priority: section.id })));
+  const pulseNow = useFreshnessClock(pulseMissions.map(({ run }) => run?.lastActivityAt ?? null));
   const currentRun = pulseMissions.find(({ run }) => run?.status === 'running')?.run ?? null;
 
   return (
     <div className="cockpit-shell flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--cockpit-ink)] text-[var(--cockpit-fog)] sm:flex-row">
-      <MissionPulseRail missions={pulseMissions} />
+      <MissionPulseRail missions={pulseMissions} now={pulseNow} />
       <div className="min-w-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8 sm:py-8">
         <header className="mb-8 flex flex-wrap items-end justify-between gap-4 border-b border-[var(--cockpit-panel-line)] pb-5">
           <div>

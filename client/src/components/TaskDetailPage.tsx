@@ -44,16 +44,18 @@ export function TaskDetailPage() {
   const markViewedInFlightRef = useRef<string | null>(null);
   const titleAnimation = useRenameAnimation(task?.title ?? '', task?.id ?? null);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
-  const historyRequestsRef = useRef(new Set<number>());
+  const historyRequestsRef = useRef(new Set<string>());
 
   const refreshHistory = useCallback(async (revision: number) => {
-    if (!taskId || historyRequestsRef.current.has(revision)) return;
-    historyRequestsRef.current.add(revision);
+    if (!taskId) return;
+    const requestKey = `${taskId}:${revision}`;
+    if (historyRequestsRef.current.has(requestKey)) return;
+    historyRequestsRef.current.add(requestKey);
     try {
       const response = await fetchMessages(taskId);
       setMissionHistory(taskId, { runs: response.runs, events: response.events, revision });
     } finally {
-      historyRequestsRef.current.delete(revision);
+      historyRequestsRef.current.delete(requestKey);
     }
   }, [setMissionHistory, taskId]);
 

@@ -55,13 +55,13 @@ export function goalTurnLabel(turnsUsed: number, maxTurns: number, compact?: boo
   return compact ? `${currentTurn}/${maxTurns}` : `Turn ${currentTurn} of ${maxTurns}`;
 }
 
-export function timeAgo(ms: number): string {
-  const seconds = Math.floor((Date.now() - ms) / 1000);
-  if (seconds < 60) return 'just now';
+export function timeAgo(ms: number, now = Date.now()): string {
+  const seconds = Math.max(0, Math.floor((now - ms) / 1000));
+  if (seconds < 60) return 'à l’instant';
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return `il y a ${minutes} min`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return `il y a ${hours} h`;
   const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+  return `il y a ${days} j`;
 }

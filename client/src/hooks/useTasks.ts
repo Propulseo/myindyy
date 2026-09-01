@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { BoardEvent } from '@shared/types';
+import type { BoardEvent, Task } from '@shared/types';
 import { useStore } from '../lib/store';
 import { fetchTasks } from '../lib/api';
 import { playCompletionSound } from './useSoundOnComplete';
@@ -32,13 +32,29 @@ export function applyBoardEvent(event: BoardEvent): void {
   state.invalidateMissionHistory(event.run.taskId);
 }
 
+function taskVersionAdvanced(previous: Task, current: Task): boolean {
+  return current.updated_at > previous.updated_at
+    || (current.last_agent_response_at ?? 0) > (previous.last_agent_response_at ?? 0);
+}
+
+export function applyTaskSnapshot(tasks: Task[]): void {
+  const state = useStore.getState();
+  const previousTasks = new Map(state.tasks.map((task) => [task.id, task]));
+  for (const task of tasks) {
+    const previous = previousTasks.get(task.id);
+    if (previous && taskVersionAdvanced(previous, task)) {
+      state.invalidateMissionHistory(task.id);
+    }
+  }
+  state.setTasks(tasks);
+}
+
 export function useTasks() {
-  const setTasks = useStore((s) => s.setTasks);
   const retryRef = useRef(0);
 
   useEffect(() => {
-    fetchTasks().then((res) => setTasks(res.tasks)).catch(console.error);
-  }, [setTasks]);
+    fetchTasks().then((res) => applyTaskSnapshot(res.tasks)).catch(console.error);
+  }, []);
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -51,7 +67,7 @@ export function useTasks() {
 
       es.onopen = () => {
         if (retryRef.current > 0) {
-          fetchTasks().then((res) => setTasks(res.tasks)).catch(console.error);
+          fetchTasks().then((res) => applyTaskSnapshot(res.tasks)).catch(console.error);
         }
         retryRef.current = 0;
       };
@@ -77,5 +93,5 @@ export function useTasks() {
       clearTimeout(retryTimeout);
       es?.close();
     };
-  }, [setTasks]);
+  }, []);
 }
