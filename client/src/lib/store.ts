@@ -26,7 +26,9 @@ interface AppState {
 }
 
 function tasksEqual(a: Task, b: Task): boolean {
-  return a.updated_at === b.updated_at && a.last_viewed_at === b.last_viewed_at;
+  return a.updated_at === b.updated_at
+    && a.last_agent_response_at === b.last_agent_response_at
+    && a.last_viewed_at === b.last_viewed_at;
 }
 
 export function isActiveRun(run: TaskRunState): boolean {

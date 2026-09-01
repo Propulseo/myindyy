@@ -29,15 +29,21 @@ export function nextFreshnessBoundaryDelay(lastActivityAt: Array<number | null>,
 }
 
 export function useFreshnessClock(lastActivityAt: Array<number | null>): number {
-  const [now, setNow] = useState(Date.now);
-  const activityKey = lastActivityAt.join(':');
+  const activityKey = JSON.stringify(lastActivityAt);
+  const [clock, setClock] = useState(() => ({ activityKey, now: Date.now() }));
+  const now = clock.activityKey === activityKey ? clock.now : Date.now();
 
   useEffect(() => {
-    const delay = nextFreshnessBoundaryDelay(lastActivityAt, Date.now());
+    const currentTime = Date.now();
+    if (clock.activityKey !== activityKey) {
+      setClock({ activityKey, now: currentTime });
+      return;
+    }
+    const delay = nextFreshnessBoundaryDelay(lastActivityAt, currentTime);
     if (delay === null) return;
-    const timeout = setTimeout(() => setNow(Date.now()), Math.max(1, delay));
+    const timeout = setTimeout(() => setClock({ activityKey, now: Date.now() }), Math.max(1, delay));
     return () => clearTimeout(timeout);
-  }, [activityKey, now]);
+  }, [activityKey, clock.activityKey, clock.now]);
 
   return now;
 }

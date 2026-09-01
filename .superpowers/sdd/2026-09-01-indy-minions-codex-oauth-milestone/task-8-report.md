@@ -106,3 +106,26 @@ La première passe risquait de transformer chaque priorité en carte interchange
 - Les gardes asynchrones sont séparées par mission ; le nettoyage ne supprime une entrée que si son identité correspond encore à la requête terminée.
 - Le timer de fraîcheur est unique pour toute la page, s’arrête quand toutes les missions sont anciennes ou sans activité, et ses deux frontières exactes sont couvertes avec de faux timers.
 - Aucun succès optimiste, fixture ou état de run inventé n’a été ajouté. Préoccupation inchangée et hors Task 8 : Vite avertit toujours sur le chunk global historique `index` à environ 671 kB gzip.
+
+## Fix round 3/5 — 2026-09-02
+
+### RED / GREEN
+
+- RED initial : les deux suites ciblées reproduisent 5 échecs sur 8 tests : une activité chargée à 20 ou 45 minutes reste `fresh`, tandis qu’un snapshot HTTP ancien écrase une update SSE, retire une création SSE et ressuscite une suppression connue.
+- RED complémentaire : le test du seul signal `last_agent_response_at` échoue car l’égalité du store l’ignorait ; un dernier test démontre qu’une suppression SSE d’une mission inconnue au début de la requête pouvait aussi être ressuscitée.
+- GREEN ciblé final : `useTasks`, `useFreshnessClock` et `TodayPage` passent, 19 tests sur 19.
+
+### Corrections et auto-revue
+
+- Au changement de clé d’activité, `useFreshnessClock` retourne immédiatement une heure recalculée, rebase ensuite son état et ne conserve qu’un timer vers la prochaine frontière. Une activité déjà âgée de 20 minutes apparaît donc `warm` au premier rendu pertinent ; à 45 minutes elle apparaît `stale` sans timer inutile.
+- Chaque chargement HTTP capture avant `fetchTasks` une baseline des tâches et la séquence courante du board. À résolution, la fusion garde toute valeur courante plus récente et les mutations SSE survenues pendant la requête.
+- La séquence par mission couvre aussi les tombstones : une suppression SSE ne peut pas être annulée par une réponse plus ancienne, même si la mission était inconnue lors du départ. En revanche, une tâche absente de la réponse et inchangée depuis la baseline est bien supprimée par le snapshot autoritaire.
+- L’égalité `upsertTask` inclut désormais `last_agent_response_at`, afin que ce signal monotone puisse progresser indépendamment de `updated_at`.
+- Préoccupation inchangée et hors Task 8 : le build Vite conserve son avertissement sur le chunk global historique, environ 672 kB gzip.
+
+### Vérifications
+
+- `pnpm test` → 17 fichiers, 93 tests PASS.
+- `pnpm typecheck` → TypeScript serveur et client, exit 0.
+- `pnpm build` → serveur, client et assets, exit 0 ; 2 600 modules transformés.
+- `git diff --check` → aucune erreur.
