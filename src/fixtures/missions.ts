@@ -1,0 +1,1323 @@
+import type { Mission, Provenance } from "@/types/domain";
+import { daysAgo, hoursAgo, minutesAgo } from "./clock";
+
+const hermes = (reference: string, syncedAt: string): Provenance => ({
+  system: "hermes",
+  reference,
+  syncedAt,
+});
+
+export const missions: Mission[] = [
+  /* ---------------------------------------------------------------- */
+  /* Demande une décision                                             */
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-248",
+    reference: "M-248",
+    title: "Déployer la landing CoProFlex en production",
+    summary:
+      "La landing de lancement est construite, testée et validée en préproduction. Elle attend votre feu vert pour partir en production.",
+    status: "attente_validation",
+    projectId: "coproflex",
+    ownerId: "lyes",
+    autonomy: "supervisee",
+    startedAt: hoursAgo(3),
+    lastActivityAt: minutesAgo(12),
+    progress: { done: 5, total: 6, unit: "étapes" },
+    duration: { elapsedMin: 168, capMin: 240 },
+    budget: { spentEur: 1.84, capEur: 4 },
+    steps: [
+      {
+        id: "m-248-s1",
+        label: "Relire la maquette et les textes",
+        state: "done",
+        detail: "6 sections, textes repris depuis la note de lancement.",
+        finishedAt: hoursAgo(3),
+        durationMin: 22,
+      },
+      {
+        id: "m-248-s2",
+        label: "Intégrer les sections",
+        state: "done",
+        detail: "Composants réutilisés depuis la bibliothèque interne.",
+        finishedAt: hoursAgo(2),
+        durationMin: 54,
+      },
+      {
+        id: "m-248-s3",
+        label: "Vérifier l'accessibilité et le responsive",
+        state: "done",
+        detail: "Contrastes et navigation clavier vérifiés sur trois largeurs.",
+        finishedAt: hoursAgo(1),
+        durationMin: 31,
+      },
+      {
+        id: "m-248-s4",
+        label: "Publier en préproduction",
+        state: "done",
+        detail: "Déploiement Coolify sur l'environnement de recette.",
+        finishedAt: minutesAgo(38),
+        durationMin: 9,
+      },
+      {
+        id: "m-248-s5",
+        label: "Contrôler les performances",
+        state: "done",
+        detail: "Chargement initial 1,1 s, aucune régression détectée.",
+        finishedAt: minutesAgo(14),
+        durationMin: 12,
+      },
+      {
+        id: "m-248-s6",
+        label: "Déployer en production",
+        state: "current",
+        detail: "Bloqué volontairement : attend une validation humaine.",
+      },
+    ],
+    agents: [
+      {
+        id: "m-248-a1",
+        role: "Intégration",
+        model: "codex-agent · profil build",
+        stepIds: ["m-248-s1", "m-248-s2"],
+        costEur: 0.94,
+      },
+      {
+        id: "m-248-a2",
+        role: "Contrôle qualité",
+        model: "codex-agent · profil review",
+        stepIds: ["m-248-s3", "m-248-s5"],
+        costEur: 0.62,
+      },
+      {
+        id: "m-248-a3",
+        role: "Livraison",
+        model: "codex-agent · profil deploy",
+        stepIds: ["m-248-s4", "m-248-s6"],
+        costEur: 0.28,
+      },
+    ],
+    activity: [
+      {
+        id: "m-248-e1",
+        at: minutesAgo(12),
+        kind: "decision",
+        actor: "Indy",
+        message: "Déploiement en production suspendu : validation humaine requise.",
+        source: hermes("Hermes · exécution 248-06", minutesAgo(12)),
+      },
+      {
+        id: "m-248-e2",
+        at: minutesAgo(14),
+        kind: "etape",
+        actor: "Contrôle qualité",
+        message: "Contrôle des performances terminé, aucune régression.",
+        source: hermes("Hermes · exécution 248-05", minutesAgo(14)),
+      },
+      {
+        id: "m-248-e3",
+        at: minutesAgo(38),
+        kind: "livrable",
+        actor: "Livraison",
+        message: "Préproduction disponible sur recette.coproflex.fr.",
+        source: {
+          system: "coolify",
+          reference: "Coolify · déploiement 4192",
+          syncedAt: minutesAgo(38),
+        },
+      },
+      {
+        id: "m-248-e4",
+        at: hoursAgo(1),
+        kind: "etape",
+        actor: "Contrôle qualité",
+        message: "Accessibilité vérifiée : contrastes, focus, navigation clavier.",
+        source: hermes("Hermes · exécution 248-03", hoursAgo(1)),
+      },
+      {
+        id: "m-248-e5",
+        at: hoursAgo(2),
+        kind: "livrable",
+        actor: "Intégration",
+        message: "Six sections intégrées, révision a41f9c2 poussée.",
+        source: {
+          system: "github",
+          reference: "GitHub · coproflex-web@a41f9c2",
+          syncedAt: hoursAgo(2),
+        },
+      },
+      {
+        id: "m-248-e6",
+        at: hoursAgo(3),
+        kind: "instruction",
+        actor: "Lyes Benali",
+        message:
+          "Reprends les textes de la note de lancement, ne change pas la structure.",
+        source: hermes("Hermes · exécution 248-01", hoursAgo(3)),
+      },
+    ],
+    deliverableIds: ["d-401", "d-402"],
+    decisionIds: ["dec-01"],
+    diagnostics: [
+      {
+        at: minutesAgo(12),
+        level: "warn",
+        scope: "garde-fou",
+        message: "policy.deploy.production → confirmation humaine obligatoire (autonomie : supervisée)",
+      },
+      {
+        at: minutesAgo(14),
+        level: "info",
+        scope: "mesure",
+        message: "lcp=1.10s cls=0.01 tbt=90ms · 3 largeurs · 12 pages",
+      },
+      {
+        at: minutesAgo(38),
+        level: "info",
+        scope: "coolify",
+        message: "deployment=4192 target=recette status=succeeded duration=9m04s",
+      },
+      {
+        at: hoursAgo(2),
+        level: "info",
+        scope: "github",
+        message: "push coproflex-web main→preview sha=a41f9c2 files=18 (+742/-96)",
+      },
+      {
+        at: hoursAgo(3),
+        level: "info",
+        scope: "exécution",
+        message: "run=248 profile=build budget_cap=4.00EUR duration_cap=240min",
+      },
+    ],
+    source: hermes("Hermes · mission 248", minutesAgo(12)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-244",
+    reference: "M-244",
+    title: "Migration Supabase — schéma de facturation",
+    summary:
+      "La migration s'est arrêtée sur une contrainte d'unicité qui ne peut pas être résolue sans arbitrage : deux lignes historiques portent le même identifiant de facture.",
+    status: "bloquee",
+    projectId: "tao",
+    ownerId: "lyes",
+    autonomy: "encadree",
+    startedAt: hoursAgo(6),
+    lastActivityAt: hoursAgo(2),
+    progress: { done: 3, total: 7, unit: "étapes" },
+    duration: { elapsedMin: 214, capMin: 300 },
+    budget: { spentEur: 2.42, capEur: 6 },
+    steps: [
+      {
+        id: "m-244-s1",
+        label: "Inventorier les tables concernées",
+        state: "done",
+        finishedAt: hoursAgo(6),
+        durationMin: 18,
+      },
+      {
+        id: "m-244-s2",
+        label: "Écrire la migration",
+        state: "done",
+        finishedAt: hoursAgo(4),
+        durationMin: 62,
+      },
+      {
+        id: "m-244-s3",
+        label: "Rejouer sur une copie",
+        state: "done",
+        detail: "Copie restaurée à partir de la sauvegarde de la nuit.",
+        finishedAt: hoursAgo(3),
+        durationMin: 41,
+      },
+      {
+        id: "m-244-s4",
+        label: "Contrôler l'intégrité",
+        state: "failed",
+        detail: "Deux factures de 2024 partagent la même référence externe.",
+        finishedAt: hoursAgo(2),
+        durationMin: 26,
+      },
+      { id: "m-244-s5", label: "Corriger les données", state: "todo" },
+      { id: "m-244-s6", label: "Rejouer la migration", state: "todo" },
+      { id: "m-244-s7", label: "Appliquer sur l'environnement principal", state: "todo" },
+    ],
+    agents: [
+      {
+        id: "m-244-a1",
+        role: "Analyse de schéma",
+        model: "codex-agent · profil data",
+        stepIds: ["m-244-s1", "m-244-s2"],
+        costEur: 1.51,
+      },
+      {
+        id: "m-244-a2",
+        role: "Vérification",
+        model: "codex-agent · profil review",
+        stepIds: ["m-244-s3", "m-244-s4"],
+        costEur: 0.91,
+      },
+    ],
+    activity: [
+      {
+        id: "m-244-e1",
+        at: hoursAgo(2),
+        kind: "incident",
+        actor: "Vérification",
+        message:
+          "Contrainte d'unicité impossible à appliquer : deux références de facture identiques en 2024.",
+        source: hermes("Hermes · exécution 244-04", hoursAgo(2)),
+      },
+      {
+        id: "m-244-e2",
+        at: hoursAgo(3),
+        kind: "etape",
+        actor: "Vérification",
+        message: "Migration rejouée sur une copie de la base, sans erreur.",
+        source: hermes("Hermes · exécution 244-03", hoursAgo(3)),
+      },
+      {
+        id: "m-244-e3",
+        at: hoursAgo(4),
+        kind: "livrable",
+        actor: "Analyse de schéma",
+        message: "Migration écrite : trois tables, deux index, une contrainte.",
+        source: {
+          system: "github",
+          reference: "GitHub · tao-api@7d1e0b4",
+          syncedAt: hoursAgo(4),
+        },
+      },
+      {
+        id: "m-244-e4",
+        at: hoursAgo(6),
+        kind: "instruction",
+        actor: "Lyes Benali",
+        message: "Migre le schéma de facturation, ne touche pas aux tables d'audit.",
+        source: hermes("Hermes · exécution 244-01", hoursAgo(6)),
+      },
+    ],
+    deliverableIds: ["d-403"],
+    decisionIds: [],
+    diagnostics: [
+      {
+        at: hoursAgo(2),
+        level: "error",
+        scope: "base",
+        message:
+          "constraint invoices_external_ref_key violated · duplicates=2 · rows=[18422, 18907]",
+      },
+      {
+        at: hoursAgo(2),
+        level: "warn",
+        scope: "garde-fou",
+        message: "policy.data.destructive → arrêt automatique, aucune écriture appliquée",
+      },
+      {
+        at: hoursAgo(3),
+        level: "info",
+        scope: "base",
+        message: "dry-run ok · tables=3 index=2 duration=41m",
+      },
+      {
+        at: hoursAgo(6),
+        level: "info",
+        scope: "exécution",
+        message: "run=244 profile=data budget_cap=6.00EUR duration_cap=300min",
+      },
+    ],
+    source: hermes("Hermes · mission 244", hoursAgo(2)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-251",
+    reference: "M-251",
+    title: "Recherche concurrents — syndics numériques",
+    summary:
+      "Cartographie des acteurs du syndic en ligne pour préparer l'argumentaire Vernay. La mission a consommé 92 % de son budget avant d'avoir terminé sa synthèse.",
+    status: "en_cours",
+    projectId: "vernay",
+    ownerId: "lucas",
+    autonomy: "encadree",
+    startedAt: hoursAgo(4),
+    lastActivityAt: minutesAgo(9),
+    progress: { done: 11, total: 14, unit: "acteurs" },
+    duration: { elapsedMin: 226, capMin: 300 },
+    budget: { spentEur: 2.76, capEur: 3 },
+    steps: [
+      {
+        id: "m-251-s1",
+        label: "Constituer la liste des acteurs",
+        state: "done",
+        finishedAt: hoursAgo(4),
+        durationMin: 24,
+      },
+      {
+        id: "m-251-s2",
+        label: "Relever offres et tarifs",
+        state: "done",
+        finishedAt: hoursAgo(2),
+        durationMin: 96,
+      },
+      {
+        id: "m-251-s3",
+        label: "Comparer les positionnements",
+        state: "current",
+        detail: "11 acteurs sur 14 traités.",
+      },
+      { id: "m-251-s4", label: "Rédiger la synthèse", state: "todo" },
+    ],
+    agents: [
+      {
+        id: "m-251-a1",
+        role: "Collecte",
+        model: "codex-agent · profil research",
+        stepIds: ["m-251-s1", "m-251-s2"],
+        costEur: 2.11,
+      },
+      {
+        id: "m-251-a2",
+        role: "Synthèse",
+        model: "codex-agent · profil write",
+        stepIds: ["m-251-s3", "m-251-s4"],
+        costEur: 0.65,
+      },
+    ],
+    activity: [
+      {
+        id: "m-251-e1",
+        at: minutesAgo(9),
+        kind: "systeme",
+        actor: "Indy",
+        message:
+          "Budget à 92 % : la mission s'arrêtera d'elle-même sans autorisation de dépassement.",
+        source: hermes("Hermes · exécution 251-03", minutesAgo(9)),
+      },
+      {
+        id: "m-251-e2",
+        at: minutesAgo(52),
+        kind: "etape",
+        actor: "Synthèse",
+        message: "Onzième acteur comparé : positionnement et grille tarifaire relevés.",
+        source: hermes("Hermes · exécution 251-03", minutesAgo(52)),
+      },
+      {
+        id: "m-251-e3",
+        at: hoursAgo(2),
+        kind: "etape",
+        actor: "Collecte",
+        message: "Offres et tarifs relevés pour les quatorze acteurs identifiés.",
+        source: hermes("Hermes · exécution 251-02", hoursAgo(2)),
+      },
+      {
+        id: "m-251-e4",
+        at: hoursAgo(4),
+        kind: "instruction",
+        actor: "Lucas Marchand",
+        message:
+          "Concentre-toi sur les syndics en ligne français, écarte les logiciels de gestion locative.",
+        source: hermes("Hermes · exécution 251-01", hoursAgo(4)),
+      },
+    ],
+    deliverableIds: ["d-404"],
+    decisionIds: ["dec-04"],
+    diagnostics: [
+      {
+        at: minutesAgo(9),
+        level: "warn",
+        scope: "budget",
+        message: "spent=2.76EUR cap=3.00EUR ratio=0.92 · arrêt automatique à 100 %",
+      },
+      {
+        at: hoursAgo(2),
+        level: "info",
+        scope: "collecte",
+        message: "sources=38 retenues=14 écartées=24 (hors périmètre)",
+      },
+      {
+        at: hoursAgo(4),
+        level: "info",
+        scope: "exécution",
+        message: "run=251 profile=research budget_cap=3.00EUR duration_cap=300min",
+      },
+    ],
+    source: hermes("Hermes · mission 251", minutesAgo(9)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-249",
+    reference: "M-249",
+    title: "Séquence de relance — prospects Vernay",
+    summary:
+      "Trois messages de relance préparés pour les prospects tièdes du dernier salon. La séquence attend une approbation avant envoi.",
+    status: "attente_validation",
+    projectId: "vernay",
+    ownerId: "lucas",
+    autonomy: "supervisee",
+    startedAt: hoursAgo(5),
+    lastActivityAt: minutesAgo(41),
+    progress: { done: 3, total: 4, unit: "étapes" },
+    duration: { elapsedMin: 118, capMin: 180 },
+    budget: { spentEur: 0.71, capEur: 2 },
+    steps: [
+      {
+        id: "m-249-s1",
+        label: "Extraire les prospects du CRM",
+        state: "done",
+        detail: "34 contacts, dernier échange il y a plus de trois semaines.",
+        finishedAt: hoursAgo(5),
+        durationMin: 8,
+      },
+      {
+        id: "m-249-s2",
+        label: "Segmenter par niveau d'intérêt",
+        state: "done",
+        finishedAt: hoursAgo(4),
+        durationMin: 26,
+      },
+      {
+        id: "m-249-s3",
+        label: "Rédiger les trois messages",
+        state: "done",
+        finishedAt: minutesAgo(41),
+        durationMin: 84,
+      },
+      {
+        id: "m-249-s4",
+        label: "Envoyer la séquence",
+        state: "current",
+        detail: "Attend une approbation humaine.",
+      },
+    ],
+    agents: [
+      {
+        id: "m-249-a1",
+        role: "Extraction CRM",
+        model: "codex-agent · profil data",
+        stepIds: ["m-249-s1", "m-249-s2"],
+        costEur: 0.19,
+      },
+      {
+        id: "m-249-a2",
+        role: "Rédaction",
+        model: "codex-agent · profil write",
+        stepIds: ["m-249-s3"],
+        costEur: 0.52,
+      },
+    ],
+    activity: [
+      {
+        id: "m-249-e1",
+        at: minutesAgo(41),
+        kind: "decision",
+        actor: "Indy",
+        message: "Envoi externe suspendu : approbation requise avant expédition.",
+        source: hermes("Hermes · exécution 249-04", minutesAgo(41)),
+      },
+      {
+        id: "m-249-e2",
+        at: hoursAgo(2),
+        kind: "livrable",
+        actor: "Rédaction",
+        message: "Trois messages rédigés, un par segment.",
+        source: hermes("Hermes · exécution 249-03", hoursAgo(2)),
+      },
+      {
+        id: "m-249-e3",
+        at: hoursAgo(5),
+        kind: "etape",
+        actor: "Extraction CRM",
+        message: "34 prospects extraits, aucun contact désinscrit.",
+        source: {
+          system: "crm",
+          reference: "CRM · segment « salon 2026 »",
+          syncedAt: hoursAgo(5),
+        },
+      },
+    ],
+    deliverableIds: ["d-405"],
+    decisionIds: ["dec-02"],
+    diagnostics: [
+      {
+        at: minutesAgo(41),
+        level: "warn",
+        scope: "garde-fou",
+        message: "policy.comms.external → approbation obligatoire · destinataires=34",
+      },
+      {
+        at: hoursAgo(5),
+        level: "info",
+        scope: "crm",
+        message: "segment=salon-2026 contacts=41 éligibles=34 désinscrits=0 doublons=7",
+      },
+    ],
+    source: hermes("Hermes · mission 249", minutesAgo(41)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-241",
+    reference: "M-241",
+    title: "Publication de l'article « Copropriété et automatisation »",
+    summary:
+      "Article de fond de 1 400 mots prêt à publier sur le blog Propul'SEO. Attend une relecture finale et une approbation.",
+    status: "attente_validation",
+    projectId: "propulseo",
+    ownerId: "lucas",
+    autonomy: "supervisee",
+    startedAt: daysAgo(1),
+    lastActivityAt: hoursAgo(5),
+    progress: { done: 4, total: 5, unit: "étapes" },
+    duration: { elapsedMin: 142, capMin: 240 },
+    budget: { spentEur: 1.12, capEur: 3 },
+    steps: [
+      { id: "m-241-s1", label: "Cadrer le sujet", state: "done", finishedAt: daysAgo(1), durationMin: 16 },
+      { id: "m-241-s2", label: "Rédiger", state: "done", finishedAt: hoursAgo(22), durationMin: 78 },
+      { id: "m-241-s3", label: "Optimiser pour la recherche", state: "done", finishedAt: hoursAgo(7), durationMin: 34 },
+      { id: "m-241-s4", label: "Préparer les visuels", state: "done", finishedAt: hoursAgo(5), durationMin: 14 },
+      { id: "m-241-s5", label: "Publier", state: "current", detail: "Attend une approbation humaine." },
+    ],
+    agents: [
+      {
+        id: "m-241-a1",
+        role: "Rédaction",
+        model: "codex-agent · profil write",
+        stepIds: ["m-241-s1", "m-241-s2", "m-241-s3"],
+        costEur: 0.98,
+      },
+      {
+        id: "m-241-a2",
+        role: "Mise en forme",
+        model: "codex-agent · profil build",
+        stepIds: ["m-241-s4", "m-241-s5"],
+        costEur: 0.14,
+      },
+    ],
+    activity: [
+      {
+        id: "m-241-e1",
+        at: hoursAgo(5),
+        kind: "decision",
+        actor: "Indy",
+        message: "Publication suspendue : approbation requise avant mise en ligne.",
+        source: hermes("Hermes · exécution 241-05", hoursAgo(5)),
+      },
+      {
+        id: "m-241-e2",
+        at: hoursAgo(7),
+        kind: "etape",
+        actor: "Rédaction",
+        message: "Titres et méta-description ajustés, longueur cible atteinte.",
+        source: hermes("Hermes · exécution 241-03", hoursAgo(7)),
+      },
+      {
+        id: "m-241-e3",
+        at: hoursAgo(22),
+        kind: "livrable",
+        actor: "Rédaction",
+        message: "Article rédigé : 1 412 mots, six intertitres.",
+        source: {
+          system: "obsidian",
+          reference: "Obsidian · contenus/copropriete-automatisation",
+          syncedAt: hoursAgo(22),
+        },
+      },
+    ],
+    deliverableIds: ["d-406"],
+    decisionIds: ["dec-03"],
+    diagnostics: [
+      {
+        at: hoursAgo(5),
+        level: "warn",
+        scope: "garde-fou",
+        message: "policy.publish → approbation obligatoire · cible=blog public",
+      },
+      {
+        at: hoursAgo(7),
+        level: "info",
+        scope: "contenu",
+        message: "words=1412 headings=6 readability=62 meta_len=154",
+      },
+    ],
+    source: hermes("Hermes · mission 241", hoursAgo(5)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* En cours                                                         */
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-239",
+    reference: "M-239",
+    title: "Audit SEO Propul'SEO",
+    summary:
+      "Passage complet des pages publiques : structure, temps de chargement, maillage interne et contenus dupliqués.",
+    status: "en_cours",
+    projectId: "propulseo",
+    ownerId: "etienne",
+    autonomy: "encadree",
+    startedAt: hoursAgo(2),
+    lastActivityAt: minutesAgo(4),
+    progress: { done: 18, total: 24, unit: "pages" },
+    duration: { elapsedMin: 118, capMin: 180 },
+    budget: { spentEur: 0.94, capEur: 3 },
+    steps: [
+      { id: "m-239-s1", label: "Explorer le site", state: "done", finishedAt: hoursAgo(2), durationMin: 12 },
+      { id: "m-239-s2", label: "Analyser les pages", state: "current", detail: "18 pages sur 24." },
+      { id: "m-239-s3", label: "Relever les contenus dupliqués", state: "todo" },
+      { id: "m-239-s4", label: "Rédiger les recommandations", state: "todo" },
+    ],
+    agents: [
+      {
+        id: "m-239-a1",
+        role: "Exploration",
+        model: "codex-agent · profil crawl",
+        stepIds: ["m-239-s1", "m-239-s2"],
+        costEur: 0.71,
+      },
+      {
+        id: "m-239-a2",
+        role: "Recommandations",
+        model: "codex-agent · profil write",
+        stepIds: ["m-239-s3", "m-239-s4"],
+        costEur: 0.23,
+      },
+    ],
+    activity: [
+      {
+        id: "m-239-e1",
+        at: minutesAgo(4),
+        kind: "etape",
+        actor: "Exploration",
+        message: "Page 18 sur 24 analysée : /services/referencement-local.",
+        source: hermes("Hermes · exécution 239-02", minutesAgo(4)),
+      },
+      {
+        id: "m-239-e2",
+        at: minutesAgo(46),
+        kind: "systeme",
+        actor: "Indy",
+        message: "Trois pages renvoient une redirection en chaîne, signalées pour la synthèse.",
+        source: hermes("Hermes · exécution 239-02", minutesAgo(46)),
+      },
+      {
+        id: "m-239-e3",
+        at: hoursAgo(2),
+        kind: "instruction",
+        actor: "Étienne Guimbard",
+        message: "Audite les pages publiques uniquement, ignore le blog.",
+        source: hermes("Hermes · exécution 239-01", hoursAgo(2)),
+      },
+    ],
+    deliverableIds: [],
+    decisionIds: [],
+    diagnostics: [
+      {
+        at: minutesAgo(4),
+        level: "info",
+        scope: "exploration",
+        message: "pages=18/24 avg_ttfb=180ms redirect_chains=3 dup_titles=2",
+      },
+      {
+        at: hoursAgo(2),
+        level: "info",
+        scope: "exécution",
+        message: "run=239 profile=crawl budget_cap=3.00EUR duration_cap=180min",
+      },
+    ],
+    source: hermes("Hermes · mission 239", minutesAgo(4)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-247",
+    reference: "M-247",
+    title: "Refonte de la landing Tao",
+    summary:
+      "Nouvelle page d'accueil orientée conversion : promesse, preuve, tarifs. Trois étapes sur six sont faites.",
+    status: "en_cours",
+    projectId: "tao",
+    ownerId: "lyes",
+    autonomy: "encadree",
+    startedAt: hoursAgo(5),
+    lastActivityAt: minutesAgo(27),
+    progress: { done: 3, total: 6, unit: "étapes" },
+    duration: { elapsedMin: 194, capMin: 360 },
+    budget: { spentEur: 1.38, capEur: 5 },
+    steps: [
+      { id: "m-247-s1", label: "Reprendre la promesse", state: "done", finishedAt: hoursAgo(5), durationMin: 28 },
+      { id: "m-247-s2", label: "Rassembler les preuves clients", state: "done", finishedAt: hoursAgo(3), durationMin: 46 },
+      { id: "m-247-s3", label: "Écrire la nouvelle structure", state: "done", finishedAt: minutesAgo(27), durationMin: 72 },
+      { id: "m-247-s4", label: "Intégrer les sections", state: "current" },
+      { id: "m-247-s5", label: "Vérifier l'accessibilité", state: "todo" },
+      { id: "m-247-s6", label: "Publier en préproduction", state: "todo" },
+    ],
+    agents: [
+      {
+        id: "m-247-a1",
+        role: "Rédaction",
+        model: "codex-agent · profil write",
+        stepIds: ["m-247-s1", "m-247-s2", "m-247-s3"],
+        costEur: 0.86,
+      },
+      {
+        id: "m-247-a2",
+        role: "Intégration",
+        model: "codex-agent · profil build",
+        stepIds: ["m-247-s4", "m-247-s5", "m-247-s6"],
+        costEur: 0.52,
+      },
+    ],
+    activity: [
+      {
+        id: "m-247-e1",
+        at: minutesAgo(27),
+        kind: "etape",
+        actor: "Rédaction",
+        message: "Structure en six sections validée, passage à l'intégration.",
+        source: hermes("Hermes · exécution 247-03", minutesAgo(27)),
+      },
+      {
+        id: "m-247-e2",
+        at: hoursAgo(3),
+        kind: "etape",
+        actor: "Rédaction",
+        message: "Quatre témoignages clients retenus sur onze.",
+        source: hermes("Hermes · exécution 247-02", hoursAgo(3)),
+      },
+    ],
+    deliverableIds: ["d-407"],
+    decisionIds: [],
+    diagnostics: [
+      {
+        at: minutesAgo(27),
+        level: "info",
+        scope: "contenu",
+        message: "sections=6 words=780 cta=2",
+      },
+    ],
+    source: hermes("Hermes · mission 247", minutesAgo(27)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-250",
+    reference: "M-250",
+    title: "Analyse des leads entrants — semaine 35",
+    summary:
+      "Qualification automatique des demandes reçues cette semaine et repérage des opportunités à rappeler en priorité.",
+    status: "en_cours",
+    projectId: "vernay",
+    ownerId: "lucas",
+    automationId: "auto-crm",
+    autonomy: "autonome",
+    startedAt: minutesAgo(52),
+    lastActivityAt: minutesAgo(6),
+    progress: { done: 22, total: 31, unit: "leads" },
+    duration: { elapsedMin: 52, capMin: 90 },
+    budget: { spentEur: 0.41, capEur: 1.5 },
+    steps: [
+      { id: "m-250-s1", label: "Récupérer les demandes", state: "done", finishedAt: minutesAgo(50), durationMin: 3 },
+      { id: "m-250-s2", label: "Qualifier chaque demande", state: "current", detail: "22 leads sur 31." },
+      { id: "m-250-s3", label: "Classer par priorité", state: "todo" },
+    ],
+    agents: [
+      {
+        id: "m-250-a1",
+        role: "Qualification",
+        model: "codex-agent · profil data",
+        stepIds: ["m-250-s1", "m-250-s2", "m-250-s3"],
+        costEur: 0.41,
+      },
+    ],
+    activity: [
+      {
+        id: "m-250-e1",
+        at: minutesAgo(6),
+        kind: "etape",
+        actor: "Qualification",
+        message: "22 demandes qualifiées, 4 marquées comme prioritaires.",
+        source: {
+          system: "crm",
+          reference: "CRM · file « demandes entrantes »",
+          syncedAt: minutesAgo(6),
+        },
+      },
+    ],
+    deliverableIds: [],
+    decisionIds: [],
+    diagnostics: [
+      {
+        at: minutesAgo(6),
+        level: "info",
+        scope: "crm",
+        message: "leads=31 qualifiés=22 prioritaires=4 doublons=2",
+      },
+    ],
+    source: hermes("Hermes · mission 250", minutesAgo(6)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* En attente                                                        */
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-252",
+    reference: "M-252",
+    title: "Fiches produit DocAgora",
+    summary:
+      "Génération des douze fiches de présentation à partir du cadrage. En file d'attente derrière la migration.",
+    status: "en_attente",
+    projectId: "docagora",
+    ownerId: "etienne",
+    autonomy: "encadree",
+    lastActivityAt: minutesAgo(35),
+    progress: { done: 0, total: 12, unit: "fiches" },
+    duration: { elapsedMin: 0, capMin: 240 },
+    budget: { spentEur: 0, capEur: 4 },
+    steps: [
+      { id: "m-252-s1", label: "Relire le cadrage", state: "todo" },
+      { id: "m-252-s2", label: "Rédiger les fiches", state: "todo" },
+      { id: "m-252-s3", label: "Relire et harmoniser", state: "todo" },
+    ],
+    agents: [],
+    activity: [
+      {
+        id: "m-252-e1",
+        at: minutesAgo(35),
+        kind: "systeme",
+        actor: "Indy",
+        message: "Mise en file : une seule mission longue à la fois sur DocAgora.",
+        source: hermes("Hermes · file d'attente", minutesAgo(35)),
+      },
+    ],
+    deliverableIds: [],
+    decisionIds: [],
+    diagnostics: [
+      {
+        at: minutesAgo(35),
+        level: "info",
+        scope: "file",
+        message: "queued position=1 concurrency_limit=1 project=docagora",
+      },
+    ],
+    source: hermes("Hermes · mission 252", minutesAgo(35)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* Terminées et clôturées                                            */
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-253",
+    reference: "M-253",
+    title: "Rapport Ops Watch",
+    summary:
+      "Contrôle horaire des services : disponibilité, temps de réponse et espace disque. Aucune anomalie ce matin.",
+    status: "terminee",
+    projectId: "propulseo",
+    ownerId: "etienne",
+    automationId: "auto-ops",
+    autonomy: "autonome",
+    startedAt: minutesAgo(22),
+    lastActivityAt: minutesAgo(18),
+    progress: { done: 4, total: 4, unit: "contrôles" },
+    duration: { elapsedMin: 4, capMin: 15 },
+    budget: { spentEur: 0.06, capEur: 0.5 },
+    steps: [
+      { id: "m-253-s1", label: "Interroger les services", state: "done", finishedAt: minutesAgo(21), durationMin: 1 },
+      { id: "m-253-s2", label: "Comparer aux seuils", state: "done", finishedAt: minutesAgo(20), durationMin: 1 },
+      { id: "m-253-s3", label: "Vérifier les sauvegardes", state: "done", finishedAt: minutesAgo(19), durationMin: 1 },
+      { id: "m-253-s4", label: "Écrire le rapport", state: "done", finishedAt: minutesAgo(18), durationMin: 1 },
+    ],
+    agents: [
+      {
+        id: "m-253-a1",
+        role: "Surveillance",
+        model: "codex-agent · profil ops",
+        stepIds: ["m-253-s1", "m-253-s2", "m-253-s3", "m-253-s4"],
+        costEur: 0.06,
+      },
+    ],
+    activity: [
+      {
+        id: "m-253-e1",
+        at: minutesAgo(18),
+        kind: "livrable",
+        actor: "Surveillance",
+        message: "Rapport écrit : sept services contrôlés, aucun dépassement de seuil.",
+        source: hermes("Hermes · exécution 253-04", minutesAgo(18)),
+      },
+    ],
+    deliverableIds: ["d-408"],
+    decisionIds: [],
+    diagnostics: [
+      {
+        at: minutesAgo(18),
+        level: "info",
+        scope: "ops",
+        message: "services=7 up=7 p95=142ms disk_max=64% backups=ok",
+      },
+    ],
+    source: hermes("Hermes · mission 253", minutesAgo(18)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-246",
+    reference: "M-246",
+    title: "Briefing du jour",
+    summary:
+      "Préparation du point du matin : décisions en attente, missions à surveiller, rendez-vous de la journée.",
+    status: "terminee",
+    projectId: "propulseo",
+    ownerId: "etienne",
+    automationId: "auto-briefing",
+    autonomy: "autonome",
+    startedAt: hoursAgo(7),
+    lastActivityAt: hoursAgo(7),
+    progress: { done: 3, total: 3, unit: "étapes" },
+    duration: { elapsedMin: 6, capMin: 20 },
+    budget: { spentEur: 0.11, capEur: 0.5 },
+    steps: [
+      { id: "m-246-s1", label: "Rassembler les éléments", state: "done", finishedAt: hoursAgo(7), durationMin: 2 },
+      { id: "m-246-s2", label: "Trier par urgence", state: "done", finishedAt: hoursAgo(7), durationMin: 2 },
+      { id: "m-246-s3", label: "Écrire le briefing", state: "done", finishedAt: hoursAgo(7), durationMin: 2 },
+    ],
+    agents: [
+      {
+        id: "m-246-a1",
+        role: "Synthèse",
+        model: "codex-agent · profil write",
+        stepIds: ["m-246-s1", "m-246-s2", "m-246-s3"],
+        costEur: 0.11,
+      },
+    ],
+    activity: [
+      {
+        id: "m-246-e1",
+        at: hoursAgo(7),
+        kind: "livrable",
+        actor: "Synthèse",
+        message: "Briefing du 1er septembre écrit et déposé dans Obsidian.",
+        source: {
+          system: "obsidian",
+          reference: "Obsidian · briefings/2026-09-01",
+          syncedAt: hoursAgo(7),
+        },
+      },
+    ],
+    deliverableIds: ["d-409"],
+    decisionIds: [],
+    diagnostics: [
+      { at: hoursAgo(7), level: "info", scope: "obsidian", message: "note écrite · 1 fichier · 2,1 ko" },
+    ],
+    source: hermes("Hermes · mission 246", hoursAgo(7)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-243",
+    reference: "M-243",
+    title: "Veille technique — Next.js et Supabase",
+    summary:
+      "Relevé hebdomadaire des nouveautés utiles aux produits, avec impact estimé pour chaque projet.",
+    status: "terminee",
+    projectId: "ocean",
+    ownerId: "lyes",
+    autonomy: "autonome",
+    startedAt: daysAgo(1),
+    lastActivityAt: hoursAgo(20),
+    progress: { done: 5, total: 5, unit: "étapes" },
+    duration: { elapsedMin: 38, capMin: 60 },
+    budget: { spentEur: 0.44, capEur: 1.5 },
+    steps: [
+      { id: "m-243-s1", label: "Collecter les publications", state: "done", finishedAt: daysAgo(1), durationMin: 14 },
+      { id: "m-243-s2", label: "Écarter le bruit", state: "done", finishedAt: hoursAgo(23), durationMin: 6 },
+      { id: "m-243-s3", label: "Estimer l'impact", state: "done", finishedAt: hoursAgo(22), durationMin: 9 },
+      { id: "m-243-s4", label: "Rédiger", state: "done", finishedAt: hoursAgo(21), durationMin: 7 },
+      { id: "m-243-s5", label: "Classer dans Obsidian", state: "done", finishedAt: hoursAgo(20), durationMin: 2 },
+    ],
+    agents: [
+      {
+        id: "m-243-a1",
+        role: "Veille",
+        model: "codex-agent · profil research",
+        stepIds: ["m-243-s1", "m-243-s2", "m-243-s3"],
+        costEur: 0.31,
+      },
+      {
+        id: "m-243-a2",
+        role: "Rédaction",
+        model: "codex-agent · profil write",
+        stepIds: ["m-243-s4", "m-243-s5"],
+        costEur: 0.13,
+      },
+    ],
+    activity: [
+      {
+        id: "m-243-e1",
+        at: hoursAgo(20),
+        kind: "livrable",
+        actor: "Rédaction",
+        message: "Note de veille classée : neuf entrées, deux marquées comme à traiter.",
+        source: {
+          system: "obsidian",
+          reference: "Obsidian · veille/2026-S35",
+          syncedAt: hoursAgo(20),
+        },
+      },
+    ],
+    deliverableIds: ["d-410"],
+    decisionIds: [],
+    diagnostics: [
+      { at: hoursAgo(20), level: "info", scope: "veille", message: "sources=44 retenues=9 impact_high=2" },
+    ],
+    source: hermes("Hermes · mission 243", hoursAgo(20)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-240",
+    reference: "M-240",
+    title: "Préparation du rendez-vous Vernay",
+    summary:
+      "Dossier de préparation pour le point du 28 août : historique, opportunités ouvertes, points de blocage.",
+    status: "terminee",
+    projectId: "vernay",
+    ownerId: "lucas",
+    autonomy: "encadree",
+    startedAt: daysAgo(4),
+    lastActivityAt: daysAgo(4),
+    progress: { done: 4, total: 4, unit: "étapes" },
+    duration: { elapsedMin: 46, capMin: 90 },
+    budget: { spentEur: 0.58, capEur: 2 },
+    steps: [
+      { id: "m-240-s1", label: "Reprendre l'historique CRM", state: "done", durationMin: 11 },
+      { id: "m-240-s2", label: "Lister les opportunités ouvertes", state: "done", durationMin: 9 },
+      { id: "m-240-s3", label: "Relever les points de blocage", state: "done", durationMin: 14 },
+      { id: "m-240-s4", label: "Écrire le dossier", state: "done", durationMin: 12 },
+    ],
+    agents: [
+      {
+        id: "m-240-a1",
+        role: "Préparation",
+        model: "codex-agent · profil write",
+        stepIds: ["m-240-s1", "m-240-s2", "m-240-s3", "m-240-s4"],
+        costEur: 0.58,
+      },
+    ],
+    activity: [
+      {
+        id: "m-240-e1",
+        at: daysAgo(4),
+        kind: "livrable",
+        actor: "Préparation",
+        message: "Dossier de rendez-vous écrit : trois opportunités, deux blocages.",
+        source: {
+          system: "crm",
+          reference: "CRM · compte Vernay Immobilier",
+          syncedAt: daysAgo(4),
+        },
+      },
+    ],
+    deliverableIds: ["d-411"],
+    decisionIds: [],
+    diagnostics: [
+      { at: daysAgo(4), level: "info", scope: "crm", message: "opportunités=3 valeur=48kEUR blocages=2" },
+    ],
+    source: hermes("Hermes · mission 240", daysAgo(4)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-237",
+    reference: "M-237",
+    title: "Correctif — export PDF CoProFlex",
+    summary:
+      "Les appels de charges dépassant vingt lots produisaient un document tronqué. Corrigé et déployé.",
+    status: "terminee",
+    projectId: "coproflex",
+    ownerId: "lyes",
+    autonomy: "encadree",
+    startedAt: daysAgo(2),
+    lastActivityAt: daysAgo(2),
+    progress: { done: 4, total: 4, unit: "étapes" },
+    duration: { elapsedMin: 96, capMin: 180 },
+    budget: { spentEur: 1.24, capEur: 3 },
+    steps: [
+      { id: "m-237-s1", label: "Reproduire l'anomalie", state: "done", durationMin: 22 },
+      { id: "m-237-s2", label: "Corriger la pagination", state: "done", durationMin: 41 },
+      { id: "m-237-s3", label: "Vérifier sur trois jeux de données", state: "done", durationMin: 24 },
+      { id: "m-237-s4", label: "Déployer en production", state: "done", durationMin: 9 },
+    ],
+    agents: [
+      {
+        id: "m-237-a1",
+        role: "Correction",
+        model: "codex-agent · profil build",
+        stepIds: ["m-237-s1", "m-237-s2", "m-237-s3"],
+        costEur: 1.04,
+      },
+      {
+        id: "m-237-a2",
+        role: "Livraison",
+        model: "codex-agent · profil deploy",
+        stepIds: ["m-237-s4"],
+        costEur: 0.2,
+      },
+    ],
+    activity: [
+      {
+        id: "m-237-e1",
+        at: daysAgo(2),
+        kind: "decision",
+        actor: "Étienne Guimbard",
+        message: "Déploiement en production approuvé.",
+        source: hermes("Hermes · exécution 237-04", daysAgo(2)),
+      },
+      {
+        id: "m-237-e2",
+        at: daysAgo(2),
+        kind: "livrable",
+        actor: "Correction",
+        message: "Pagination corrigée, révision 3b90c17 poussée.",
+        source: {
+          system: "github",
+          reference: "GitHub · coproflex-api@3b90c17",
+          syncedAt: daysAgo(2),
+        },
+      },
+    ],
+    deliverableIds: ["d-412"],
+    decisionIds: ["dec-05"],
+    diagnostics: [
+      {
+        at: daysAgo(2),
+        level: "info",
+        scope: "coolify",
+        message: "deployment=4180 target=production status=succeeded duration=9m12s",
+      },
+    ],
+    source: hermes("Hermes · mission 237", daysAgo(2)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-234",
+    reference: "M-234",
+    title: "Audit des dépendances Ocean",
+    summary:
+      "L'audit s'est interrompu : le registre a refusé les requêtes après la moitié des paquets. À relancer.",
+    status: "echouee",
+    projectId: "ocean",
+    ownerId: "lyes",
+    automationId: "auto-deps",
+    autonomy: "autonome",
+    startedAt: hoursAgo(9),
+    lastActivityAt: hoursAgo(8),
+    progress: { done: 1, total: 3, unit: "étapes" },
+    duration: { elapsedMin: 34, capMin: 60 },
+    budget: { spentEur: 0.22, capEur: 1 },
+    steps: [
+      { id: "m-234-s1", label: "Lister les dépendances", state: "done", finishedAt: hoursAgo(9), durationMin: 4 },
+      { id: "m-234-s2", label: "Interroger le registre", state: "failed", detail: "Trop de requêtes, réponse refusée après 214 paquets.", finishedAt: hoursAgo(8), durationMin: 30 },
+      { id: "m-234-s3", label: "Écrire le rapport", state: "skipped" },
+    ],
+    agents: [
+      {
+        id: "m-234-a1",
+        role: "Audit",
+        model: "codex-agent · profil ops",
+        stepIds: ["m-234-s1", "m-234-s2"],
+        costEur: 0.22,
+      },
+    ],
+    activity: [
+      {
+        id: "m-234-e1",
+        at: hoursAgo(8),
+        kind: "incident",
+        actor: "Audit",
+        message: "Le registre a cessé de répondre après 214 paquets sur 431.",
+        source: hermes("Hermes · exécution 234-02", hoursAgo(8)),
+      },
+    ],
+    deliverableIds: [],
+    decisionIds: [],
+    diagnostics: [
+      {
+        at: hoursAgo(8),
+        level: "error",
+        scope: "registre",
+        message: "HTTP 429 · packages=214/431 retry_after=3600s attempts=3",
+      },
+      {
+        at: hoursAgo(9),
+        level: "info",
+        scope: "exécution",
+        message: "run=234 profile=ops budget_cap=1.00EUR duration_cap=60min",
+      },
+    ],
+    source: hermes("Hermes · mission 234", hoursAgo(8)),
+  },
+
+  /* ---------------------------------------------------------------- */
+  {
+    id: "m-231",
+    reference: "M-231",
+    title: "Import du catalogue Ocean",
+    summary:
+      "Import annulé : le fichier fourni ne correspondait pas au format attendu. Reprise prévue après correction de la source.",
+    status: "annulee",
+    projectId: "ocean",
+    ownerId: "lyes",
+    autonomy: "encadree",
+    startedAt: daysAgo(3),
+    lastActivityAt: daysAgo(3),
+    progress: { done: 1, total: 4, unit: "étapes" },
+    duration: { elapsedMin: 18, capMin: 120 },
+    budget: { spentEur: 0.14, capEur: 2 },
+    steps: [
+      { id: "m-231-s1", label: "Contrôler le fichier source", state: "done", durationMin: 18 },
+      { id: "m-231-s2", label: "Transformer les lignes", state: "skipped" },
+      { id: "m-231-s3", label: "Importer", state: "skipped" },
+      { id: "m-231-s4", label: "Contrôler l'import", state: "skipped" },
+    ],
+    agents: [
+      {
+        id: "m-231-a1",
+        role: "Import",
+        model: "codex-agent · profil data",
+        stepIds: ["m-231-s1"],
+        costEur: 0.14,
+      },
+    ],
+    activity: [
+      {
+        id: "m-231-e1",
+        at: daysAgo(3),
+        kind: "decision",
+        actor: "Lyes Benali",
+        message: "Mission annulée : fichier source au mauvais format, reprise après correction.",
+        source: hermes("Hermes · exécution 231-01", daysAgo(3)),
+      },
+    ],
+    deliverableIds: [],
+    decisionIds: [],
+    diagnostics: [
+      {
+        at: daysAgo(3),
+        level: "warn",
+        scope: "import",
+        message: "colonnes attendues=14 trouvées=11 · encodage=latin-1",
+      },
+    ],
+    source: hermes("Hermes · mission 231", daysAgo(3)),
+  },
+];
+
+export const missionsById: Record<string, Mission> = Object.fromEntries(
+  missions.map((mission) => [mission.id, mission]),
+);

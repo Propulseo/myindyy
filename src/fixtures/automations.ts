@@ -1,0 +1,178 @@
+import type { Automation } from "@/types/domain";
+import { daysAgo, hoursAgo, minutesAgo } from "./clock";
+
+/**
+ * Une automatisation saine reste silencieuse. Elle ne remonte sur « Aujourd'hui » que
+ * lorsqu'elle échoue, détecte quelque chose, demande une décision, ou dépasse sa durée
+ * ou son budget habituels — c'est le rôle de `notableRuns()` dans `lib/selectors`.
+ */
+export const automations: Automation[] = [
+  {
+    id: "auto-ops",
+    name: "Propul'SEO — Ops Watch",
+    projectId: "propulseo",
+    ownerId: "etienne",
+    cadenceLabel: "Toutes les heures",
+    purpose:
+      "Contrôle la disponibilité des services, les temps de réponse et l'espace disque du serveur.",
+    health: "saine",
+    runCount: 47,
+    lastRunAt: minutesAgo(18),
+    typicalDurationMin: 4,
+    typicalCostEur: 0.06,
+    runs: [
+      { id: "r-ops-47", at: minutesAgo(18), outcome: "ok", durationMin: 4, costEur: 0.06, missionId: "m-253" },
+      { id: "r-ops-46", at: hoursAgo(1), outcome: "ok", durationMin: 4, costEur: 0.06 },
+      { id: "r-ops-45", at: hoursAgo(2), outcome: "ok", durationMin: 3, costEur: 0.05 },
+      { id: "r-ops-44", at: hoursAgo(3), outcome: "ok", durationMin: 4, costEur: 0.06 },
+      {
+        id: "r-ops-43",
+        at: hoursAgo(4),
+        outcome: "detection",
+        durationMin: 6,
+        costEur: 0.08,
+        note: "Espace disque à 81 % sur le serveur de préproduction, revenu à 64 % depuis.",
+      },
+      { id: "r-ops-42", at: hoursAgo(5), outcome: "ok", durationMin: 4, costEur: 0.06 },
+      { id: "r-ops-41", at: hoursAgo(6), outcome: "ok", durationMin: 4, costEur: 0.06 },
+    ],
+    source: { system: "hermes", reference: "Hermes · automatisation ops-watch", syncedAt: minutesAgo(18) },
+  },
+  {
+    id: "auto-briefing",
+    name: "Propul'SEO — Briefing du jour",
+    projectId: "propulseo",
+    ownerId: "etienne",
+    cadenceLabel: "Chaque matin à 7 h 30",
+    purpose:
+      "Rassemble les décisions en attente, les missions à surveiller et les rendez-vous de la journée.",
+    health: "saine",
+    runCount: 128,
+    lastRunAt: hoursAgo(7),
+    typicalDurationMin: 6,
+    typicalCostEur: 0.11,
+    runs: [
+      { id: "r-brf-128", at: hoursAgo(7), outcome: "ok", durationMin: 6, costEur: 0.11, missionId: "m-246" },
+      { id: "r-brf-127", at: daysAgo(1), outcome: "ok", durationMin: 5, costEur: 0.1 },
+      { id: "r-brf-126", at: daysAgo(2), outcome: "ok", durationMin: 7, costEur: 0.12 },
+      { id: "r-brf-125", at: daysAgo(3), outcome: "ok", durationMin: 6, costEur: 0.11 },
+    ],
+    source: { system: "hermes", reference: "Hermes · automatisation briefing", syncedAt: hoursAgo(7) },
+  },
+  {
+    id: "auto-crm",
+    name: "Vernay — Veille des demandes entrantes",
+    projectId: "vernay",
+    ownerId: "lucas",
+    cadenceLabel: "Toutes les deux heures",
+    purpose:
+      "Qualifie les demandes reçues et signale celles qui méritent un rappel dans la journée.",
+    health: "attention",
+    runCount: 92,
+    lastRunAt: minutesAgo(52),
+    typicalDurationMin: 34,
+    typicalCostEur: 0.28,
+    runs: [
+      {
+        id: "r-crm-92",
+        at: minutesAgo(52),
+        outcome: "detection",
+        durationMin: 52,
+        costEur: 0.41,
+        note: "Quatre demandes prioritaires détectées, dont deux avec un budget déclaré.",
+        missionId: "m-250",
+      },
+      { id: "r-crm-91", at: hoursAgo(3), outcome: "ok", durationMin: 31, costEur: 0.26 },
+      {
+        id: "r-crm-90",
+        at: hoursAgo(5),
+        outcome: "depassement",
+        durationMin: 61,
+        costEur: 0.52,
+        note: "Durée deux fois supérieure à l'habitude : file de demandes inhabituellement longue.",
+      },
+      { id: "r-crm-89", at: hoursAgo(7), outcome: "ok", durationMin: 29, costEur: 0.24 },
+      { id: "r-crm-88", at: hoursAgo(9), outcome: "ok", durationMin: 33, costEur: 0.27 },
+    ],
+    source: { system: "hermes", reference: "Hermes · automatisation crm-pulse", syncedAt: minutesAgo(52) },
+  },
+  {
+    id: "auto-deps",
+    name: "Ocean — Audit des dépendances",
+    projectId: "ocean",
+    ownerId: "lyes",
+    cadenceLabel: "Chaque nuit à 3 h",
+    purpose:
+      "Relève les dépendances obsolètes et les alertes de sécurité publiées sur le registre.",
+    health: "en_echec",
+    runCount: 31,
+    lastRunAt: hoursAgo(8),
+    typicalDurationMin: 12,
+    typicalCostEur: 0.18,
+    runs: [
+      {
+        id: "r-dep-31",
+        at: hoursAgo(8),
+        outcome: "echec",
+        durationMin: 34,
+        costEur: 0.22,
+        note: "Le registre a cessé de répondre après 214 paquets sur 431.",
+        missionId: "m-234",
+      },
+      {
+        id: "r-dep-30",
+        at: daysAgo(1),
+        outcome: "echec",
+        durationMin: 30,
+        costEur: 0.2,
+        note: "Même refus du registre, deuxième nuit consécutive.",
+      },
+      { id: "r-dep-29", at: daysAgo(2), outcome: "ok", durationMin: 11, costEur: 0.17 },
+      { id: "r-dep-28", at: daysAgo(3), outcome: "ok", durationMin: 12, costEur: 0.18 },
+    ],
+    source: { system: "hermes", reference: "Hermes · automatisation deps-audit", syncedAt: hoursAgo(8) },
+  },
+  {
+    id: "auto-crawl",
+    name: "Tao — Crawl hebdomadaire",
+    projectId: "tao",
+    ownerId: "lyes",
+    cadenceLabel: "Chaque lundi à 6 h",
+    purpose: "Vérifie que les pages publiques répondent et que le plan du site reste à jour.",
+    health: "saine",
+    runCount: 18,
+    lastRunAt: daysAgo(1),
+    typicalDurationMin: 22,
+    typicalCostEur: 0.31,
+    runs: [
+      { id: "r-crw-18", at: daysAgo(1), outcome: "ok", durationMin: 21, costEur: 0.3 },
+      { id: "r-crw-17", at: daysAgo(8), outcome: "ok", durationMin: 24, costEur: 0.33 },
+      { id: "r-crw-16", at: daysAgo(15), outcome: "ok", durationMin: 22, costEur: 0.31 },
+    ],
+    source: { system: "hermes", reference: "Hermes · automatisation tao-crawl", syncedAt: daysAgo(1) },
+  },
+  {
+    id: "auto-lots",
+    name: "CoProFlex — Synchronisation des lots",
+    projectId: "coproflex",
+    ownerId: "lyes",
+    cadenceLabel: "Toutes les 30 minutes",
+    purpose: "Aligne les lots et les appels de charges avec la base de gestion du client pilote.",
+    health: "saine",
+    runCount: 210,
+    lastRunAt: minutesAgo(11),
+    typicalDurationMin: 2,
+    typicalCostEur: 0.03,
+    runs: [
+      { id: "r-lot-210", at: minutesAgo(11), outcome: "ok", durationMin: 2, costEur: 0.03 },
+      { id: "r-lot-209", at: minutesAgo(41), outcome: "ok", durationMin: 2, costEur: 0.03 },
+      { id: "r-lot-208", at: hoursAgo(1), outcome: "ok", durationMin: 3, costEur: 0.04 },
+      { id: "r-lot-207", at: hoursAgo(2), outcome: "ok", durationMin: 2, costEur: 0.03 },
+    ],
+    source: { system: "hermes", reference: "Hermes · automatisation coproflex-lots", syncedAt: minutesAgo(11) },
+  },
+];
+
+export const automationsById: Record<string, Automation> = Object.fromEntries(
+  automations.map((automation) => [automation.id, automation]),
+);
