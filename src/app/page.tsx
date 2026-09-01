@@ -19,7 +19,7 @@ import {
 } from "@/lib/selectors";
 
 export default function TodayPage() {
-  const { viewer, data } = useCockpit();
+  const { viewer, data, hasError } = useCockpit();
   const { openNewMission } = useShellActions();
 
   const attention = useMemo(() => attentionItems(data, viewer), [data, viewer]);
@@ -31,7 +31,11 @@ export default function TodayPage() {
     <div className="space-y-9">
       <PageHeading
         title="Aujourd'hui"
-        lede={buildLede(attention.length, working.length)}
+        lede={
+          hasError
+            ? "Les sources n'ont pas répondu. Le cockpit préfère ne rien montrer plutôt qu'une vue partielle."
+            : buildLede(attention.length, working.length)
+        }
         aside={
           <p className="hidden font-mono text-[0.6875rem] text-muted sm:block">
             {DEMO_DAY_LABEL}

@@ -18,7 +18,7 @@ const KINDS = [
 ];
 
 export default function HistoryPage() {
-  const { viewer, data } = useCockpit();
+  const { viewer, data, hasError } = useCockpit();
   const entries = useMemo(() => historyEntries(data, viewer), [data, viewer]);
   const projects = useMemo(() => visibleProjects(data, viewer), [data, viewer]);
 
@@ -84,7 +84,7 @@ export default function HistoryPage() {
       </div>
 
       <p className="font-mono text-[0.6875rem] text-muted" role="status" aria-live="polite">
-        {plural(filtered.length, "entrée")}
+        {hasError ? "résultats indisponibles" : plural(filtered.length, "entrée")}
       </p>
 
       <ScreenState

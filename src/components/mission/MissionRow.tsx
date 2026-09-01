@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { cn } from "@/components/primitives/cn";
-import { StatusMark, StatusPill, StatusRail } from "@/components/status/StatusMark";
+import { StatusPill, StatusRail } from "@/components/status/StatusMark";
 import { peopleById, projectsById } from "@/fixtures";
 import { formatDuration, formatEur, formatRelative, ratio } from "@/lib/format";
 import { missionStatusMeta } from "@/lib/status";
@@ -33,17 +33,9 @@ export function MissionRow({ mission }: { mission: Mission }) {
 
         <div className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-start sm:gap-4">
           <div className="min-w-0 flex-1">
-            <div className="flex items-baseline gap-2">
-              <StatusMark
-                shape={meta.shape}
-                tone={meta.tone}
-                live={running}
-                className="translate-y-0.5 sm:hidden"
-              />
-              <h3 className="truncate text-sm leading-snug text-ivory">
-                {mission.title}
-              </h3>
-            </div>
+            <h3 className="truncate text-sm leading-snug text-ivory">
+              {mission.title}
+            </h3>
             <p className="mt-1 truncate text-xs text-muted">
               <span className="text-muted">{project?.name}</span>
               <span className="mx-1.5 text-line-strong">·</span>
@@ -55,8 +47,10 @@ export function MissionRow({ mission }: { mission: Mission }) {
             </p>
           </div>
 
-          <div className="flex shrink-0 items-center gap-3 sm:flex-col sm:items-end sm:gap-1.5">
-            <StatusPill meta={meta} live={running} className="hidden sm:inline-flex" />
+          {/* Une seule pastille : a droite en colonne sur desktop, sur une ligne
+              sous le titre sur mobile. */}
+          <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 sm:flex-col sm:items-end sm:gap-1.5">
+            <StatusPill meta={meta} live={running} />
             <span className="font-mono text-[0.6875rem] whitespace-nowrap text-muted tabular-nums">
               <span className="text-ivory/80">
                 {formatDuration(mission.duration.elapsedMin)}
@@ -65,12 +59,9 @@ export function MissionRow({ mission }: { mission: Mission }) {
               <span className={tight ? "text-attention" : "text-ivory/80"}>
                 {formatEur(mission.budget.spentEur)}
               </span>
-              <span className="mx-1.5 hidden text-line-strong sm:inline">·</span>
-              <span className="hidden sm:inline">
-                {formatRelative(mission.lastActivityAt)}
-              </span>
+              <span className="mx-1.5 text-line-strong">·</span>
+              {formatRelative(mission.lastActivityAt)}
             </span>
-            <StatusPill meta={meta} live={running} className="sm:hidden" />
           </div>
         </div>
       </Link>

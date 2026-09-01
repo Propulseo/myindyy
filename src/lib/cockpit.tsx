@@ -166,7 +166,10 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
     };
   }, [createdMissions, missionPatches, decisionPatches]);
 
-  const data = display === "vide" ? emptyDataset : liveData;
+  // En « vide » comme en « erreur », rien n'est affiché : les compteurs doivent le dire
+  // aussi, sinon l'en-tête annonce des éléments que l'écran ne montre pas.
+  const data =
+    display === "vide" || display === "erreur" ? emptyDataset : liveData;
 
   const controlMission = useCallback(
     (missionId: string, action: "suspendre" | "reprendre" | "relancer" | "annuler") => {

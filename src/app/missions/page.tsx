@@ -38,7 +38,7 @@ export default function MissionsPage() {
 
 function MissionsScreen() {
   const searchParams = useSearchParams();
-  const { viewer, data } = useCockpit();
+  const { viewer, data, hasError } = useCockpit();
   const { openNewMission } = useShellActions();
 
   const missions = useMemo(() => visibleMissions(data, viewer), [data, viewer]);
@@ -115,7 +115,11 @@ function MissionsScreen() {
     <div className="space-y-8">
       <PageHeading
         title="Missions"
-        lede={`${plural(missions.length, "mission")} sur vos projets. Ce qui demande une attention est remonté en premier.`}
+        lede={
+          hasError
+            ? "Les sources n'ont pas répondu. La liste n'est pas affichée tant que les données sont incomplètes."
+            : `${plural(missions.length, "mission")} sur vos projets. Ce qui demande une attention est remonté en premier.`
+        }
         aside={
           <Button variant="quiet" size="sm" onClick={() => openNewMission()}>
             Nouvelle mission
@@ -179,7 +183,9 @@ function MissionsScreen() {
             role="status"
             aria-live="polite"
           >
-            {plural(filtered.length, "mission trouvée", "missions trouvées")}
+            {hasError
+              ? "résultats indisponibles"
+              : plural(filtered.length, "mission trouvée", "missions trouvées")}
           </p>
           {hasFilters ? (
             <button

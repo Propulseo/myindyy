@@ -21,7 +21,7 @@ const FORMATS: { value: DeliverableFormat; label: string }[] = [
 ];
 
 export default function DeliverablesPage() {
-  const { viewer, data } = useCockpit();
+  const { viewer, data, hasError } = useCockpit();
   const deliverables = useMemo(() => visibleDeliverables(data, viewer), [data, viewer]);
   const projects = useMemo(() => visibleProjects(data, viewer), [data, viewer]);
 
@@ -102,7 +102,7 @@ export default function DeliverablesPage() {
       </div>
 
       <p className="font-mono text-[0.6875rem] text-muted" role="status" aria-live="polite">
-        {plural(filtered.length, "livrable")}
+        {hasError ? "résultats indisponibles" : plural(filtered.length, "livrable")}
       </p>
 
       <ScreenState
