@@ -230,7 +230,7 @@ export const taskStateMeta: Record<TaskState, StatusMeta> = {
     label: "Annulée",
     tone: "neutral",
     shape: "dash",
-    hint: "Retirée du jour, conservée dans le coffre",
+    hint: "Marquée annulée, toujours affichée et conservée dans le coffre",
   },
 };
 
@@ -253,7 +253,7 @@ export const taskCommandMeta: Record<TaskCommand, { label: string; hint: string 
   },
   "todo.cancel": {
     label: "todo.cancel",
-    hint: "Marque la tâche annulée sans la supprimer.",
+    hint: "Marque la tâche annulée sans la supprimer : elle reste affichée.",
   },
 };
 

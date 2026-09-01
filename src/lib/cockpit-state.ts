@@ -184,9 +184,14 @@ export function prolongedLimits(mission: Mission): {
   };
 }
 
-/** Ce qu'entraîne l'annulation d'une tâche, affiché avant de confirmer. */
+/**
+ * Ce qu'entraîne l'annulation d'une tâche, affiché avant de confirmer.
+ *
+ * Le texte décrit exactement ce que fait le cockpit : la tâche reste à l'écran.
+ * Rien n'est retiré, rien n'est perdu.
+ */
 export const TASK_CANCEL_CONSEQUENCE =
-  "La tâche sort de la journée. Elle n'est pas supprimée : Hermes la marque annulée dans le coffre, et elle reste consultable avec ce statut.";
+  "Hermes demande à Obsidian de marquer la tâche comme annulée. Elle n'est pas supprimée : elle reste affichée dans les tâches du jour, en fin de liste, avec le statut écrit « Annulée », et conserve son titre, son projet, son responsable, son échéance, sa note et sa provenance.";
 
 /* ------------------------------------------------------------------ */
 /* Réducteur                                                           */
@@ -527,7 +532,7 @@ export function cockpitReducer(
         journal: pushJournal(
           state,
           sequence,
-          `« ${task.title} » — annulée. Commande todo.cancel transmise à Hermes.`,
+          `« ${task.title} » — marquée annulée, conservée dans la journée. Commande todo.cancel transmise à Hermes.`,
           "danger",
         ),
       };
