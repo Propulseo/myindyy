@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import { Lock } from "lucide-react";
 import { Button } from "@/components/primitives/Button";
 import {
   Field,
@@ -11,8 +12,15 @@ import {
 import { StateBlock } from "@/components/primitives/Layout";
 import { Sheet } from "@/components/primitives/Overlay";
 import { SourceTag } from "@/components/status/Meter";
-import { DEMO_NOW_ISO, inHours, peopleById, projectsById } from "@/fixtures";
-import { can, canManageTask, capabilityDenial, taskDenial } from "@/lib/access";
+import { DEMO_NOW_ISO, inHours, peopleById } from "@/fixtures";
+import {
+  authorizeTaskCommand,
+  can,
+  capabilityDenial,
+  projectMemberIds,
+  taskDenial,
+  taskDenialMessage,
+} from "@/lib/access";
 import { useCockpit } from "@/lib/cockpit";
 import { isoFromLocalInput, localInputFromIso } from "@/lib/format";
 import { visibleProjects } from "@/lib/selectors";
@@ -46,8 +54,10 @@ export function TaskPanel({
   const seesPersonal = can(viewer, "tasks.personal.view");
   const command = task ? "todo.triage" : "todo.capture";
 
+  // Ouvrir le panneau demande déjà d'avoir la main sur ce qu'on vient trier, ou
+  // un endroit où déposer ce qu'on vient capturer.
   const allowed = task
-    ? canManageTask(viewer, task)
+    ? authorizeTaskCommand(viewer, "todo.triage", { task }).allowed
     : can(viewer, "tasks.manage") && (projects.length > 0 || seesPersonal);
   const denial = task
     ? taskDenial(viewer, task)
@@ -77,19 +87,25 @@ export function TaskPanel({
   }
 
   const dueAt = isoFromLocalInput(due);
-  const ready = title.trim().length > 2 && dueAt !== undefined;
 
   /** Qui peut porter la tâche : les membres du projet, ou le propriétaire seul. */
   const owners = useMemo(() => {
     if (!projectId) return [viewer];
-    const members = projectsById[projectId]?.memberIds ?? [];
-    const list = members.map((id) => peopleById[id]);
+    const list = projectMemberIds(projectId).map((id) => peopleById[id]);
     return list.length > 0 ? list : [viewer];
   }, [projectId, viewer]);
 
   const ownerValue = owners.some((person) => person.id === ownerId)
     ? ownerId
     : (owners[0]?.id ?? viewer.id);
+
+  // Le même jugement que le réducteur, sur la destination réellement choisie :
+  // le bouton ne propose jamais une commande qui serait refusée derrière.
+  const verdict = authorizeTaskCommand(viewer, command, {
+    task,
+    target: { projectId: projectId || undefined, ownerId: ownerValue },
+  });
+  const ready = title.trim().length > 2 && dueAt !== undefined && verdict.allowed;
 
   function submit() {
     if (!ready || !dueAt) return;
@@ -213,6 +229,13 @@ export function TaskPanel({
               )}
             </Field>
           </div>
+
+          {verdict.allowed ? null : (
+            <p className="flex items-start gap-2.5 rounded-sm border border-attention/30 bg-attention/12 px-3.5 py-3 text-xs leading-relaxed text-ivory">
+              <Lock aria-hidden size={12} strokeWidth={1.75} className="mt-0.5 shrink-0" />
+              {taskDenialMessage[verdict.reason ?? "project"]}
+            </p>
+          )}
 
           <Field label="Note" optional hint="Le contexte qui manquerait au titre.">
             {(props) => (

@@ -23,6 +23,7 @@ import type {
   TaskCommand,
 } from "@/types/domain";
 import { DEMO_NOW_ISO } from "@/fixtures/clock";
+import { authorizeTaskCommand } from "./access";
 import { formatDuration, plural } from "./format";
 
 export interface JournalEntry {
@@ -192,6 +193,16 @@ export function prolongedLimits(mission: Mission): {
  */
 export const TASK_CANCEL_CONSEQUENCE =
   "Hermes demande à Obsidian de marquer la tâche comme annulée. Elle n'est pas supprimée : elle reste affichée dans les tâches du jour, en fin de liste, avec le statut écrit « Annulée », et conserve son titre, son projet, son responsable, son échéance, sa note et sa provenance.";
+
+/**
+ * Ce que le journal dit d'une commande de tâche refusée.
+ *
+ * Volontairement générique et identique dans tous les cas : la phrase ne doit pas
+ * laisser deviner ce qu'elle protège — ni le titre d'une tâche, ni l'existence
+ * d'un projet qui n'est pas affecté au rôle.
+ */
+export const TASK_COMMAND_DENIED =
+  "Commande refusée : cette action sort de votre périmètre. Rien n'a été modifié.";
 
 /* ------------------------------------------------------------------ */
 /* Réducteur                                                           */
@@ -456,6 +467,10 @@ export function cockpitReducer(
     }
 
     case "task.capture": {
+      if (!authorizeTaskCommand(action.actor, "todo.capture", { target: action.draft }).allowed) {
+        return denyTaskCommand(state, sequence);
+      }
+
       const id = `t-new-${state.createdTasks.length + 1}`;
       const task = taskFromDraft(
         action.draft,
@@ -478,6 +493,15 @@ export function cockpitReducer(
     }
 
     case "task.triage": {
+      if (
+        !authorizeTaskCommand(action.actor, "todo.triage", {
+          task: action.task,
+          target: action.draft,
+        }).allowed
+      ) {
+        return denyTaskCommand(state, sequence);
+      }
+
       const task = taskFromDraft(
         action.draft,
         action.task,
@@ -499,6 +523,10 @@ export function cockpitReducer(
     }
 
     case "task.complete": {
+      if (!authorizeTaskCommand(action.actor, "todo.complete", { task: action.task }).allowed) {
+        return denyTaskCommand(state, sequence);
+      }
+
       const task: ObsidianTask = {
         ...action.task,
         state: "fait",
@@ -519,6 +547,10 @@ export function cockpitReducer(
     }
 
     case "task.cancel": {
+      if (!authorizeTaskCommand(action.actor, "todo.cancel", { task: action.task }).allowed) {
+        return denyTaskCommand(state, sequence);
+      }
+
       const task: ObsidianTask = {
         ...action.task,
         state: "annulee",
@@ -538,6 +570,18 @@ export function cockpitReducer(
       };
     }
   }
+}
+
+/**
+ * Une commande hors périmètre ne touche à rien : ni tâches, ni missions, ni
+ * décisions. Elle laisse seulement une trace générique dans le journal.
+ */
+function denyTaskCommand(state: CockpitState, sequence: number): CockpitState {
+  return {
+    ...state,
+    sequence,
+    journal: pushJournal(state, sequence, TASK_COMMAND_DENIED, "danger"),
+  };
 }
 
 /** Garde la note d'origine d'une tâche dans le coffre, quelle que soit la commande. */
