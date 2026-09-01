@@ -1,6 +1,5 @@
 import express from 'express';
 import type { Express, NextFunction, Request, Response } from 'express';
-import cors from 'cors';
 import { tasksRouter } from './routes/tasks.js';
 import { chatRouter, launchChatRun } from './routes/chat.js';
 import { createRunsRouter } from './routes/runs.js';
@@ -18,7 +17,6 @@ import db from './db/index.js';
 
 const app: Express = express();
 
-app.use(cors());
 app.use('/api', requireEtienne);
 
 const adapter = new HermesOAuthRuntime();

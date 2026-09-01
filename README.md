@@ -47,6 +47,10 @@ Production requires all of the following:
 
 The application never uses `X-Forwarded-For`, `Forwarded`, `req.ip`, query parameters, or request-body fields as identity. Express `trust proxy` is intentionally not enabled. The reverse proxy must strip any client-supplied `X-Indy-User` and `X-Indy-Proxy-Secret` headers, then inject its own values on the private upstream hop. The Indy port must bind only to the private host/network and must not be reachable directly from the Internet.
 
+The API is same-origin only. Indy emits no wildcard CORS headers and does not enable cross-origin credential sharing. For a browser request carrying `Origin`, the value must be the exact normalized origin built from the public `Host` (`https` in production, `http` in development), and `Sec-Fetch-Site` must be `same-origin`. `same-site`, `cross-site`, opaque/malformed origins, and unsafe browser-shaped requests missing either signal return `403` before route handling. The proxy must preserve or set the canonical public `Host`; forwarded host/protocol headers are not trusted.
+
+An anonymous `OPTIONS /api/**` preflight is not public metadata: it crosses the same authentication boundary and returns `401`. No `Access-Control-Allow-Origin` response is produced. A trusted non-browser client may omit both `Origin` and Fetch Metadata, but only after the private-source, transport-secret, and exact-user checks succeed. Cross-origin API access is intentionally unsupported; if it becomes necessary, it must be a separate exact normalized HTTPS allowlist design, never origin reflection or wildcard credentials.
+
 | Variable | Production meaning |
 | --- | --- |
 | `INDY_PROXY_SECRET_FILE` | Absolute path to the mounted secret file. The file contains at least 32 bytes; one final newline is ignored. The secret itself must not be placed in an environment variable. |

@@ -41,6 +41,8 @@ interface ProxyTrust {
   readonly ready: boolean;
 }
 
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
 const PRIVATE_NETWORKS: readonly PrivateNetwork[] = [
   { address: '10.0.0.0', family: 'ipv4', prefix: 8 },
   { address: '172.16.0.0', family: 'ipv4', prefix: 12 },
@@ -140,6 +142,42 @@ function isTrustedProxy(trust: ProxyTrust, rawAddress: string | undefined): bool
   return Boolean(address && trust.ready && trust.blockList.check(address.address, address.family));
 }
 
+function normalizedRequestOrigin(request: Request, environment: NodeJS.ProcessEnv): string | null {
+  const host = request.get('Host');
+  if (!host) return null;
+  try {
+    const scheme = environment.NODE_ENV === 'development' ? 'http' : 'https';
+    const url = new URL(`${scheme}://${host}`);
+    if (url.pathname !== '/' || url.search || url.hash || url.username || url.password) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function isBrowserRequestAllowed(request: Request, environment: NodeJS.ProcessEnv): boolean {
+  const origin = request.get('Origin');
+  const fetchSite = request.get('Sec-Fetch-Site');
+
+  if (fetchSite === 'cross-site' || fetchSite === 'same-site') return false;
+
+  if (origin !== undefined) {
+    if (fetchSite !== 'same-origin') return false;
+    try {
+      const parsed = new URL(origin);
+      const expectedProtocol = environment.NODE_ENV === 'development' ? 'http:' : 'https:';
+      return parsed.protocol === expectedProtocol
+        && parsed.origin === origin
+        && parsed.origin === normalizedRequestOrigin(request, environment);
+    } catch {
+      return false;
+    }
+  }
+
+  if (!SAFE_METHODS.has(request.method.toUpperCase()) && fetchSite !== undefined) return false;
+  return true;
+}
+
 export function createRequireEtienne(options: EtienneAuthOptions = {}): RequestHandler {
   const environment = options.environment ?? process.env;
   const proxyTrust = parseTrustedProxyCidrs(environment.INDY_TRUSTED_PROXY_CIDRS);
@@ -153,9 +191,17 @@ export function createRequireEtienne(options: EtienneAuthOptions = {}): RequestH
       && environment.INDY_DEV_ACTOR === 'etienne'
       && isLoopback(remoteAddress);
 
-    if (developmentBypass) {
+    const continueAsEtienne = () => {
+      if (!isBrowserRequestAllowed(request, environment)) {
+        response.status(403).json({ error: 'Forbidden' });
+        return;
+      }
       request.actor = ETIENNE_ACTOR;
       next();
+    };
+
+    if (developmentBypass) {
+      continueAsEtienne();
       return;
     }
 
@@ -182,8 +228,7 @@ export function createRequireEtienne(options: EtienneAuthOptions = {}): RequestH
       return;
     }
 
-    request.actor = ETIENNE_ACTOR;
-    next();
+    continueAsEtienne();
   };
 }
 

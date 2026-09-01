@@ -37,7 +37,33 @@
 
 ## Auto-revue et préoccupations
 
-- Aucune route API connue n’est montée avant la frontière. `cors()` ne sert que les réponses de pré-vol avant elle; aucune donnée cockpit n’est renvoyée sans authentification.
+- Aucune route API connue ni middleware CORS ne répond avant la frontière d’authentification.
 - `X-Forwarded-For`, `Forwarded`, `req.ip` et Express `trust proxy` ne participent pas à la confiance. Le proxy doit supprimer les deux en-têtes Indy reçus du client et les réinjecter sur le hop privé.
 - Le secret est lu au démarrage du module; une rotation du fichier exige un redémarrage contrôlé du processus Indy.
 - Aucune préoccupation critique ou importante restante. Le warning Vite historique sur le chunk global d’environ 672 kB gzip demeure hors Task 9.
+
+## Fix review round 1/5 — 2026-09-02
+
+### Correctif sécurité
+
+- Le middleware permissif `cors()` a été retiré. Indy n’émet plus `Access-Control-Allow-Origin: *` et ne répond plus aux preflights avant authentification.
+- Après validation source + secret + utilisateur, toute requête browser portant `Origin` doit fournir l’origine normalisée exacte `https://Host` en production (`http://Host` en développement) et `Sec-Fetch-Site: same-origin`.
+- `same-site`, `cross-site`, origine opaque/malformée et méthode unsafe browser-shaped privée d’un des deux signaux sont refusés `403` avant mutation. Un client interne sans `Origin` ni Fetch Metadata reste autorisé seulement après transport auth complet.
+- Un preflight anonyme `/api/**` retourne `401` sans aucun en-tête CORS. Les accès cross-origin ne sont pas supportés; aucune réflexion d’origine ni wildcard credentials n’existe.
+
+### Régressions ajoutées
+
+- RED : 4 échecs ciblés sur 21 tests auth — preflight `204`, mutation hostile `201`, ACAO `*` et méthodes unsafe ambiguës acceptées.
+- GREEN : 21/21 auth après retrait de CORS et ajout du contrôle Origin/Fetch Metadata.
+- Le SSE `/api/tasks/:id/live` est maintenant testé directement : une mission réelle existe, mais la requête anonyme reçoit `401 application/json` avant `text/event-stream`.
+- Les configurations chemin secret relatif, CIDR valide + malformed, privé + public, secret trop court et la casse `Etienne` échouent fermé.
+- Chaque intégration production de `run-commands.test.ts` initialise désormais son propre home/secret, réinitialise les modules, ferme sa base et restaure l’environnement. Le test de course passe aussi seul, sans dépendre du test précédent.
+
+### Vérifications du correctif
+
+- `pnpm test -- tests/auth-etienne.test.ts tests/run-commands.test.ts tests/runtime-route.test.ts` → 3 fichiers, 38 tests, 0 échec.
+- `pnpm test -- tests/run-commands.test.ts -t "keeps exactly one start command"` → 1 test, 0 échec (10 ignorés), exécuté isolément.
+- `pnpm test` → 18 fichiers, 114 tests, 0 échec.
+- `pnpm typecheck` → serveur et client, exit 0.
+- `pnpm build` → serveur, client et assets, exit 0; 2 600 modules transformés. Le warning Vite historique sur le chunk global d'environ 672 kB gzip demeure hors Task 9.
+- `git diff --check` → exit 0.

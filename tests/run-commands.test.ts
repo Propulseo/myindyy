@@ -13,14 +13,24 @@ import type { MissionRun, SessionMetadata, Task } from '../shared/types.js';
 
 const schema = readFileSync(new URL('../server/db/schema.sql', import.meta.url), 'utf8');
 const TEST_PROXY_SECRET = 'test-only-run-command-proxy-secret';
+const PRODUCTION_ENV_KEYS = [
+  'NODE_ENV',
+  'INDY_PROXY_SECRET_FILE',
+  'INDY_TRUSTED_PROXY_CIDRS',
+  'MINIONS_HOME',
+] as const;
+const originalProductionEnv = Object.fromEntries(
+  PRODUCTION_ENV_KEYS.map((key) => [key, process.env[key]]),
+) as Record<(typeof PRODUCTION_ENV_KEYS)[number], string | undefined>;
 
-function configureProductionAuth(): void {
+function configureProductionAuth(prefix: string): void {
   const directory = mkdtempSync(join(tmpdir(), 'indy-run-auth-'));
   const secretFile = join(directory, 'proxy-secret');
   writeFileSync(secretFile, `${TEST_PROXY_SECRET}\n`, { encoding: 'utf8', mode: 0o600 });
   process.env.NODE_ENV = 'production';
   process.env.INDY_PROXY_SECRET_FILE = secretFile;
   process.env.INDY_TRUSTED_PROXY_CIDRS = '127.0.0.0/8,::1/128';
+  process.env.MINIONS_HOME = mkdtempSync(join(tmpdir(), prefix));
 }
 
 function productionAuthHeaders(): Record<string, string> {
@@ -28,6 +38,25 @@ function productionAuthHeaders(): Record<string, string> {
     'X-Indy-Proxy-Secret': TEST_PROXY_SECRET,
     'X-Indy-User': 'etienne',
   };
+}
+
+async function loadProductionApp(prefix: string) {
+  configureProductionAuth(prefix);
+  vi.resetModules();
+  const [{ default: productionApp, adapter }, { default: productionDb }, liveChat] = await Promise.all([
+    import('../server/app.js'),
+    import('../server/db/index.js'),
+    import('../server/live-chat.js'),
+  ]);
+  return { productionApp, adapter, productionDb, liveChat };
+}
+
+function restoreProductionEnvironment(): void {
+  for (const key of PRODUCTION_ENV_KEYS) {
+    const value = originalProductionEnv[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
 }
 
 class FakeHermesBoundary {
@@ -86,7 +115,11 @@ describe('operator run commands', () => {
     }));
   });
 
-  afterEach(() => database.close());
+  afterEach(() => {
+    database.close();
+    restoreProductionEnvironment();
+    vi.resetModules();
+  });
 
   function startRun(settings: Partial<Pick<MissionRun, 'provider' | 'model' | 'reasoningEffort'>> = {}) {
     return service.startMission({
@@ -120,27 +153,24 @@ describe('operator run commands', () => {
   }
 
   it('registers the mission command route in the application', async () => {
-    process.env.MINIONS_HOME = mkdtempSync(join(tmpdir(), 'indy-run-commands-'));
-    configureProductionAuth();
-    const { default: productionApp } = await import('../server/app.js');
+    const { productionApp, productionDb } = await loadProductionApp('indy-run-commands-');
 
-    const response = await request(productionApp)
-      .post('/api/missions/missing/commands')
-      .set(productionAuthHeaders())
-      .set('Idempotency-Key', 'cmd-route')
-      .send({ type: 'interrupt', runId: 'missing-run' });
+    try {
+      const response = await request(productionApp)
+        .post('/api/missions/missing/commands')
+        .set(productionAuthHeaders())
+        .set('Idempotency-Key', 'cmd-route')
+        .send({ type: 'interrupt', runId: 'missing-run' });
 
-    expect(response.status).toBe(404);
-    expect(response.body).toEqual({ error: 'Mission not found' });
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({ error: 'Mission not found' });
+    } finally {
+      productionDb.close();
+    }
   });
 
   it('keeps a corrected successor streaming when the interrupted goal finishes late', async () => {
-    process.env.MINIONS_HOME ||= mkdtempSync(join(tmpdir(), 'indy-run-race-'));
-    const [{ default: productionApp, adapter }, { default: productionDb }, liveChat] = await Promise.all([
-      import('../server/app.js'),
-      import('../server/db/index.js'),
-      import('../server/live-chat.js'),
-    ]);
+    const { productionApp, adapter, productionDb, liveChat } = await loadProductionApp('indy-run-race-');
     const taskId = `mission-race-${Date.now()}`;
     productionDb.prepare(`
       INSERT INTO tasks (
@@ -256,6 +286,9 @@ describe('operator run commands', () => {
       setGoalSpy.mockRestore();
       interruptSpy.mockRestore();
       runtimeStatusSpy.mockRestore();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      productionDb.close();
     }
   });
 

@@ -86,10 +86,15 @@ describe('Etienne cockpit authentication', () => {
         .get('/api/tasks')
         .set(validEtienneHeaders())
         .set('X-Indy-User', 'lucas');
+      const wrongCase = await request(app)
+        .get('/api/tasks')
+        .set(validEtienneHeaders())
+        .set('X-Indy-User', 'Etienne');
       const etienne = await request(app).get('/api/tasks').set(validEtienneHeaders());
 
       expect(anonymous.status).toBe(401);
       expect(otherUser.status).toBe(403);
+      expect(wrongCase.status).toBe(403);
       expect(etienne.status).toBe(200);
     } finally {
       database.close();
@@ -194,6 +199,142 @@ describe('Etienne cockpit authentication', () => {
     expect(response.text).not.toContain('does-not-exist');
   });
 
+  it.each([
+    {
+      name: 'a relative secret path',
+      environment: () => secureEnvironment({ INDY_PROXY_SECRET_FILE: 'relative/proxy-secret' }),
+    },
+    {
+      name: 'a malformed CIDR mixed with a valid range',
+      environment: () => secureEnvironment({
+        INDY_TRUSTED_PROXY_CIDRS: '10.0.0.0/8,not-a-cidr',
+      }),
+    },
+    {
+      name: 'a public CIDR mixed with a private range',
+      environment: () => secureEnvironment({
+        INDY_TRUSTED_PROXY_CIDRS: '10.0.0.0/8,203.0.113.0/24',
+      }),
+    },
+    {
+      name: 'a transport secret shorter than 32 bytes',
+      environment: () => secureEnvironment({ INDY_PROXY_SECRET_FILE: createSecretFile('too-short') }),
+    },
+  ])('fails closed for $name', async ({ environment }) => {
+    const app = await createAuthProbe({
+      environment: environment(),
+      remoteAddress: '10.20.30.40',
+    });
+
+    const response = await request(app)
+      .get('/api/probe')
+      .set(validEtienneHeaders());
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Authentication unavailable' });
+  });
+
+  it('requires anonymous API preflight to pass the authentication boundary', async () => {
+    const { app, database } = await loadProductionApp();
+
+    try {
+      const response = await request(app)
+        .options('/api/tasks')
+        .set('Origin', 'https://hostile.example')
+        .set('Access-Control-Request-Method', 'POST');
+
+      expect(response.status).toBe(401);
+      expect(response.headers['access-control-allow-origin']).toBeUndefined();
+      expect(response.headers['access-control-allow-credentials']).toBeUndefined();
+    } finally {
+      database.close();
+    }
+  });
+
+  it('rejects an authenticated hostile-origin mutation before it changes state', async () => {
+    const { app, database } = await loadProductionApp();
+    const before = database.prepare('SELECT COUNT(*) AS count FROM tasks').get();
+
+    try {
+      const response = await request(app)
+        .post('/api/tasks')
+        .set(validEtienneHeaders())
+        .set('Host', 'indy.example.test')
+        .set('Origin', 'https://hostile.example')
+        .set('Sec-Fetch-Site', 'cross-site')
+        .send({ description: 'Must not be created' });
+
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ error: 'Forbidden' });
+      expect(response.headers['access-control-allow-origin']).toBeUndefined();
+      expect(response.headers['access-control-allow-credentials']).toBeUndefined();
+      expect(database.prepare('SELECT COUNT(*) AS count FROM tasks').get()).toEqual(before);
+    } finally {
+      database.close();
+    }
+  });
+
+  it('accepts exact same-origin browser mutations without emitting permissive CORS headers', async () => {
+    const { app, database } = await loadProductionApp();
+
+    try {
+      const response = await request(app)
+        .post('/api/tasks')
+        .set(validEtienneHeaders())
+        .set('Host', 'indy.example.test')
+        .set('Origin', 'https://indy.example.test')
+        .set('Sec-Fetch-Site', 'same-origin')
+        .send({ description: 'Same-origin task' });
+
+      expect(response.status).toBe(201);
+      expect(response.headers['access-control-allow-origin']).toBeUndefined();
+      expect(response.headers['access-control-allow-credentials']).toBeUndefined();
+      expect(response.body.task).toMatchObject({ description: 'Same-origin task' });
+    } finally {
+      database.close();
+    }
+  });
+
+  it('rejects unsafe browser-shaped requests when Origin or Fetch Metadata is missing', async () => {
+    const { app, database } = await loadProductionApp();
+
+    try {
+      const missingFetchMetadata = await request(app)
+        .post('/api/tasks')
+        .set(validEtienneHeaders())
+        .set('Host', 'indy.example.test')
+        .set('Origin', 'https://indy.example.test')
+        .send({ description: 'Missing fetch metadata' });
+      const missingOrigin = await request(app)
+        .post('/api/tasks')
+        .set(validEtienneHeaders())
+        .set('Host', 'indy.example.test')
+        .set('Sec-Fetch-Site', 'same-origin')
+        .send({ description: 'Missing origin' });
+
+      expect(missingFetchMetadata.status).toBe(403);
+      expect(missingOrigin.status).toBe(403);
+    } finally {
+      database.close();
+    }
+  });
+
+  it('supports an authenticated non-browser proxy request with no Origin metadata', async () => {
+    const { app, database } = await loadProductionApp();
+
+    try {
+      const response = await request(app)
+        .post('/api/tasks')
+        .set(validEtienneHeaders())
+        .send({ description: 'Internal proxy task' });
+
+      expect(response.status).toBe(201);
+      expect(response.body.task).toMatchObject({ description: 'Internal proxy task' });
+    } finally {
+      database.close();
+    }
+  });
+
   it('protects every API family, including health and commands, before route handling', async () => {
     const { app, adapter, database } = await loadProductionApp();
     vi.spyOn(adapter, 'healthCheck').mockResolvedValue(true);
@@ -228,6 +369,26 @@ describe('Etienne cockpit authentication', () => {
       expect(response.status).toBe(401);
       expect(response.headers['content-type']).toMatch(/^application\/json/);
       expect(response.text).not.toContain('task_runs_snapshot');
+    } finally {
+      database.close();
+    }
+  });
+
+  it('rejects per-task live SSE before opening stream headers', async () => {
+    const { app, database } = await loadProductionApp();
+
+    try {
+      const created = await request(app)
+        .post('/api/tasks')
+        .set(validEtienneHeaders())
+        .send({ description: 'Live stream auth probe' });
+      const response = await request(app)
+        .get(`/api/tasks/${created.body.task.id}/live`)
+        .timeout({ deadline: 500 });
+
+      expect(response.status).toBe(401);
+      expect(response.headers['content-type']).toMatch(/^application\/json/);
+      expect(response.headers['content-type']).not.toContain('text/event-stream');
     } finally {
       database.close();
     }
