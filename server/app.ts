@@ -7,7 +7,7 @@ import { createAgentRouter, createTaskAgentSettingsRouter } from './routes/agent
 import { createScheduledTasksRouter } from './routes/scheduled-tasks.js';
 import { skillsRouter } from './routes/skills.js';
 import { filesRouter } from './routes/files.js';
-import { HermesWorkerAdapter } from './adapters/hermes-worker.js';
+import { HermesOAuthRuntime } from './runtime/hermes-runtime.js';
 import { initSSE, addClient, sendEvent } from './events.js';
 import { getRunStatuses } from './live-chat.js';
 import { getAppVersion } from './version.js';
@@ -16,7 +16,7 @@ const app: Express = express();
 
 app.use(cors());
 
-const adapter = new HermesWorkerAdapter();
+const adapter = new HermesOAuthRuntime();
 
 app.get('/api/health', async (_req, res) => {
   const hermes = await adapter.healthCheck();

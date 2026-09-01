@@ -18,6 +18,7 @@ import type {
 import type { AgentAdapter, AgentRunOptions, AgentRunSettings, StreamEvent } from './types.js';
 import type { WorkerEvent, WorkerRequest, WorkerResult, WorkerErrorPayload } from './worker-protocol.js';
 import { expandHomePrefix, resolveHermesHome, resolveMinionsWorkspaceDir } from '../paths.js';
+import { sanitizeWorkerEnv } from '../runtime/policy.js';
 
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const WORKER_INTERRUPT_TIMEOUT_MS = 10_000;
@@ -320,10 +321,11 @@ class HermesWorkerClient {
     const child = spawn(python, [script], {
       cwd: workspace,
       env: {
-        ...process.env,
+        ...sanitizeWorkerEnv(process.env),
         HERMES_QUIET: '1',
         HERMES_YOLO_MODE: '1',
       },
+      shell: false,
     });
 
     this.child = child;
