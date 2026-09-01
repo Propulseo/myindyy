@@ -37,5 +37,5 @@ export function assertAllowedRuntime(settings: AgentRunSettings): ResolvedRuntim
 }
 
 export function sanitizeWorkerEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(source).filter(([key]) => !MODEL_KEY_NAMES.has(key)));
+  return Object.fromEntries(Object.entries(source).filter(([key]) => !MODEL_KEY_NAMES.has(key.toUpperCase())));
 }

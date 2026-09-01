@@ -23,6 +23,14 @@ import { sanitizeWorkerEnv } from '../runtime/policy.js';
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const WORKER_INTERRUPT_TIMEOUT_MS = 10_000;
 
+export function createWorkerEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return {
+    ...sanitizeWorkerEnv(source),
+    HERMES_QUIET: '1',
+    HERMES_YOLO_MODE: '1',
+  };
+}
+
 type WorkerRequestInput = WorkerRequest extends infer Request
   ? Request extends WorkerRequest
     ? Omit<Request, 'id'>
@@ -320,11 +328,7 @@ class HermesWorkerClient {
     mkdirSync(workspace, { recursive: true });
     const child = spawn(python, [script], {
       cwd: workspace,
-      env: {
-        ...sanitizeWorkerEnv(process.env),
-        HERMES_QUIET: '1',
-        HERMES_YOLO_MODE: '1',
-      },
+      env: createWorkerEnvironment(),
       shell: false,
     });
 
