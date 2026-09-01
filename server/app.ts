@@ -13,11 +13,13 @@ import { HermesOAuthRuntime } from './runtime/hermes-runtime.js';
 import { initSSE, addClient, sendEvent } from './events.js';
 import { getRunStatuses } from './live-chat.js';
 import { getAppVersion } from './version.js';
+import { requireEtienne } from './auth/etienne.js';
 import db from './db/index.js';
 
 const app: Express = express();
 
 app.use(cors());
+app.use('/api', requireEtienne);
 
 const adapter = new HermesOAuthRuntime();
 

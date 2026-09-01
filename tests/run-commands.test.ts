@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import express, { type Express } from 'express';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
@@ -12,6 +12,23 @@ import { createRunService, type RunService } from '../server/runs/service.js';
 import type { MissionRun, SessionMetadata, Task } from '../shared/types.js';
 
 const schema = readFileSync(new URL('../server/db/schema.sql', import.meta.url), 'utf8');
+const TEST_PROXY_SECRET = 'test-only-run-command-proxy-secret';
+
+function configureProductionAuth(): void {
+  const directory = mkdtempSync(join(tmpdir(), 'indy-run-auth-'));
+  const secretFile = join(directory, 'proxy-secret');
+  writeFileSync(secretFile, `${TEST_PROXY_SECRET}\n`, { encoding: 'utf8', mode: 0o600 });
+  process.env.NODE_ENV = 'production';
+  process.env.INDY_PROXY_SECRET_FILE = secretFile;
+  process.env.INDY_TRUSTED_PROXY_CIDRS = '127.0.0.0/8,::1/128';
+}
+
+function productionAuthHeaders(): Record<string, string> {
+  return {
+    'X-Indy-Proxy-Secret': TEST_PROXY_SECRET,
+    'X-Indy-User': 'etienne',
+  };
+}
 
 class FakeHermesBoundary {
   readonly interruptions: Array<{ sessionId: string; reason?: string }> = [];
@@ -56,6 +73,10 @@ describe('operator run commands', () => {
     hermes = new FakeHermesBoundary();
     launched = [];
     app = express();
+    app.use((req, _res, next) => {
+      req.actor = { id: 'etienne' };
+      next();
+    });
     app.use(express.json());
     app.use('/api/missions', createRunsRouter({
       database,
@@ -100,10 +121,12 @@ describe('operator run commands', () => {
 
   it('registers the mission command route in the application', async () => {
     process.env.MINIONS_HOME = mkdtempSync(join(tmpdir(), 'indy-run-commands-'));
+    configureProductionAuth();
     const { default: productionApp } = await import('../server/app.js');
 
     const response = await request(productionApp)
       .post('/api/missions/missing/commands')
+      .set(productionAuthHeaders())
       .set('Idempotency-Key', 'cmd-route')
       .send({ type: 'interrupt', runId: 'missing-run' });
 
@@ -178,12 +201,14 @@ describe('operator run commands', () => {
     try {
       const goal = await request(productionApp)
         .post(`/api/tasks/${taskId}/messages`)
+        .set(productionAuthHeaders())
         .send({ content: 'Original goal', mode: 'goal' });
       expect(goal.status).toBe(202);
       await oldConsumed;
 
       const correction = await request(productionApp)
         .post(`/api/missions/${taskId}/commands`)
+        .set(productionAuthHeaders())
         .set('Idempotency-Key', `correct-race-${taskId}`)
         .send({ type: 'correct', runId: goal.body.runId, reason: 'Corrected instruction' });
       expect(correction.status).toBe(202);
@@ -220,6 +245,7 @@ describe('operator run commands', () => {
 
       const concurrent = await request(productionApp)
         .post(`/api/tasks/${taskId}/messages`)
+        .set(productionAuthHeaders())
         .send({ content: 'Concurrent launch' });
       expect(concurrent.status).toBe(409);
     } finally {

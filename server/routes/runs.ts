@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Router, type Request, type Router as ExpressRouter } from 'express';
+import { Router, type Router as ExpressRouter } from 'express';
 import type { Database } from 'better-sqlite3';
 import type { AgentAdapter, AgentRunSettings } from '../adapters/types.js';
 import { broadcast } from '../events.js';
@@ -38,10 +38,6 @@ interface StoredHttpResult {
 const ACTIVE_STATUSES = new Set<MissionRun['status']>(['queued', 'running', 'waiting_approval']);
 const TERMINAL_STATUSES = new Set<MissionRun['status']>(['completed', 'failed', 'cancelled']);
 const COMMAND_FIELDS = new Set(['type', 'runId', 'reason']);
-
-function resolveActor(_request: Request): string {
-  return 'etienne';
-}
 
 function canonicalHash(missionId: string, command: RunCommandBody): string {
   const canonical = JSON.stringify({
@@ -122,7 +118,7 @@ export function createRunsRouter(dependencies: RunsRouterDependencies): ExpressR
     const missionId = req.params.missionId;
     const claim = repository.claimCommand({
       idempotencyKey,
-      actorId: resolveActor(req),
+      actorId: req.actor.id,
       missionId,
       runId: command.runId,
       commandType: command.type,

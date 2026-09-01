@@ -1,0 +1,190 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { BlockList, isIP } from 'node:net';
+import { isAbsolute } from 'node:path';
+import type { Request, RequestHandler } from 'express';
+
+export const ETIENNE_ACTOR = Object.freeze({ id: 'etienne' as const });
+export const INDY_USER_HEADER = 'X-Indy-User';
+export const INDY_PROXY_SECRET_HEADER = 'X-Indy-Proxy-Secret';
+
+export interface EtienneActor {
+  readonly id: 'etienne';
+}
+
+declare global {
+  namespace Express {
+    interface Request {
+      actor: EtienneActor;
+    }
+  }
+}
+
+export interface EtienneAuthOptions {
+  readonly environment?: NodeJS.ProcessEnv;
+  readonly getRemoteAddress?: (request: Request) => string | undefined;
+}
+
+type AddressFamily = 'ipv4' | 'ipv6';
+
+interface NetworkAddress {
+  readonly address: string;
+  readonly family: AddressFamily;
+}
+
+interface PrivateNetwork extends NetworkAddress {
+  readonly prefix: number;
+}
+
+interface ProxyTrust {
+  readonly blockList: BlockList;
+  readonly ready: boolean;
+}
+
+const PRIVATE_NETWORKS: readonly PrivateNetwork[] = [
+  { address: '10.0.0.0', family: 'ipv4', prefix: 8 },
+  { address: '172.16.0.0', family: 'ipv4', prefix: 12 },
+  { address: '192.168.0.0', family: 'ipv4', prefix: 16 },
+  { address: '127.0.0.0', family: 'ipv4', prefix: 8 },
+  { address: '169.254.0.0', family: 'ipv4', prefix: 16 },
+  { address: 'fc00::', family: 'ipv6', prefix: 7 },
+  { address: 'fe80::', family: 'ipv6', prefix: 10 },
+  { address: '::1', family: 'ipv6', prefix: 128 },
+];
+
+const PRIVATE_BLOCKS = PRIVATE_NETWORKS.map((network) => {
+  const blockList = new BlockList();
+  blockList.addSubnet(network.address, network.prefix, network.family);
+  return { blockList, network };
+});
+
+function normalizeAddress(rawAddress: string | undefined): NetworkAddress | null {
+  if (!rawAddress) return null;
+  const address = rawAddress.split('%', 1)[0].toLowerCase();
+  if (address.startsWith('::ffff:')) {
+    const ipv4 = address.slice('::ffff:'.length);
+    if (isIP(ipv4) === 4) return { address: ipv4, family: 'ipv4' };
+  }
+  const version = isIP(address);
+  if (version === 4) return { address, family: 'ipv4' };
+  if (version === 6) return { address, family: 'ipv6' };
+  return null;
+}
+
+function isPrivateSubnet(address: NetworkAddress, prefix: number): boolean {
+  return PRIVATE_BLOCKS.some(({ blockList, network }) => (
+    network.family === address.family
+      && prefix >= network.prefix
+      && blockList.check(address.address, address.family)
+  ));
+}
+
+function parseTrustedProxyCidrs(value: string | undefined): ProxyTrust {
+  const blockList = new BlockList();
+  const entries = value?.split(',').map((entry) => entry.trim()).filter(Boolean) ?? [];
+  if (entries.length === 0) return { blockList, ready: false };
+
+  try {
+    for (const entry of entries) {
+      const slash = entry.lastIndexOf('/');
+      const rawAddress = slash === -1 ? entry : entry.slice(0, slash);
+      const normalized = normalizeAddress(rawAddress);
+      if (!normalized) return { blockList: new BlockList(), ready: false };
+      const maxPrefix = normalized.family === 'ipv4' ? 32 : 128;
+      const prefixText = slash === -1 ? String(maxPrefix) : entry.slice(slash + 1);
+      if (!/^\d+$/.test(prefixText)) return { blockList: new BlockList(), ready: false };
+      const prefix = Number(prefixText);
+      if (prefix < 0 || prefix > maxPrefix || !isPrivateSubnet(normalized, prefix)) {
+        return { blockList: new BlockList(), ready: false };
+      }
+      blockList.addSubnet(normalized.address, prefix, normalized.family);
+    }
+  } catch {
+    return { blockList: new BlockList(), ready: false };
+  }
+
+  return { blockList, ready: true };
+}
+
+function readMountedSecret(filePath: string | undefined): string | null {
+  if (!filePath || !isAbsolute(filePath)) return null;
+  try {
+    const file = readFileSync(filePath, 'utf8');
+    if (Buffer.byteLength(file, 'utf8') > 4096) return null;
+    const secret = file.replace(/\r?\n$/, '');
+    if (/[\r\n]/.test(secret) || Buffer.byteLength(secret, 'utf8') < 32) return null;
+    return secret;
+  } catch {
+    return null;
+  }
+}
+
+function secretsMatch(expected: string, presented: string): boolean {
+  const expectedDigest = createHash('sha256').update(expected, 'utf8').digest();
+  const presentedDigest = createHash('sha256').update(presented, 'utf8').digest();
+  return timingSafeEqual(expectedDigest, presentedDigest);
+}
+
+function isLoopback(rawAddress: string | undefined): boolean {
+  const address = normalizeAddress(rawAddress);
+  if (!address) return false;
+  return PRIVATE_BLOCKS.some(({ blockList, network }) => (
+    (network.address === '127.0.0.0' || network.address === '::1')
+      && network.family === address.family
+      && blockList.check(address.address, address.family)
+  ));
+}
+
+function isTrustedProxy(trust: ProxyTrust, rawAddress: string | undefined): boolean {
+  const address = normalizeAddress(rawAddress);
+  return Boolean(address && trust.ready && trust.blockList.check(address.address, address.family));
+}
+
+export function createRequireEtienne(options: EtienneAuthOptions = {}): RequestHandler {
+  const environment = options.environment ?? process.env;
+  const proxyTrust = parseTrustedProxyCidrs(environment.INDY_TRUSTED_PROXY_CIDRS);
+  const transportSecret = readMountedSecret(environment.INDY_PROXY_SECRET_FILE);
+  const configurationReady = proxyTrust.ready && transportSecret !== null;
+  const getRemoteAddress = options.getRemoteAddress ?? ((request: Request) => request.socket.remoteAddress);
+
+  return (request, response, next) => {
+    const remoteAddress = getRemoteAddress(request);
+    const developmentBypass = environment.NODE_ENV === 'development'
+      && environment.INDY_DEV_ACTOR === 'etienne'
+      && isLoopback(remoteAddress);
+
+    if (developmentBypass) {
+      request.actor = ETIENNE_ACTOR;
+      next();
+      return;
+    }
+
+    if (!configurationReady) {
+      response.status(503).json({ error: 'Authentication unavailable' });
+      return;
+    }
+
+    const presentedSecret = request.get(INDY_PROXY_SECRET_HEADER) ?? '';
+    const trustedTransport = isTrustedProxy(proxyTrust, remoteAddress)
+      && secretsMatch(transportSecret, presentedSecret);
+    if (!trustedTransport) {
+      response.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const user = request.get(INDY_USER_HEADER);
+    if (!user) {
+      response.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (user !== ETIENNE_ACTOR.id) {
+      response.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+
+    request.actor = ETIENNE_ACTOR;
+    next();
+  };
+}
+
+export const requireEtienne: RequestHandler = createRequireEtienne();

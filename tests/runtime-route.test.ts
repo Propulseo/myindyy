@@ -1,11 +1,20 @@
 import express from 'express';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { createRuntimeRouter } from '../server/routes/runtime.js';
 import { filterOAuthModels, type RuntimeStatus } from '../server/runtime/hermes-runtime.js';
+
+const TEST_PROXY_SECRET = 'test-only-runtime-route-proxy-secret';
+
+function productionAuthHeaders(): Record<string, string> {
+  return {
+    'X-Indy-Proxy-Secret': TEST_PROXY_SECRET,
+    'X-Indy-User': 'etienne',
+  };
+}
 
 function sensitiveKeys(value: unknown, path = ''): string[] {
   if (!value || typeof value !== 'object') return [];
@@ -19,7 +28,13 @@ function sensitiveKeys(value: unknown, path = ''): string[] {
 }
 
 async function loadProductionAppWithBroadcastSpy(prefix: string) {
-  process.env.MINIONS_HOME = mkdtempSync(join(tmpdir(), prefix));
+  const home = mkdtempSync(join(tmpdir(), prefix));
+  const secretFile = join(home, 'proxy-secret');
+  writeFileSync(secretFile, `${TEST_PROXY_SECRET}\n`, { encoding: 'utf8', mode: 0o600 });
+  process.env.MINIONS_HOME = home;
+  process.env.NODE_ENV = 'production';
+  process.env.INDY_PROXY_SECRET_FILE = secretFile;
+  process.env.INDY_TRUSTED_PROXY_CIDRS = '127.0.0.0/8,::1/128';
   vi.resetModules();
   const broadcast = vi.fn();
   vi.doMock('../server/events.js', async () => ({
@@ -146,6 +161,7 @@ describe('Codex OAuth runtime status', () => {
     try {
       const response = await request(productionApp)
         .post(`/api/tasks/${missionId}/messages`)
+        .set(productionAuthHeaders())
         .send({ content: 'Launch removed model', model: 'gpt-removed', reasoningEffort: 'low' });
 
       expect(response.status).toBe(409);
@@ -194,6 +210,7 @@ describe('Codex OAuth runtime status', () => {
     try {
       const response = await request(productionApp)
         .post(`/api/tasks/${missionId}/messages`)
+        .set(productionAuthHeaders())
         .send({ content: 'Do not launch', model: 'gpt-other', reasoningEffort: 'low' });
 
       expect(response.status).toBe(503);

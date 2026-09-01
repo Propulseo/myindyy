@@ -14,13 +14,15 @@ Hosted access option on [Agent37](https://www.agent37.com).
 
 ## Quick Start
 
-**Prerequisites:** Node.js 18+ and [Hermes Agent](https://hermes-agent.nousresearch.com)
+**Prerequisites:** Node.js 20+ and [Hermes Agent](https://hermes-agent.nousresearch.com)
 
-```bash
-npx minionsai
+```powershell
+pnpm install
+$env:INDY_DEV_ACTOR = 'etienne'
+pnpm dev
 ```
 
-Open [http://localhost:6969](http://localhost:6969).
+Open [http://localhost:6969](http://localhost:6969). The development actor is accepted only when `NODE_ENV=development`, `INDY_DEV_ACTOR=etienne`, and the actual TCP peer is loopback. A request reaching the development server from another machine does not receive this bypass.
 
 Local sqllite db is created on first run and state lives in `~/.minions/`
 
@@ -32,6 +34,33 @@ npm view minionsai version
 ```
 
 The Settings page also shows the version of the running Minions server.
+
+## Private proxy authentication
+
+The first milestone is mono-user: every `/api/**` request must resolve to the server-owned actor `{ id: "etienne" }`. This includes task and mission reads/writes, files, agent settings, scheduled tasks, skills, runtime diagnostics, both SSE families, `/api/health`, and `/api/version`. Static client assets remain public so the proxy can serve the application shell. Health and version are deliberately protected because they reveal internal service and Hermes state; later routes under `/api/health/*` inherit the same boundary.
+
+Production requires all of the following:
+
+1. The actual socket peer (`req.socket.remoteAddress`) belongs to a configured private proxy CIDR.
+2. `X-Indy-Proxy-Secret` matches the mounted transport-secret file using a timing-safe comparison.
+3. `X-Indy-User` is exactly `etienne`.
+
+The application never uses `X-Forwarded-For`, `Forwarded`, `req.ip`, query parameters, or request-body fields as identity. Express `trust proxy` is intentionally not enabled. The reverse proxy must strip any client-supplied `X-Indy-User` and `X-Indy-Proxy-Secret` headers, then inject its own values on the private upstream hop. The Indy port must bind only to the private host/network and must not be reachable directly from the Internet.
+
+| Variable | Production meaning |
+| --- | --- |
+| `INDY_PROXY_SECRET_FILE` | Absolute path to the mounted secret file. The file contains at least 32 bytes; one final newline is ignored. The secret itself must not be placed in an environment variable. |
+| `INDY_TRUSTED_PROXY_CIDRS` | Comma-separated private proxy addresses or CIDRs, for example `10.20.0.5/32,fd42:1234::5/128`. Public ranges and invalid entries make authentication unavailable. |
+| `INDY_DEV_ACTOR` | Optional local-only bypass. It is effective only with the exact value `etienne`, `NODE_ENV=development`, and an actual loopback socket. It is ignored in test and production. |
+
+Create and mount a distinct high-entropy transport secret with restrictive permissions, for example:
+
+```bash
+umask 077
+openssl rand -hex 32 > /run/secrets/indy-proxy
+```
+
+Configure the proxy to read the same secret from its secret store and inject it upstream; never expose it to browser JavaScript or proxy access logs. Set `INDY_PROXY_SECRET_FILE=/run/secrets/indy-proxy` in Indy and restrict `INDY_TRUSTED_PROXY_CIDRS` to the proxy's real private source network. Missing or invalid production configuration fails closed with `503`. Missing or invalid transport credentials return the same generic `401`; a trusted, transport-authenticated identity other than exact `etienne` returns `403`.
 
 ## Features
 
