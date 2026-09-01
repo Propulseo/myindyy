@@ -120,12 +120,17 @@ function storeRun(run: LiveChatRun): RunStart {
   return { snapshot: cloneRun(run), state: runState(run) };
 }
 
-export function startRun(taskId: string, sessionId: string, userContent: string): RunStart {
+export function startRun(
+  taskId: string,
+  sessionId: string,
+  userContent: string,
+  runId = uuid(),
+): RunStart {
   clearExpiry(taskId);
   const now = Date.now();
   return storeRun({
     taskId,
-    runId: uuid(),
+    runId,
     kind: 'chat',
     sessionId,
     status: 'streaming',
@@ -138,12 +143,17 @@ export function startRun(taskId: string, sessionId: string, userContent: string)
   });
 }
 
-export function startGoalRun(taskId: string, sessionId: string, goal?: GoalStateSnapshot | null): RunStart {
+export function startGoalRun(
+  taskId: string,
+  sessionId: string,
+  goal?: GoalStateSnapshot | null,
+  runId = uuid(),
+): RunStart {
   clearExpiry(taskId);
   const now = Date.now();
   return storeRun({
     taskId,
-    runId: uuid(),
+    runId,
     kind: 'goal',
     sessionId,
     status: 'streaming',

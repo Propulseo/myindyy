@@ -131,6 +131,9 @@ export function createRunRepository(
     )
   `);
   const getRun = database.prepare('SELECT * FROM mission_runs WHERE id = ?');
+  const updateSession = database.prepare(`
+    UPDATE mission_runs SET session_id = ? WHERE id = ?
+  `);
   const finishRun = database.prepare(`
     UPDATE mission_runs
     SET status = @status,
@@ -159,6 +162,11 @@ export function createRunRepository(
     SELECT * FROM run_events
     WHERE run_id = ?
     ORDER BY occurred_at ASC, id ASC
+  `);
+  const listRunsForMission = database.prepare(`
+    SELECT * FROM mission_runs
+    WHERE mission_id = ?
+    ORDER BY attempt ASC, id ASC
   `);
   const listActiveRuns = database.prepare(`
     SELECT * FROM mission_runs
@@ -263,7 +271,17 @@ export function createRunRepository(
       return getRunRecord(input.runId)!;
     },
 
+    updateRunSession(runId: string, sessionId: string): MissionRun {
+      const result = updateSession.run(sessionId, runId);
+      if (result.changes === 0) throw new Error(`Unknown mission run: ${runId}`);
+      return getRunRecord(runId)!;
+    },
+
     getRunRecord,
+
+    listMissionRuns(missionId: string): MissionRun[] {
+      return (listRunsForMission.all(missionId) as MissionRunRow[]).map(toRun);
+    },
 
     listRunEvents(runId: string): RunEvent[] {
       return (listEvents.all(runId) as RunEventRow[]).map(toEvent);

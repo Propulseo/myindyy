@@ -1,5 +1,6 @@
 import { Router, type Router as ExpressRouter } from 'express';
 import { contextFromTask, getTask, updateTask, touchTask, recordAgentResponse } from '../db/queries.js';
+import db from '../db/index.js';
 import { adapter } from '../app.js';
 import { broadcast, initSSE } from '../events.js';
 import {
@@ -26,12 +27,15 @@ import { TASK_AGENT_SYSTEM_PROMPT } from '../prompts/task-agent.js';
 import { isRecord, toErrorMessage } from '../errors.js';
 import type { StreamEvent } from '../adapters/types.js';
 import { CHAT_RUN_MODES, MINIONS_GOAL_MAX_TURNS, type ChatRunMode, type CompactResult, type ContextUsage, type GoalStateSnapshot, type Task } from '../../shared/types.js';
+import { createRunRepository } from '../runs/repository.js';
+import { createRunService } from '../runs/service.js';
 
 export const chatRouter: ExpressRouter = Router();
 
-function hasNoSession(task: Task): boolean {
-  if (task.last_agent_response_at !== null) return false;
-  return getRunStatus(task.id)?.status !== 'streaming';
+const runService = createRunService(createRunRepository(db));
+
+function latestSessionId(missionId: string): string | undefined {
+  return runService.getLatestRun(missionId)?.sessionId;
 }
 
 function isTaskRunActive(status: ReturnType<typeof getRunStatus>): boolean {
@@ -62,23 +66,31 @@ chatRouter.get('/:id/messages', async (req, res) => {
   if (!task) return res.status(404).json({ error: 'Task not found' });
   const liveContext = getRunContext(task.id);
   const context = liveContext !== undefined ? liveContext : contextFromTask(task);
-  if (hasNoSession(task)) return res.json({ messages: [], context });
+  const history = runService.getMissionHistory(task.id);
+  const sessionId = history.runs.at(-1)?.sessionId;
+  if (!sessionId) return res.json({ messages: [], context, ...history });
 
   try {
-    const messages = await adapter.getMessages(task.id, task.id);
-    res.json({ messages, context });
+    const messages = await adapter.getMessages(sessionId, task.id);
+    res.json({ messages, context, ...history });
   } catch (error) {
-    res.status(503).json({ error: toErrorMessage(error, 'Hermes session history unavailable') });
+    res.status(503).json({
+      error: toErrorMessage(error, 'Hermes session history unavailable'),
+      messages: [],
+      context,
+      ...history,
+    });
   }
 });
 
 chatRouter.get('/:id/session', async (req, res) => {
   const task = getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found' });
-  if (hasNoSession(task)) return res.json({ session: null });
+  const sessionId = latestSessionId(task.id);
+  if (!sessionId) return res.json({ session: null });
 
   try {
-    const session = await adapter.getSessionMetadata(task.id);
+    const session = await adapter.getSessionMetadata(sessionId);
     res.json({ session });
   } catch (error) {
     res.status(503).json({ error: toErrorMessage(error, 'Hermes session metadata unavailable') });
@@ -109,6 +121,8 @@ interface StreamChatTurnResult {
   // Only consumed by the goal loop; the chat path learns it stopped via the
   // `done` event reaching applyEvent (completeOnDone=true sets status 'stopped').
   interrupted: boolean;
+  sessionId: string;
+  failureReason?: string;
 }
 
 function recordCompletedAgentRun(taskId: string, context: ContextUsage | null): Task | undefined {
@@ -136,6 +150,7 @@ function settleRun(taskId: string, runId: string, context: ContextUsage | null):
 
 async function streamChatTurn(
   runTask: Task,
+  runId: string,
   sessionId: string,
   content: string,
   options: { completeOnDone: boolean; captureResponseText?: boolean },
@@ -145,6 +160,14 @@ async function streamChatTurn(
   let responseText = '';
   let hadError = false;
   let interrupted = false;
+  let resolvedSessionId = sessionId;
+  let failureReason: string | undefined;
+
+  const persistApplyBroadcast = (event: StreamEvent): void => {
+    runService.consumeEvent(runId, event);
+    applyEvent(runTask.id, event);
+    broadcastLive(runTask.id, event);
+  };
 
   try {
     const stream = adapter.chatStream(sessionId, content, {
@@ -160,23 +183,25 @@ async function streamChatTurn(
       if (event.type === 'done') {
         sawDone = true;
         doneContext = event.context;
+        if (event.sessionId) resolvedSessionId = event.sessionId;
         if (event.interrupted) interrupted = true;
         if (!options.completeOnDone) {
+          runService.consumeEvent(runId, event);
           updateRunContext(runTask.id, event.context, event.sessionId);
           continue;
         }
       }
       if (event.type === 'error') {
         hadError = true;
+        failureReason = event.error ?? 'Unknown error';
       }
-      applyEvent(runTask.id, event);
-      broadcastLive(runTask.id, event);
+      persistApplyBroadcast(event);
     }
   } catch (error) {
     hadError = true;
-    const event: StreamEvent = { type: 'error', error: toErrorMessage(error, 'Hermes chat stream failed') };
-    applyEvent(runTask.id, event);
-    broadcastLive(runTask.id, event);
+    failureReason = toErrorMessage(error, 'Hermes chat stream failed');
+    const event: StreamEvent = { type: 'error', error: failureReason };
+    persistApplyBroadcast(event);
   }
 
   const finalRun = getRunStatus(runTask.id);
@@ -184,21 +209,30 @@ async function streamChatTurn(
     if (options.completeOnDone) {
       const event: StreamEvent = { type: 'done', sessionId, context: doneContext };
       sawDone = true;
-      applyEvent(runTask.id, event);
-      broadcastLive(runTask.id, event);
+      persistApplyBroadcast(event);
     } else {
       hadError = true;
-      const event: StreamEvent = { type: 'error', error: 'Hermes chat stream ended before completion' };
-      applyEvent(runTask.id, event);
-      broadcastLive(runTask.id, event);
+      failureReason = 'Hermes chat stream ended before completion';
+      const event: StreamEvent = { type: 'error', error: failureReason };
+      persistApplyBroadcast(event);
     }
   }
 
-  return { responseText, sawDone, context: doneContext, hadError, interrupted };
+  return {
+    responseText,
+    sawDone,
+    context: doneContext,
+    hadError,
+    interrupted,
+    sessionId: resolvedSessionId,
+    failureReason,
+  };
 }
 
 async function consumeChatRun(runTask: Task, sessionId: string, content: string, runId: string): Promise<void> {
-  const result = await streamChatTurn(runTask, sessionId, content, { completeOnDone: true });
+  const result = await streamChatTurn(runTask, runId, sessionId, content, { completeOnDone: true });
+  if (result.hadError) runService.fail(runId, result.failureReason);
+  else runService.complete(runId);
   try {
     settleRun(runTask.id, runId, result.context ?? null);
   } catch {
@@ -211,6 +245,8 @@ async function consumeGoalRun(runTask: Task, sessionId: string, initialContent: 
   let hadError = false;
   let wasInterrupted = false;
   let turnContent: string | null = initialContent;
+  let currentSessionId = sessionId;
+  let failureReason: string | undefined;
   let turnCount = 0;
 
   try {
@@ -222,14 +258,16 @@ async function consumeGoalRun(runTask: Task, sessionId: string, initialContent: 
       appendUserMessage(runTask.id, turnContent);
       startAssistantMessage(runTask.id);
 
-      const turn = await streamChatTurn(runTask, sessionId, turnContent, {
+      const turn = await streamChatTurn(runTask, runId, currentSessionId, turnContent, {
         completeOnDone: false,
         captureResponseText: true,
       });
+      currentSessionId = turn.sessionId;
       if (turn.context !== undefined) finalContext = turn.context;
       const currentRun = getRunStatus(runTask.id);
       if (turn.hadError || currentRun?.status === 'error') {
         hadError = true;
+        failureReason = turn.failureReason;
         break;
       }
       if (turn.interrupted) {
@@ -237,7 +275,7 @@ async function consumeGoalRun(runTask: Task, sessionId: string, initialContent: 
         break;
       }
 
-      const decision = await adapter.evaluateGoal(sessionId, turn.responseText);
+      const decision = await adapter.evaluateGoal(currentSessionId, turn.responseText);
       let shouldBroadcastSnapshot = false;
       if (decision.state) {
         const goalRun = updateRunGoal(runTask.id, decision.state);
@@ -256,10 +294,14 @@ async function consumeGoalRun(runTask: Task, sessionId: string, initialContent: 
     }
   } catch (error) {
     hadError = true;
-    const event: StreamEvent = { type: 'error', error: toErrorMessage(error, 'Hermes goal loop failed') };
+    failureReason = toErrorMessage(error, 'Hermes goal loop failed');
+    const event: StreamEvent = { type: 'error', error: failureReason };
+    runService.consumeEvent(runId, event);
     applyEvent(runTask.id, event);
     broadcastLive(runTask.id, event);
   } finally {
+    if (hadError) runService.fail(runId, failureReason);
+    else runService.complete(runId);
     if (!hadError && getRunStatus(runTask.id)?.status === 'streaming') {
       updateRunStatus(runTask.id, wasInterrupted ? 'stopped' : 'done', { context: finalContext ?? null });
     }
@@ -319,17 +361,24 @@ chatRouter.post('/:id/messages', async (req, res) => {
     broadcast({ type: 'task_updated', task: updated });
   }
 
-  const sessionId = runTask.id;
+  const durableRun = runService.startMission({
+    missionId: runTask.id,
+    provider: runTask.agent_provider ?? 'unknown',
+    model: runTask.agent_model ?? 'unknown',
+    reasoningEffort: runTask.reasoning_effort,
+  });
+  const { runId, sessionId } = durableRun;
 
   if (mode === 'goal') {
     let goalState: GoalStateSnapshot;
     try {
       goalState = await adapter.setGoal(sessionId, content);
     } catch (error) {
+      runService.fail(runId, error);
       return res.status(503).json({ error: toErrorMessage(error, 'Could not set Hermes goal') });
     }
 
-    const { snapshot, state } = startGoalRun(runTask.id, sessionId, goalState);
+    const { snapshot, state } = startGoalRun(runTask.id, sessionId, goalState, runId);
     broadcast({ type: 'task_run_updated', run: state });
     broadcastLive(runTask.id, { type: 'snapshot', run: snapshot });
     void consumeGoalRun(runTask, sessionId, content, snapshot.runId);
@@ -337,7 +386,7 @@ chatRouter.post('/:id/messages', async (req, res) => {
     return res.status(202).json({ runId: snapshot.runId });
   }
 
-  const { snapshot, state } = startRun(runTask.id, sessionId, content);
+  const { snapshot, state } = startRun(runTask.id, sessionId, content, runId);
   broadcast({ type: 'task_run_updated', run: state });
   broadcastLive(runTask.id, { type: 'snapshot', run: snapshot });
   void consumeChatRun(runTask, sessionId, content, snapshot.runId);
@@ -358,7 +407,9 @@ chatRouter.post('/:id/interrupt', async (req, res) => {
     : undefined;
 
   try {
-    const interrupted = await adapter.interruptChat(task.id, reason);
+    const sessionId = getRun(task.id)?.sessionId ?? latestSessionId(task.id);
+    if (!sessionId) return res.status(409).json({ error: 'This task has no Hermes session to stop' });
+    const interrupted = await adapter.interruptChat(sessionId, reason);
     if (!interrupted) {
       return res.status(409).json({ error: 'Hermes had no active agent to stop for this task' });
     }
@@ -383,12 +434,14 @@ chatRouter.post('/:id/compact', async (req, res) => {
 
   const focusTopic = typeof req.body?.focusTopic === 'string' ? req.body.focusTopic.trim() || null : null;
   const currentTokens = task.last_context_used_tokens ?? undefined;
-  const { snapshot, state } = startCompactionRun(task.id, task.id);
+  const sessionId = latestSessionId(task.id);
+  if (!sessionId) return res.status(409).json({ error: 'This task has no Hermes session to compact' });
+  const { snapshot, state } = startCompactionRun(task.id, sessionId);
   broadcast({ type: 'task_run_updated', run: state });
   broadcastLive(task.id, { type: 'snapshot', run: snapshot });
 
   try {
-    const result: CompactResult = await adapter.compressSession(task.id, {
+    const result: CompactResult = await adapter.compressSession(sessionId, {
       focusTopic,
       currentTokens,
       systemMessage: TASK_AGENT_SYSTEM_PROMPT,

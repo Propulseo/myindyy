@@ -52,6 +52,13 @@ export interface RunEvent {
   readonly payload: Readonly<Record<string, unknown>>;
 }
 
+export interface TaskMessagesResponse {
+  messages: TaskMessage[];
+  context: ContextUsage | null;
+  runs: MissionRun[];
+  events: RunEvent[];
+}
+
 export interface AppVersion {
   name: string;
   version: string;
