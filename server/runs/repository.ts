@@ -10,6 +10,7 @@ import type {
   OperatorCommand,
   RunEvent,
   RunRepository,
+  RunRepositoryOptions,
 } from './types.js';
 
 export type { RunRepository } from './types.js';
@@ -49,6 +50,25 @@ interface OperatorCommandRow {
   result_json: string | null;
   created_at: number;
   completed_at: number | null;
+}
+
+const REDACTED = '[REDACTED]';
+const SENSITIVE_KEY_PARTS = [
+  'token',
+  'key',
+  'secret',
+  'credential',
+  'authorization',
+  'cookie',
+] as const;
+
+function serializeRedactedEventPayload(payload: Readonly<Record<string, unknown>>): string {
+  return JSON.stringify(payload, (key, value: unknown) => {
+    const normalizedKey = key.toLowerCase();
+    return SENSITIVE_KEY_PARTS.some((part) => normalizedKey.includes(part))
+      ? REDACTED
+      : value;
+  });
 }
 
 function toRun(row: MissionRunRow): MissionRun {
@@ -96,7 +116,7 @@ function toCommand(row: OperatorCommandRow): OperatorCommand {
 
 export function createRunRepository(
   database: Database,
-  options: { generateId?: () => string; now?: () => number } = {},
+  options: RunRepositoryOptions = {},
 ): RunRepository {
   const generateId = options.generateId ?? uuid;
   const now = options.now ?? Date.now;
@@ -115,8 +135,7 @@ export function createRunRepository(
     UPDATE mission_runs
     SET status = @status,
         finished_at = @finished_at,
-        finish_reason = @finish_reason,
-        last_activity_at = MAX(last_activity_at, @finished_at)
+        finish_reason = @finish_reason
     WHERE id = @run_id
   `);
   const insertEvent = database.prepare(`
@@ -171,7 +190,7 @@ export function createRunRepository(
       run_id: input.runId,
       type: input.type,
       occurred_at: input.occurredAt,
-      payload_json: JSON.stringify(input.payload),
+      payload_json: serializeRedactedEventPayload(input.payload),
     });
     if (result.changes === 0) return false;
     touchRun.run(input.occurredAt, input.runId);

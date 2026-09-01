@@ -167,13 +167,69 @@ describe('run repository', () => {
     expect(repository.getRunRecord('run-1')?.status).toBe('blocked');
   });
 
-  it('finishes a run without changing its immutable identity fields', () => {
+  it('redacts nested sensitive payload fields without mutating the input', () => {
+    repository.createRun({
+      missionId: 'mission-1',
+      sessionId: 'hermes-session-1',
+      attempt: 1,
+      provider: 'openai-codex',
+      model: 'gpt-5.6-sol',
+    });
+    const payload = {
+      safe: 'visible',
+      Token: 'sentinel-token',
+      apiKEY: 'sentinel-key',
+      nested: {
+        clientSecretValue: 'sentinel-secret',
+        CREDENTIAL: 'sentinel-credential',
+        requestAuthorizationHeader: 'sentinel-authorization',
+        CookieJar: 'sentinel-cookie',
+        entries: [{ refreshTOKEN: 'sentinel-array-token', label: 'kept' }],
+      },
+    };
+
+    repository.appendRunEvent({
+      id: 'event-sensitive',
+      runId: 'run-1',
+      type: 'tool.completed',
+      occurredAt: 20,
+      payload,
+    });
+
+    const rawPayload = database.prepare(
+      'SELECT payload_json FROM run_events WHERE id = ?',
+    ).pluck().get('event-sensitive') as string;
+    expect(rawPayload).not.toContain('sentinel-');
+    expect(JSON.parse(rawPayload)).toEqual({
+      safe: 'visible',
+      Token: '[REDACTED]',
+      apiKEY: '[REDACTED]',
+      nested: {
+        clientSecretValue: '[REDACTED]',
+        CREDENTIAL: '[REDACTED]',
+        requestAuthorizationHeader: '[REDACTED]',
+        CookieJar: '[REDACTED]',
+        entries: [{ refreshTOKEN: '[REDACTED]', label: 'kept' }],
+      },
+    });
+    expect(repository.listRunEvents('run-1')[0]?.payload).toEqual(JSON.parse(rawPayload));
+    expect(payload.nested.entries[0]?.refreshTOKEN).toBe('sentinel-array-token');
+  });
+
+  it('finishes a run without advancing activity beyond the last new event', () => {
     const run = repository.createRun({
       missionId: 'mission-1',
       sessionId: 'hermes-session-1',
       attempt: 1,
       provider: 'openai-codex',
       model: 'gpt-5.6-sol',
+    });
+    repository.appendRunEvent({
+      id: 'event-before-finish',
+      runId: run.id,
+      type: 'run.started',
+      occurredAt: 20,
+      payload: {},
     });
 
     const finished = repository.finishRunRecord({
@@ -191,7 +247,7 @@ describe('run repository', () => {
       status: 'completed',
       finishedAt: 40,
       finishReason: 'success',
-      lastActivityAt: 40,
+      lastActivityAt: 20,
     });
   });
 

@@ -1,4 +1,3 @@
-import type { Database } from 'better-sqlite3';
 import type {
   MissionRun,
   MissionRunStatus,
@@ -80,8 +79,7 @@ export interface RunRepository {
   claimCommand(input: ClaimCommandInput): CommandClaimResult;
 }
 
-export interface RunRepositoryDependencies {
-  readonly database: Database;
-  readonly generateId: () => string;
-  readonly now: () => number;
+export interface RunRepositoryOptions {
+  readonly generateId?: () => string;
+  readonly now?: () => number;
 }
