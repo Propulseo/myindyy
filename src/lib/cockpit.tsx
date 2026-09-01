@@ -242,14 +242,26 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
           : "annulee";
 
       const prolonged = approve && decision.kind === "prolongation";
+      // Les nouvelles limites se déduisent de la mission prolongée, elles ne sont pas
+      // écrites en dur : une heure de plus et une tentative de plus, quelle que soit
+      // la mission.
+      const target = [...createdMissions, ...baseMissions].find(
+        (item) => item.id === decision.missionId,
+      );
 
       setMissionPatches((patches) => ({
         ...patches,
         [decision.missionId]: {
           ...patches[decision.missionId],
           status: nextStatus,
-          durationCapMin: prolonged ? 300 : patches[decision.missionId]?.durationCapMin,
-          attemptsMax: prolonged ? 4 : patches[decision.missionId]?.attemptsMax,
+          durationCapMin:
+            prolonged && target
+              ? target.duration.capMin + 60
+              : patches[decision.missionId]?.durationCapMin,
+          attemptsMax:
+            prolonged && target
+              ? target.attempts.max + 1
+              : patches[decision.missionId]?.attemptsMax,
           activity: [
             {
               id: nextId("act"),
@@ -271,7 +283,7 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
         approve ? "success" : "danger",
       );
     },
-    [pushJournal, viewer.id, viewer.name],
+    [createdMissions, pushJournal, viewer.id, viewer.name],
   );
 
   const sendInstruction = useCallback(

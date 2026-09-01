@@ -359,9 +359,7 @@ export interface MissionTemplate {
  * exposée, plutôt que d'inventer un chiffre.
  */
 export interface PlanUsage {
-  /** Libellé fourni tel quel par la source, jamais reconstruit. */
+  /** Libellé fourni tel quel par la source, jamais reconstruit ni recalculé. */
   label: string;
-  /** Entre 0 et 1, uniquement si la source la donne. */
-  ratio: number | null;
   source: Provenance;
 }

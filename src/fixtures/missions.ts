@@ -99,7 +99,7 @@ export const missions: Mission[] = [
         model: "codex-agent · profil deploy",
         stepIds: ["m-248-s4", "m-248-s6"],
         state: "en_attente",
-        attempts: 0,
+        attempts: 1,
       },
     ],
     activity: [
@@ -455,7 +455,7 @@ export const missions: Mission[] = [
         at: hoursAgo(4),
         level: "info",
         scope: "exécution",
-        message: "run=251 profile=research duration_cap=300min attempts_max=3 effort=standard agents_max=2",
+        message: "run=251 profile=research duration_cap=240min attempts_max=3 effort=standard agents_max=2",
       },
     ],
     source: hermes("Hermes · mission 251", minutesAgo(9)),
@@ -525,6 +525,14 @@ export const missions: Mission[] = [
         stepIds: ["m-249-s3"],
         state: "termine",
         attempts: 1,
+      },
+      {
+        id: "m-249-a3",
+        role: "Envoi",
+        model: "codex-agent · profil comms",
+        stepIds: ["m-249-s4"],
+        state: "en_attente",
+        attempts: 0,
       },
     ],
     activity: [
@@ -616,7 +624,7 @@ export const missions: Mission[] = [
         model: "codex-agent · profil build",
         stepIds: ["m-241-s4", "m-241-s5"],
         state: "en_attente",
-        attempts: 0,
+        attempts: 1,
       },
     ],
     activity: [
@@ -687,11 +695,16 @@ export const missions: Mission[] = [
     progress: { done: 18, total: 24, unit: "pages" },
     duration: { elapsedMin: 118, capMin: 180 },
     attempts: { current: 1, max: 2 },
-    parallelAgents: 2,
+    parallelAgents: 3,
     steps: [
       { id: "m-239-s1", label: "Explorer le site", state: "done", finishedAt: hoursAgo(2), durationMin: 12 },
       { id: "m-239-s2", label: "Analyser les pages", state: "current", detail: "18 pages sur 24." },
-      { id: "m-239-s3", label: "Relever les contenus dupliqués", state: "todo" },
+      {
+        id: "m-239-s3",
+        label: "Relever les contenus dupliqués",
+        state: "current",
+        detail: "Mené en parallèle de l'analyse, sur les pages déjà passées.",
+      },
       { id: "m-239-s4", label: "Rédiger les recommandations", state: "todo" },
     ],
     agents: [
@@ -705,9 +718,17 @@ export const missions: Mission[] = [
       },
       {
         id: "m-239-a2",
+        role: "Analyse éditoriale",
+        model: "codex-agent · profil review",
+        stepIds: ["m-239-s3"],
+        state: "actif",
+        attempts: 1,
+      },
+      {
+        id: "m-239-a3",
         role: "Recommandations",
         model: "codex-agent · profil write",
-        stepIds: ["m-239-s3", "m-239-s4"],
+        stepIds: ["m-239-s4"],
         state: "en_attente",
         attempts: 0,
       },
@@ -778,7 +799,7 @@ export const missions: Mission[] = [
     steps: [
       { id: "m-247-s1", label: "Reprendre la promesse", state: "done", finishedAt: hoursAgo(5), durationMin: 28 },
       { id: "m-247-s2", label: "Rassembler les preuves clients", state: "done", finishedAt: hoursAgo(3), durationMin: 46 },
-      { id: "m-247-s3", label: "Écrire la nouvelle structure", state: "done", finishedAt: minutesAgo(27), durationMin: 72 },
+      { id: "m-247-s3", label: "Écrire la nouvelle structure", state: "done", finishedAt: hoursAgo(2), durationMin: 72 },
       { id: "m-247-s4", label: "Intégrer les sections", state: "current" },
       { id: "m-247-s5", label: "Vérifier l'accessibilité", state: "todo" },
       { id: "m-247-s6", label: "Publier en préproduction", state: "todo" },

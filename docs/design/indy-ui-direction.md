@@ -130,7 +130,8 @@ de la ligne quand la valeur se met à jour.
 ```
 
 - **≥ 1280 px** : barre latérale de 232 px, libellés écrits.
-- **768 – 1279 px** : rail de 68 px, icône + libellé mono minuscule.
+- **768 – 1279 px** : rail de 68 px, icône seule ; le libellé reste lisible par les
+  lecteurs d'écran et apparaît en infobulle native au survol.
 - **< 768 px** : barre latérale masquée, **barre de navigation basse** à cinq entrées
   (Aujourd'hui, Missions, Projets, Livrables, Plus) ; « Plus » ouvre une feuille contenant
   Automatisations, Historique, Réglages, le sélecteur de rôle et le Pouls déplié.
@@ -209,7 +210,7 @@ Ce qui encadre une mission est opérationnel :
 
 | Garde-fou | Où il se voit |
 |---|---|
-| Durée maximale | Jauge sur la mission, colonne de droite des listes, formulaire de création |
+| Durée maximale | Jauge sur la mission, formulaire de création. Les listes montrent la durée écoulée |
 | Nombre maximal de tentatives | Jauge sur la mission, colonne de droite des listes, formulaire de création |
 | Agents en parallèle | Panneau de garde-fous de la mission : actifs sur total, maximum autorisé |
 | Échéance | En-tête de la mission, quand elle en a une |

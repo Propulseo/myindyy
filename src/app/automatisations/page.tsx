@@ -6,7 +6,7 @@ import { PageHeading, Section } from "@/components/primitives/Layout";
 import { ScreenState } from "@/components/shell/ScreenState";
 import { useCockpit } from "@/lib/cockpit";
 import { plural } from "@/lib/format";
-import { visibleAutomations } from "@/lib/selectors";
+import { isNotableRun, visibleAutomations } from "@/lib/selectors";
 import type { Automation } from "@/types/domain";
 
 export default function AutomationsPage() {
@@ -47,8 +47,13 @@ export default function AutomationsPage() {
             action={
               <span className="font-mono text-[0.6875rem] text-muted">
                 {plural(
-                  quiet.reduce((total, item) => total + item.runCount, 0),
-                  "exécution",
+                  quiet.reduce(
+                    (total, item) =>
+                      total + item.runs.filter((run) => !isNotableRun(run)).length,
+                    0,
+                  ),
+                  "exécution récente",
+                  "exécutions récentes",
                 )}{" "}
                 sans remarque
               </span>

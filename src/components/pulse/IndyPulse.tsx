@@ -48,10 +48,13 @@ export function IndyPulse({
         aria-label={spoken}
       >
         <PulseTape snapshot={snapshot} />
+        {/* Accord au singulier : « 1 active », pas « 1 actives ». */}
         <span className="hidden font-mono text-[0.6875rem] whitespace-nowrap text-muted lg:inline">
-          <span className="text-indy">{snapshot.active}</span> actives
+          <span className="text-indy">{snapshot.active}</span>{" "}
+          {snapshot.active > 1 ? "actives" : "active"}
           <span className="mx-1.5 text-line-strong">·</span>
-          <span className="text-attention">{snapshot.decisions}</span> décisions
+          <span className="text-attention">{snapshot.decisions}</span>{" "}
+          {snapshot.decisions > 1 ? "décisions" : "décision"}
           <span className="mx-1.5 text-line-strong">·</span>
           <span className={snapshot.incidents > 0 ? "text-danger" : "text-muted"}>
             {snapshot.incidents}

@@ -38,9 +38,9 @@ export const deliverables: Deliverable[] = [
     format: "document",
     projectId: "vernay",
     missionId: "m-251",
-    producedAt: hoursAgo(2),
+    producedAt: minutesAgo(52),
     sizeLabel: "11 acteurs",
-    source: { system: "obsidian", reference: "Obsidian · vernay/concurrents", syncedAt: hoursAgo(2) },
+    source: { system: "obsidian", reference: "Obsidian · vernay/concurrents", syncedAt: minutesAgo(52) },
   },
   {
     id: "d-405",
@@ -72,9 +72,9 @@ export const deliverables: Deliverable[] = [
     format: "document",
     projectId: "tao",
     missionId: "m-247",
-    producedAt: minutesAgo(27),
+    producedAt: hoursAgo(2),
     sizeLabel: "6 sections",
-    source: { system: "obsidian", reference: "Obsidian · tao/landing-v2", syncedAt: minutesAgo(27) },
+    source: { system: "obsidian", reference: "Obsidian · tao/landing-v2", syncedAt: hoursAgo(2) },
   },
   {
     id: "d-408",

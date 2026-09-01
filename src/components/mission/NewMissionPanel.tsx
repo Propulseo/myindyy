@@ -202,7 +202,7 @@ export function NewMissionPanel({
 
             <Field
               label="Tentatives autorisées"
-              hint="Nombre de reprises après une étape en échec."
+              hint="Combien de fois la mission peut retenter une étape en échec."
             >
               {(props) => (
                 <SelectInput

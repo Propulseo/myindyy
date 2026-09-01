@@ -331,7 +331,21 @@ export function attentionItems(data: Dataset, viewer: Person): AttentionItem[] {
     });
   }
 
-  return items.sort((a, b) => {
+  // La déduplication ferait disparaître l'automatisation d'origine : on la nomme
+  // sur la ligne de la mission plutôt que d'ajouter une seconde ligne.
+  const automationNames = new Map(
+    data.automations.map((automation) => [automation.id, automation.name]),
+  );
+  const withOrigin = items.map((item) => {
+    if (!item.missionId) return item;
+    const mission = visible.find((entry) => entry.id === item.missionId);
+    const name = mission?.automationId
+      ? automationNames.get(mission.automationId)
+      : undefined;
+    return name ? { ...item, detail: `${item.detail} Issue de « ${name} ».` } : item;
+  });
+
+  return withOrigin.sort((a, b) => {
     const weight = KIND_WEIGHT[a.kind] - KIND_WEIGHT[b.kind];
     return weight !== 0 ? weight : newestFirst(a.at, b.at);
   });

@@ -102,7 +102,12 @@ export function AgentActivitySummary({
       <p className="label-mono">Activité des agents</p>
       <p className="mt-1 font-mono text-xs text-ivory tabular-nums">
         {formatPercent(activity.successRate)}
-        <span className="text-muted"> réussies</span>
+        <span className="text-muted">
+          {" "}
+          {activity.closedCount === 0
+            ? "— aucune mission close"
+            : `sur ${plural(activity.closedCount, "mission close", "missions closes")}`}
+        </span>
       </p>
       <SuccessBar rate={activity.successRate} />
       <p className="mt-1.5 font-mono text-[0.625rem] leading-relaxed text-muted">
@@ -111,6 +116,8 @@ export function AgentActivitySummary({
         {activity.medianDurationMin === null
           ? "durée médiane —"
           : `${formatDuration(activity.medianDurationMin)} en médiane`}
+        <span className="mx-1.5 text-line-strong">·</span>
+        {plural(activity.humanInterventions, "intervention")}
       </p>
       {/* Sur sa propre ligne : accroché à la précédente, le séparateur se retrouvait
           seul en tête de ligne au moindre repli. */}
