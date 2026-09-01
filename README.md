@@ -34,9 +34,31 @@ pnpm lint         # ESLint (config Next.js + règles React)
 pnpm typecheck    # génération des types de routes, puis tsc --noEmit
 pnpm test         # Vitest : permissions, sélecteurs, règles de décision et de tâches
 pnpm test:watch   # les mêmes tests, en continu
+pnpm test:e2e     # Playwright : les parcours d'interface, sur le build de production
 pnpm build        # build de production
 pnpm start        # sert le build de production
 ```
+
+`pnpm test` ne monte aucun composant : il vérifie les modules purs — permissions,
+sélecteurs, réducteur.
+
+`pnpm test:e2e` est autonome depuis un clone propre : Playwright construit
+l'application, la sert, attend qu'elle réponde, joue les parcours puis arrête tout.
+Un serveur déjà lancé sur le même port est réutilisé. Il faut le navigateur une
+première fois :
+
+```bash
+pnpm install
+pnpm exec playwright install chromium   # ou : pnpm test:e2e:install
+pnpm test:e2e
+```
+
+Les parcours couverts : refus d'une décision sur M-248 (panneau sensible, aucun
+champ à saisir, mission « En attente » et jamais « Annulée »), capture puis
+annulation d'une tâche (elle reste affichée avec le statut « Annulée »), périmètre
+des rôles (Lyes et Lucas ne voient aucune tâche personnelle, ni DocAgora), et le
+petit mobile 390 × 667 (la feuille défile, l'action principale reste visible et
+cliquable, la barre du bas ne recouvre rien).
 
 Prérequis : Node 20.9 ou plus récent, pnpm 10 ou plus récent.
 
@@ -83,11 +105,42 @@ compose une commande et la transmet à Hermes, qui l'applique.
 | `todo.cancel` | Menu d'une tâche › « Annuler la tâche » | Passe la tâche en « Annulée », après une confirmation qui dit la conséquence |
 
 Chaque mutation écrit une ligne de journal qui nomme la commande, et la provenance de la
-tâche devient `Hermes · todo.… → Obsidian · …`. Une tâche annulée reste dans la liste, en
-fin de journée, avec son statut écrit — elle n'est jamais retirée en silence. L'état d'une
-tâche est toujours écrit à côté de sa pastille : la couleur ne le porte jamais seule.
+tâche devient `Hermes · todo.… → Obsidian · …`. L'état d'une tâche est toujours écrit à
+côté de sa pastille : la couleur ne le porte jamais seule.
+
+**Annuler une tâche ne la supprime pas.** Hermes demande à Obsidian de la marquer
+annulée ; elle reste affichée dans les tâches du jour, en fin de liste, avec le statut
+écrit « Annulée », et conserve son titre, son projet, son responsable, son échéance, sa
+note et sa provenance. C'est exactement ce que le panneau de confirmation annonce avant
+le geste, ce que le journal répète après, et ce que les tests vérifient.
 
 Dans ce prototype, les quatre commandes sont **simulées** dans l'état React de la session.
+
+### Qui a le droit, et où la règle est écrite
+
+La règle d'autorisation d'une commande de tâche est écrite une seule fois, dans
+[`authorizeTaskCommand`](src/lib/access.ts). L'interface s'en sert pour décider ce
+qu'elle propose et ce qu'elle explique ; le réducteur s'en sert pour refuser une commande
+qui arriverait quand même. Les deux passent donc par le même jugement.
+
+| Règle | Effet |
+|---|---|
+| `tasks.manage` | Sans elle, aucune commande ne passe |
+| Tâche personnelle | Réservée à son propriétaire, avec `tasks.personal.view`. Personne d'autre n'en crée, n'en transforme une en tâche personnelle, ni n'en change le responsable |
+| Tâche partagée | Son projet doit être visible par l'acteur |
+| Destination d'un tri | Le projet visé doit lui aussi être visible |
+| Responsable choisi | Il doit être membre du projet visé |
+
+Une commande refusée par le réducteur ne modifie **rien** — ni tâches, ni missions, ni
+décisions. Elle laisse une seule ligne de journal, volontairement générique : elle ne dit
+ni le titre visé, ni l'existence d'un projet qui n'est pas affecté au rôle.
+
+> **Ces contrôles sont ceux d'une démonstration.** Ils vivent dans le navigateur : un
+> appel direct au contexte les traverserait s'ils n'étaient pas dans le réducteur, et
+> n'importe quel client peut de toute façon être modifié. Hermes et les connecteurs
+> devront **refaire ces autorisations côté serveur** avant toute mutation réelle du
+> coffre Obsidian. Ce que fait le cockpit ici, c'est décider ce qu'il propose et
+> expliquer ce qu'il refuse — pas garantir un accès.
 
 ---
 
@@ -148,6 +201,7 @@ src/
   lib/                    permissions, sélecteurs purs, format, état du cockpit
   types/domain.ts         types métier
 tests/                    Vitest, sur les modules purs uniquement
+e2e/                      Playwright, sur les parcours critiques
 ```
 
 Tout ce que la démonstration fait bouger passe par un réducteur pur,
@@ -203,8 +257,12 @@ déclenchent depuis Réglages › Démonstration.
 - Avec les trois rôles de démonstration, une tâche visible est toujours actionnable : les
   explications écrites de refus existent et sont couvertes par les tests, mais elles ne se
   déclenchent sur aucun écran de la démonstration.
-- Les tests portent sur les modules purs — permissions, sélecteurs, règles de décision et de
-  tâches. Aucun composant n'est monté : il n'y a ni test de rendu, ni test bout-en-bout.
+- Les autorisations sont vérifiées dans le navigateur, jusque dans le réducteur. C'est une
+  démonstration, pas une garantie : Hermes et les connecteurs devront refaire ces contrôles
+  côté serveur avant toute mutation réelle.
+- `pnpm test` ne monte aucun composant : il n'y a pas de test de rendu unitaire. Le
+  comportement à l'écran est couvert par `pnpm test:e2e`, sur les parcours critiques
+  seulement — pas sur l'ensemble des écrans.
 - Les données sont figées sur une journée de démonstration, le mardi 1er septembre 2026 à
   14 h 20. Les durées relatives sont calculées à partir de cet instant, ce qui garantit un
   rendu identique sur le serveur et dans le navigateur.

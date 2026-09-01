@@ -284,14 +284,25 @@ provenance d'une tâche modifiée devient `Hermes · todo.… → Obsidian · �
 | `todo.capture` | « Capturer une tâche » | Crée la tâche dans le coffre |
 | `todo.triage` | « Trier ou modifier » | Met à jour projet, responsable, échéance, note |
 | `todo.complete` | « Terminer » | Coche la tâche |
-| `todo.cancel` | « Annuler la tâche » | Marque la tâche annulée **sans la supprimer** — passe par le panneau sensible |
+| `todo.cancel` | « Annuler la tâche » | Marque la tâche annulée **sans la supprimer** : elle reste affichée dans la journée, en fin de liste, avec le statut écrit « Annulée ». Passe par le panneau sensible |
 
 Périmètre :
 
 - Étienne gère ses tâches personnelles et toutes les tâches partagées ;
-- Lyes et Lucas ne voient jamais une tâche personnelle ;
+- Lyes et Lucas ne voient jamais une tâche personnelle, et ne peuvent ni en créer une, ni
+  transformer une tâche partagée en tâche personnelle ;
 - Lyes et Lucas gèrent les tâches partagées de leurs seuls projets affectés ;
+- le responsable choisi doit être membre du projet visé ;
 - un projet non affecté n'apparaît ni dans les listes, ni dans le champ « Projet ».
+
+Cette règle est écrite une seule fois, dans `authorizeTaskCommand`. L'interface s'en sert
+pour décider ce qu'elle propose et ce qu'elle explique ; le réducteur s'en sert pour
+refuser une commande qui arriverait malgré tout, sans rien modifier et sans rien dire de
+ce qu'il protège.
+
+**Contrôle d'interface, pas autorisation.** Tout cela vit dans le navigateur. Hermes et
+les connecteurs devront refaire ces autorisations côté serveur avant toute mutation réelle
+du coffre Obsidian.
 
 Dans ce prototype, les quatre commandes sont simulées dans l'état React de la session :
 rien ne part, rien n'est écrit, rien ne survit à un rechargement.
@@ -302,9 +313,17 @@ rien ne part, rien n'est écrit, rien ne survit à un rechargement.
 
 Toutes les mutations passent par un réducteur pur, `src/lib/cockpit-state.ts` : conséquence
 d'un refus, limites d'une prolongation, mission créée, commandes de tâches. Le fournisseur
-React ne fait que dispatcher. Deux effets : la règle se lit à un seul endroit, et elle se
-vérifie sans monter un composant. Les tests (`pnpm test`, Vitest) portent sur ce module,
-sur les permissions et sur les sélecteurs — jamais sur le rendu.
+React ne fait que dispatcher. Trois effets : la règle se lit à un seul endroit, elle se
+vérifie sans monter un composant, et une commande hors périmètre est refusée là même où
+elle serait appliquée.
+
+Deux niveaux de vérification, et ils ne se recouvrent pas :
+
+- `pnpm test` (Vitest) porte sur les modules purs — réducteur, permissions, sélecteurs.
+  Aucun composant n'est monté.
+- `pnpm test:e2e` (Playwright) rejoue les parcours critiques sur le build de production, en
+  1440 × 900 et en 390 × 667, en visant des rôles, des libellés et des états accessibles :
+  ni coordonnée fixe, ni attente arbitraire.
 
 ---
 
