@@ -3,7 +3,7 @@
 ## Résultat
 
 - Toute la surface `/api/**` passe par `requireEtienne` avant les parseurs de body et les routeurs. Cela couvre les tâches, missions, fichiers, agent, crons, skills, runtime, `/api/events`, le SSE par mission, `/api/health` et `/api/version`.
-- En production, l’identité n’est acceptée que si l’adresse réelle `req.socket.remoteAddress` appartient à `INDY_TRUSTED_PROXY_CIDRS`, si `X-Indy-Proxy-Secret` correspond au contenu de `INDY_PROXY_SECRET_FILE`, et si `X-Indy-User` vaut exactement `etienne`.
+- En production, la configuration n'est disponible que si `INDY_PUBLIC_ORIGIN` est une origine HTTPS canonique valide. L’identité n’est ensuite acceptée que si l’adresse réelle `req.socket.remoteAddress` appartient à `INDY_TRUSTED_PROXY_CIDRS`, si `X-Indy-Proxy-Secret` correspond au contenu de `INDY_PROXY_SECRET_FILE`, et si `X-Indy-User` vaut exactement `etienne`.
 - Les CIDR configurés doivent être privés (RFC1918/loopback/link-local IPv4 ou ULA/loopback/link-local IPv6). Une entrée publique, invalide ou absente ferme l’authentification.
 - Le secret est chargé uniquement depuis un chemin absolu monté, doit contenir au moins 32 octets, et est comparé via des condensats SHA-256 de taille fixe avec `timingSafeEqual`. Aucun secret ni détail de credential n’entre dans les erreurs ou logs.
 - Le bypass local exige simultanément `NODE_ENV=development`, `INDY_DEV_ACTOR=etienne` et une socket loopback réelle. Il est inactif en test et production.
@@ -64,6 +64,30 @@
 - `pnpm test -- tests/auth-etienne.test.ts tests/run-commands.test.ts tests/runtime-route.test.ts` → 3 fichiers, 38 tests, 0 échec.
 - `pnpm test -- tests/run-commands.test.ts -t "keeps exactly one start command"` → 1 test, 0 échec (10 ignorés), exécuté isolément.
 - `pnpm test` → 18 fichiers, 114 tests, 0 échec.
+- `pnpm typecheck` → serveur et client, exit 0.
+- `pnpm build` → serveur, client et assets, exit 0; 2 600 modules transformés. Le warning Vite historique sur le chunk global d'environ 672 kB gzip demeure hors Task 9.
+- `git diff --check` → exit 0.
+
+## Fix review round 2/5 — 2026-09-02
+
+### Correctif sécurité
+
+- La décision browser n'est plus dérivée du seul `Host` entrant. `INDY_PUBLIC_ORIGIN` configure au démarrage l'unique origine publique HTTPS canonique; une valeur absente ou invalide rend l'authentification indisponible hors développement.
+- La configuration doit être sa propre sérialisation `URL.origin` : host en minuscules, aucun userinfo, path, slash terminal, query, fragment ni port HTTPS `:443` redondant. Un port non standard explicite reste supporté.
+- Une requête browser authentifiée doit présenter simultanément l'`Origin` canonique exact, le `Host`/port canonique exact et `Sec-Fetch-Site: same-origin`. Alias, variantes de casse, ports divergents et valeurs multiples/ambiguës sont refusés `403` avant mutation.
+- Le chemin interne sans `Origin` demeure disponible seulement après les trois contrôles de transport; son `Host` doit rester singulier et non ambigu. Il est documenté comme exception du hop proxy privé et de l'automatisation interne, pas comme accès navigateur.
+
+### TDD et régressions
+
+- RED principal : 13 échecs sur 37 tests auth. Le couple hostile `Host: hostile.example` + `Origin: https://hostile.example` mutait encore (`201`), comme les alias/casses/ports auto-cohérents; huit configurations canoniques invalides répondaient `200` plutôt que `503`.
+- GREEN principal : 37/37 après parsing canonique au démarrage et comparaison indépendante de la requête.
+- RED complémentaire : un POST sans `Origin` mais avec `Host` ambigu mutait encore (`201`); GREEN après rejet global d'un `Host` absent ou ambigu.
+- La matrice couvre désormais origine canonique absente, relative, HTTP, userinfo, path/slash, query/fragment, casse et `:443`, plus le happy path HTTPS avec port non standard, les alias, variations de casse, divergences de port et valeurs Host/Origin multiples sérialisées.
+
+### Vérifications du correctif
+
+- `pnpm test -- tests/auth-etienne.test.ts tests/run-commands.test.ts tests/runtime-route.test.ts` → 3 fichiers, 57 tests, 0 échec.
+- `pnpm test` → 18 fichiers, 133 tests, 0 échec.
 - `pnpm typecheck` → serveur et client, exit 0.
 - `pnpm build` → serveur, client et assets, exit 0; 2 600 modules transformés. Le warning Vite historique sur le chunk global d'environ 672 kB gzip demeure hors Task 9.
 - `git diff --check` → exit 0.

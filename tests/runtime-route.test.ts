@@ -33,6 +33,7 @@ async function loadProductionAppWithBroadcastSpy(prefix: string) {
   writeFileSync(secretFile, `${TEST_PROXY_SECRET}\n`, { encoding: 'utf8', mode: 0o600 });
   process.env.MINIONS_HOME = home;
   process.env.NODE_ENV = 'production';
+  process.env.INDY_PUBLIC_ORIGIN = 'https://indy.example.test';
   process.env.INDY_PROXY_SECRET_FILE = secretFile;
   process.env.INDY_TRUSTED_PROXY_CIDRS = '127.0.0.0/8,::1/128';
   vi.resetModules();

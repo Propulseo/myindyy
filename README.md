@@ -41,18 +41,20 @@ The first milestone is mono-user: every `/api/**` request must resolve to the se
 
 Production requires all of the following:
 
-1. The actual socket peer (`req.socket.remoteAddress`) belongs to a configured private proxy CIDR.
-2. `X-Indy-Proxy-Secret` matches the mounted transport-secret file using a timing-safe comparison.
-3. `X-Indy-User` is exactly `etienne`.
+1. `INDY_PUBLIC_ORIGIN` is a valid, normalized canonical HTTPS origin.
+2. The actual socket peer (`req.socket.remoteAddress`) belongs to a configured private proxy CIDR.
+3. `X-Indy-Proxy-Secret` matches the mounted transport-secret file using a timing-safe comparison.
+4. `X-Indy-User` is exactly `etienne`.
 
 The application never uses `X-Forwarded-For`, `Forwarded`, `req.ip`, query parameters, or request-body fields as identity. Express `trust proxy` is intentionally not enabled. The reverse proxy must strip any client-supplied `X-Indy-User` and `X-Indy-Proxy-Secret` headers, then inject its own values on the private upstream hop. The Indy port must bind only to the private host/network and must not be reachable directly from the Internet.
 
-The API is same-origin only. Indy emits no wildcard CORS headers and does not enable cross-origin credential sharing. For a browser request carrying `Origin`, the value must be the exact normalized origin built from the public `Host` (`https` in production, `http` in development), and `Sec-Fetch-Site` must be `same-origin`. `same-site`, `cross-site`, opaque/malformed origins, and unsafe browser-shaped requests missing either signal return `403` before route handling. The proxy must preserve or set the canonical public `Host`; forwarded host/protocol headers are not trusted.
+The API is same-origin only. Indy emits no wildcard CORS headers and does not enable cross-origin credential sharing. Production does not derive trust from a request's `Host`: `INDY_PUBLIC_ORIGIN` declares the one canonical public HTTPS origin. For a browser request carrying `Origin`, that header must equal the configured origin byte-for-byte, `Host` must equal its canonical host and optional non-default port byte-for-byte, and `Sec-Fetch-Site` must be `same-origin`. Aliases, case variants, an explicit default `:443`, port mismatches, userinfo, ambiguous/multiple values, opaque/malformed origins, and unsafe browser-shaped requests missing either signal return `403` before route handling. The proxy must preserve or set this exact canonical `Host`; forwarded host/protocol headers are not trusted.
 
-An anonymous `OPTIONS /api/**` preflight is not public metadata: it crosses the same authentication boundary and returns `401`. No `Access-Control-Allow-Origin` response is produced. A trusted non-browser client may omit both `Origin` and Fetch Metadata, but only after the private-source, transport-secret, and exact-user checks succeed. Cross-origin API access is intentionally unsupported; if it becomes necessary, it must be a separate exact normalized HTTPS allowlist design, never origin reflection or wildcard credentials.
+An anonymous `OPTIONS /api/**` preflight is not public metadata: it crosses the same authentication boundary and returns `401`. No `Access-Control-Allow-Origin` response is produced. A transport-internal non-browser client may omit both `Origin` and Fetch Metadata and use a different singular `Host`, but only after the actual private source, transport secret, and exact user checks succeed. This exception is for the private proxy hop and trusted internal automation, never ambient browser traffic. Cross-origin API access is intentionally unsupported; if it becomes necessary, it must be a separate exact normalized HTTPS allowlist design, never origin reflection or wildcard credentials.
 
 | Variable | Production meaning |
 | --- | --- |
+| `INDY_PUBLIC_ORIGIN` | Required canonical HTTPS origin, for example `https://indy.example.com` or `https://indy.example.com:8443`. It must already equal URL origin serialization: lowercase host, no userinfo, path, trailing slash, query, fragment, or redundant `:443`. Missing or malformed values make authentication unavailable. |
 | `INDY_PROXY_SECRET_FILE` | Absolute path to the mounted secret file. The file contains at least 32 bytes; one final newline is ignored. The secret itself must not be placed in an environment variable. |
 | `INDY_TRUSTED_PROXY_CIDRS` | Comma-separated private proxy addresses or CIDRs, for example `10.20.0.5/32,fd42:1234::5/128`. Public ranges and invalid entries make authentication unavailable. |
 | `INDY_DEV_ACTOR` | Optional local-only bypass. It is effective only with the exact value `etienne`, `NODE_ENV=development`, and an actual loopback socket. It is ignored in test and production. |
@@ -64,7 +66,7 @@ umask 077
 openssl rand -hex 32 > /run/secrets/indy-proxy
 ```
 
-Configure the proxy to read the same secret from its secret store and inject it upstream; never expose it to browser JavaScript or proxy access logs. Set `INDY_PROXY_SECRET_FILE=/run/secrets/indy-proxy` in Indy and restrict `INDY_TRUSTED_PROXY_CIDRS` to the proxy's real private source network. Missing or invalid production configuration fails closed with `503`. Missing or invalid transport credentials return the same generic `401`; a trusted, transport-authenticated identity other than exact `etienne` returns `403`.
+Configure the proxy to read the same secret from its secret store and inject it upstream; never expose it to browser JavaScript or proxy access logs. Set `INDY_PUBLIC_ORIGIN=https://indy.example.com`, set `INDY_PROXY_SECRET_FILE=/run/secrets/indy-proxy`, and restrict `INDY_TRUSTED_PROXY_CIDRS` to the proxy's real private source network. The proxy must send `Host: indy.example.com` on browser traffic. Missing or invalid production configuration fails closed with `503`. Missing or invalid transport credentials return the same generic `401`; a trusted, transport-authenticated identity other than exact `etienne` returns `403`.
 
 ## Features
 

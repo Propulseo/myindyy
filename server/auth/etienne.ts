@@ -41,6 +41,16 @@ interface ProxyTrust {
   readonly ready: boolean;
 }
 
+interface CanonicalPublicOrigin {
+  readonly host: string;
+  readonly origin: string;
+}
+
+interface SingleHeader {
+  readonly present: boolean;
+  readonly value: string | null;
+}
+
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 const PRIVATE_NETWORKS: readonly PrivateNetwork[] = [
@@ -142,8 +152,42 @@ function isTrustedProxy(trust: ProxyTrust, rawAddress: string | undefined): bool
   return Boolean(address && trust.ready && trust.blockList.check(address.address, address.family));
 }
 
+function parseCanonicalPublicOrigin(value: string | undefined): CanonicalPublicOrigin | null {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'https:'
+      || parsed.username
+      || parsed.password
+      || parsed.pathname !== '/'
+      || parsed.search
+      || parsed.hash
+      || value !== parsed.origin) {
+      return null;
+    }
+    return { host: parsed.host, origin: parsed.origin };
+  } catch {
+    return null;
+  }
+}
+
+function singleHeader(request: Request, name: string): SingleHeader {
+  const values: string[] = [];
+  for (let index = 0; index < request.rawHeaders.length; index += 2) {
+    if (request.rawHeaders[index]?.toLowerCase() === name.toLowerCase()) {
+      values.push(request.rawHeaders[index + 1] ?? '');
+    }
+  }
+  if (values.length === 0) return { present: false, value: null };
+  const [value] = values;
+  if (values.length !== 1 || !value || value.includes(',')) {
+    return { present: true, value: null };
+  }
+  return { present: true, value };
+}
+
 function normalizedRequestOrigin(request: Request, environment: NodeJS.ProcessEnv): string | null {
-  const host = request.get('Host');
+  const host = singleHeader(request, 'Host').value;
   if (!host) return null;
   try {
     const scheme = environment.NODE_ENV === 'development' ? 'http' : 'https';
@@ -155,20 +199,32 @@ function normalizedRequestOrigin(request: Request, environment: NodeJS.ProcessEn
   }
 }
 
-function isBrowserRequestAllowed(request: Request, environment: NodeJS.ProcessEnv): boolean {
-  const origin = request.get('Origin');
+function isBrowserRequestAllowed(
+  request: Request,
+  environment: NodeJS.ProcessEnv,
+  publicOrigin: CanonicalPublicOrigin | null,
+): boolean {
+  const hostHeader = singleHeader(request, 'Host');
+  const originHeader = singleHeader(request, 'Origin');
   const fetchSite = request.get('Sec-Fetch-Site');
 
+  if (!hostHeader.value) return false;
   if (fetchSite === 'cross-site' || fetchSite === 'same-site') return false;
 
-  if (origin !== undefined) {
+  if (originHeader.present) {
+    const origin = originHeader.value;
+    if (!origin) return false;
     if (fetchSite !== 'same-origin') return false;
     try {
       const parsed = new URL(origin);
       const expectedProtocol = environment.NODE_ENV === 'development' ? 'http:' : 'https:';
-      return parsed.protocol === expectedProtocol
-        && parsed.origin === origin
-        && parsed.origin === normalizedRequestOrigin(request, environment);
+      if (parsed.protocol !== expectedProtocol || parsed.origin !== origin) return false;
+      if (environment.NODE_ENV === 'development') {
+        return parsed.origin === normalizedRequestOrigin(request, environment);
+      }
+      return publicOrigin !== null
+        && origin === publicOrigin.origin
+        && hostHeader.value === publicOrigin.host;
     } catch {
       return false;
     }
@@ -182,7 +238,10 @@ export function createRequireEtienne(options: EtienneAuthOptions = {}): RequestH
   const environment = options.environment ?? process.env;
   const proxyTrust = parseTrustedProxyCidrs(environment.INDY_TRUSTED_PROXY_CIDRS);
   const transportSecret = readMountedSecret(environment.INDY_PROXY_SECRET_FILE);
-  const configurationReady = proxyTrust.ready && transportSecret !== null;
+  const publicOrigin = parseCanonicalPublicOrigin(environment.INDY_PUBLIC_ORIGIN);
+  const configurationReady = proxyTrust.ready
+    && transportSecret !== null
+    && (environment.NODE_ENV === 'development' || publicOrigin !== null);
   const getRemoteAddress = options.getRemoteAddress ?? ((request: Request) => request.socket.remoteAddress);
 
   return (request, response, next) => {
@@ -192,7 +251,7 @@ export function createRequireEtienne(options: EtienneAuthOptions = {}): RequestH
       && isLoopback(remoteAddress);
 
     const continueAsEtienne = () => {
-      if (!isBrowserRequestAllowed(request, environment)) {
+      if (!isBrowserRequestAllowed(request, environment, publicOrigin)) {
         response.status(403).json({ error: 'Forbidden' });
         return;
       }

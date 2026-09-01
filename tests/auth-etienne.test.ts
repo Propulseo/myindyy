@@ -6,11 +6,14 @@ import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const TEST_TRANSPORT_SECRET = 'test-only-proxy-secret-32-bytes-minimum';
+const TEST_PUBLIC_ORIGIN = 'https://indy.example.test';
 const AUTH_ENV_KEYS = [
   'NODE_ENV',
   'INDY_DEV_ACTOR',
+  'INDY_PUBLIC_ORIGIN',
   'INDY_PROXY_SECRET_FILE',
   'INDY_TRUSTED_PROXY_CIDRS',
+  'MINIONS_HOME',
 ] as const;
 const originalAuthEnv = Object.fromEntries(
   AUTH_ENV_KEYS.map((key) => [key, process.env[key]]),
@@ -26,6 +29,7 @@ function createSecretFile(secret = TEST_TRANSPORT_SECRET): string {
 function secureEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     NODE_ENV: 'production',
+    INDY_PUBLIC_ORIGIN: TEST_PUBLIC_ORIGIN,
     INDY_PROXY_SECRET_FILE: createSecretFile(),
     INDY_TRUSTED_PROXY_CIDRS: '10.0.0.0/8',
     ...overrides,
@@ -53,11 +57,13 @@ async function createAuthProbe(options: {
   return probe;
 }
 
-async function loadProductionApp() {
+async function loadProductionApp(environment: NodeJS.ProcessEnv = {}) {
   process.env.NODE_ENV = 'production';
+  process.env.INDY_PUBLIC_ORIGIN = TEST_PUBLIC_ORIGIN;
   process.env.INDY_PROXY_SECRET_FILE = createSecretFile();
   process.env.INDY_TRUSTED_PROXY_CIDRS = '127.0.0.0/8,::1/128';
   process.env.MINIONS_HOME = mkdtempSync(join(tmpdir(), 'indy-auth-app-'));
+  Object.assign(process.env, environment);
   vi.resetModules();
   const [{ default: app, adapter }, { default: database }] = await Promise.all([
     import('../server/app.js'),
@@ -220,6 +226,42 @@ describe('Etienne cockpit authentication', () => {
       name: 'a transport secret shorter than 32 bytes',
       environment: () => secureEnvironment({ INDY_PROXY_SECRET_FILE: createSecretFile('too-short') }),
     },
+    {
+      name: 'a missing canonical public origin',
+      environment: () => secureEnvironment({ INDY_PUBLIC_ORIGIN: undefined }),
+    },
+    {
+      name: 'a relative canonical public origin',
+      environment: () => secureEnvironment({ INDY_PUBLIC_ORIGIN: 'indy.example.test' }),
+    },
+    {
+      name: 'a non-HTTPS canonical public origin',
+      environment: () => secureEnvironment({ INDY_PUBLIC_ORIGIN: 'http://indy.example.test' }),
+    },
+    {
+      name: 'a canonical public origin with userinfo',
+      environment: () => secureEnvironment({ INDY_PUBLIC_ORIGIN: 'https://user@indy.example.test' }),
+    },
+    {
+      name: 'a canonical public origin with a path',
+      environment: () => secureEnvironment({ INDY_PUBLIC_ORIGIN: 'https://indy.example.test/cockpit' }),
+    },
+    {
+      name: 'a canonical public origin with a trailing root slash',
+      environment: () => secureEnvironment({ INDY_PUBLIC_ORIGIN: 'https://indy.example.test/' }),
+    },
+    {
+      name: 'a canonical public origin with query or fragment data',
+      environment: () => secureEnvironment({ INDY_PUBLIC_ORIGIN: 'https://indy.example.test?mode=prod#cockpit' }),
+    },
+    {
+      name: 'a non-normalized canonical public origin case',
+      environment: () => secureEnvironment({ INDY_PUBLIC_ORIGIN: 'https://INDY.example.test' }),
+    },
+    {
+      name: 'a redundant default HTTPS port',
+      environment: () => secureEnvironment({ INDY_PUBLIC_ORIGIN: 'https://indy.example.test:443' }),
+    },
   ])('fails closed for $name', async ({ environment }) => {
     const app = await createAuthProbe({
       environment: environment(),
@@ -274,6 +316,27 @@ describe('Etienne cockpit authentication', () => {
     }
   });
 
+  it('does not trust an arbitrary Host paired with the same hostile Origin', async () => {
+    const { app, database } = await loadProductionApp();
+    const before = database.prepare('SELECT COUNT(*) AS count FROM tasks').get();
+
+    try {
+      const response = await request(app)
+        .post('/api/tasks')
+        .set(validEtienneHeaders())
+        .set('Host', 'hostile.example')
+        .set('Origin', 'https://hostile.example')
+        .set('Sec-Fetch-Site', 'same-origin')
+        .send({ description: 'Host-header bypass' });
+
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ error: 'Forbidden' });
+      expect(database.prepare('SELECT COUNT(*) AS count FROM tasks').get()).toEqual(before);
+    } finally {
+      database.close();
+    }
+  });
+
   it('accepts exact same-origin browser mutations without emitting permissive CORS headers', async () => {
     const { app, database } = await loadProductionApp();
 
@@ -290,6 +353,83 @@ describe('Etienne cockpit authentication', () => {
       expect(response.headers['access-control-allow-origin']).toBeUndefined();
       expect(response.headers['access-control-allow-credentials']).toBeUndefined();
       expect(response.body.task).toMatchObject({ description: 'Same-origin task' });
+    } finally {
+      database.close();
+    }
+  });
+
+  it('accepts a normalized canonical origin with an explicit non-default port', async () => {
+    const { app, database } = await loadProductionApp({
+      INDY_PUBLIC_ORIGIN: 'https://indy.example.test:8443',
+    });
+
+    try {
+      const response = await request(app)
+        .post('/api/tasks')
+        .set(validEtienneHeaders())
+        .set('Host', 'indy.example.test:8443')
+        .set('Origin', 'https://indy.example.test:8443')
+        .set('Sec-Fetch-Site', 'same-origin')
+        .send({ description: 'Canonical port task' });
+
+      expect(response.status).toBe(201);
+      expect(response.body.task).toMatchObject({ description: 'Canonical port task' });
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each([
+    {
+      name: 'a host alias paired with its alias origin',
+      host: 'alias.example.test',
+      origin: 'https://alias.example.test',
+    },
+    {
+      name: 'a differently cased Host',
+      host: 'INDY.example.test',
+      origin: TEST_PUBLIC_ORIGIN,
+    },
+    {
+      name: 'a differently cased Origin',
+      host: 'indy.example.test',
+      origin: 'https://INDY.example.test',
+    },
+    {
+      name: 'a different explicit port paired with its origin',
+      host: 'indy.example.test:8443',
+      origin: 'https://indy.example.test:8443',
+    },
+    {
+      name: 'a redundant default port in Host',
+      host: 'indy.example.test:443',
+      origin: TEST_PUBLIC_ORIGIN,
+    },
+    {
+      name: 'multiple serialized Host values',
+      host: 'indy.example.test,hostile.example',
+      origin: TEST_PUBLIC_ORIGIN,
+    },
+    {
+      name: 'multiple serialized Origin values',
+      host: 'indy.example.test',
+      origin: 'https://indy.example.test,https://hostile.example',
+    },
+  ])('rejects $name instead of weakening the canonical origin', async ({ host, origin }) => {
+    const { app, database } = await loadProductionApp();
+    const before = database.prepare('SELECT COUNT(*) AS count FROM tasks').get();
+
+    try {
+      const response = await request(app)
+        .post('/api/tasks')
+        .set(validEtienneHeaders())
+        .set('Host', host)
+        .set('Origin', origin)
+        .set('Sec-Fetch-Site', 'same-origin')
+        .send({ description: 'Non-canonical request' });
+
+      expect(response.status).toBe(403);
+      expect(database.prepare('SELECT COUNT(*) AS count FROM tasks').get()).toEqual(before);
     } finally {
       database.close();
     }
@@ -330,6 +470,24 @@ describe('Etienne cockpit authentication', () => {
 
       expect(response.status).toBe(201);
       expect(response.body.task).toMatchObject({ description: 'Internal proxy task' });
+    } finally {
+      database.close();
+    }
+  });
+
+  it('rejects an ambiguous Host on an authenticated no-Origin mutation', async () => {
+    const { app, database } = await loadProductionApp();
+    const before = database.prepare('SELECT COUNT(*) AS count FROM tasks').get();
+
+    try {
+      const response = await request(app)
+        .post('/api/tasks')
+        .set(validEtienneHeaders())
+        .set('Host', 'indy.example.test,hostile.example')
+        .send({ description: 'Ambiguous internal host' });
+
+      expect(response.status).toBe(403);
+      expect(database.prepare('SELECT COUNT(*) AS count FROM tasks').get()).toEqual(before);
     } finally {
       database.close();
     }
