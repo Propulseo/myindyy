@@ -13,6 +13,7 @@ import threading
 import time
 import traceback
 import uuid
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
 from typing import Any, Callable
@@ -792,6 +793,98 @@ def _list_models() -> dict[str, Any]:
         )
 
     return result
+
+
+def _runtime_checked_at() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _runtime_auth_state(exc: BaseException) -> str:
+    code = str(getattr(exc, "code", "") or "").strip().lower()
+    if "missing" in code or code in {"no_credentials", "no_credential"}:
+        return "missing"
+    if any(fragment in code for fragment in ("expired", "invalid", "revoked", "refresh")):
+        return "expired"
+    if bool(getattr(exc, "relogin_required", False)):
+        return "expired"
+    return "error"
+
+
+def _runtime_profile_id(runtime: dict[str, Any]) -> str | None:
+    explicit = string_or_none(runtime.get("profile_id")) or string_or_none(runtime.get("profileId"))
+    if explicit:
+        return explicit
+    pool = runtime.get("credential_pool")
+    current_fn = getattr(pool, "current", None)
+    if callable(current_fn):
+        try:
+            current = current_fn()
+            return string_or_none(getattr(current, "id", None))
+        except Exception:
+            return None
+    return None
+
+
+def _runtime_catalog_models(catalog: dict[str, Any]) -> list[dict[str, Any]]:
+    projected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in catalog.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        group_provider = string_or_none(group.get("provider"))
+        for model in group.get("models") or []:
+            if not isinstance(model, dict):
+                continue
+            if string_or_none(model.get("source")) != "catalog":
+                continue
+            model_provider = string_or_none(model.get("provider"))
+            if group_provider != "openai-codex" and model_provider != "openai-codex":
+                continue
+            model_id = string_or_none(model.get("id"))
+            if not model_id or model_id in seen:
+                continue
+            seen.add(model_id)
+            raw_efforts = model.get("reasoningEfforts")
+            efforts = None
+            if isinstance(raw_efforts, list):
+                efforts = [
+                    effort for effort in raw_efforts
+                    if isinstance(effort, str) and effort in ALLOWED_REASONING
+                ]
+            projected.append({
+                "id": model_id,
+                "label": string_or_none(model.get("label")) or model_id,
+                "reasoningEfforts": efforts,
+            })
+    return projected
+
+
+def _runtime_status() -> dict[str, Any]:
+    base = {
+        "provider": "openai-codex",
+        "profileId": None,
+        "authState": "error",
+        "checkedAt": _runtime_checked_at(),
+        "models": [],
+    }
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider  # type: ignore
+
+        defaults = _defaults_from_config()
+        runtime = resolve_runtime_provider(
+            requested="openai-codex",
+            target_model=string_or_none(defaults.get("model")),
+        )
+        if string_or_none(runtime.get("provider")) != "openai-codex":
+            return base
+        return {
+            **base,
+            "profileId": _runtime_profile_id(runtime),
+            "authState": "connected",
+            "models": _runtime_catalog_models(_list_models()),
+        }
+    except Exception as exc:
+        return {**base, "authState": _runtime_auth_state(exc)}
 
 
 def _resolve_model_provider(
@@ -1601,6 +1694,8 @@ def _handle_request(request: dict[str, Any]) -> None:
             _result(request_id, _set_defaults(request))
         elif request_type == "models.list":
             _result(request_id, _list_models())
+        elif request_type == "runtime.status":
+            _result(request_id, _runtime_status())
         elif request_type == "scheduledTasks.list":
             _result(request_id, list_scheduled_tasks(bool(request.get("includeDisabled")), request.get("limit")))
         elif request_type == "scheduledTasks.get":

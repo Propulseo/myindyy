@@ -165,6 +165,13 @@ describe('operator run commands', () => {
       pausedReason: null,
     });
     const interruptSpy = vi.spyOn(adapter, 'interruptChat').mockResolvedValue(true);
+    const runtimeStatusSpy = vi.spyOn(adapter, 'getRuntimeStatus').mockResolvedValue({
+      provider: 'openai-codex',
+      profileId: 'test-profile',
+      authState: 'connected',
+      checkedAt: '2026-09-01T08:00:00.000Z',
+      models: [{ id: 'gpt-race', label: 'gpt-race', reasoningEfforts: null }],
+    });
     const writes: string[] = [];
     let closeSubscriber = () => {};
 
@@ -222,6 +229,7 @@ describe('operator run commands', () => {
       chatStreamSpy.mockRestore();
       setGoalSpy.mockRestore();
       interruptSpy.mockRestore();
+      runtimeStatusSpy.mockRestore();
     }
   });
 

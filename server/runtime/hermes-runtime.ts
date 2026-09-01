@@ -1,13 +1,55 @@
 import type {
   AgentDefaults,
+  AgentModelGroup,
   CompactResult,
+  ReasoningEffort,
   ScheduledTask,
   ScheduledTaskInput,
 } from '../../shared/types.js';
 import type { AgentRunOptions, AgentRunSettings, StreamEvent } from '../adapters/types.js';
 import { HermesWorkerAdapter } from '../adapters/hermes-worker.js';
+import type { RuntimeAuthState } from '../adapters/worker-protocol.js';
 import { assertAllowedRuntime, RuntimePolicyError } from './policy.js';
 import type { RuntimeSessionInspection } from '../runs/reconcile.js';
+import { REASONING_EFFORTS } from '../../shared/types.js';
+
+export interface RuntimeModel {
+  id: string;
+  label: string;
+  reasoningEfforts: ReasoningEffort[] | null;
+}
+
+export interface RuntimeStatus {
+  provider: 'openai-codex';
+  profileId: string | null;
+  authState: RuntimeAuthState;
+  checkedAt: string;
+  models: RuntimeModel[];
+}
+
+type RuntimeCatalogGroup = Omit<AgentModelGroup, 'models'> & {
+  models: Array<AgentModelGroup['models'][number] & { reasoningEfforts?: unknown }>;
+};
+
+export function filterOAuthModels(groups: readonly RuntimeCatalogGroup[]): RuntimeModel[] {
+  const oauthGroup = groups.find((group) => group.provider === 'openai-codex');
+  if (!oauthGroup) return [];
+
+  return oauthGroup.models.flatMap((model) => {
+    if (typeof model.id !== 'string' || !model.id.trim()) return [];
+    const efforts = Array.isArray(model.reasoningEfforts)
+      ? model.reasoningEfforts.filter((effort): effort is ReasoningEffort => (
+        typeof effort === 'string'
+        && (REASONING_EFFORTS as readonly string[]).includes(effort)
+      ))
+      : null;
+    return [{
+      id: model.id.trim(),
+      label: typeof model.label === 'string' && model.label.trim() ? model.label.trim() : model.id.trim(),
+      reasoningEfforts: efforts,
+    }];
+  });
+}
 
 function runtimeOptions(options?: AgentRunOptions): AgentRunOptions {
   return {
@@ -23,6 +65,29 @@ function scheduledTaskSettings(input: Pick<ScheduledTaskInput, 'provider' | 'mod
 export class HermesOAuthRuntime extends HermesWorkerAdapter {
   private readonly activeSessions = new Map<string, number>();
   private readonly completedSessions = new Set<string>();
+
+  async getRuntimeStatus(): Promise<RuntimeStatus> {
+    const diagnostic = await super.getRuntimeDiagnostic();
+    const providerMatches = diagnostic.provider === 'openai-codex';
+    const authState = providerMatches ? diagnostic.authState : 'error';
+    return {
+      provider: 'openai-codex',
+      profileId: providerMatches && typeof diagnostic.profileId === 'string'
+        ? diagnostic.profileId
+        : null,
+      authState,
+      checkedAt: typeof diagnostic.checkedAt === 'string'
+        ? diagnostic.checkedAt
+        : new Date().toISOString(),
+      models: providerMatches && authState === 'connected'
+        ? filterOAuthModels([{ provider: diagnostic.provider, models: diagnostic.models.map((model) => ({
+          ...model,
+          source: 'catalog' as const,
+          provider: diagnostic.provider,
+        })) }])
+        : [],
+    };
+  }
 
   async chat(sessionId: string, message: string, options?: AgentRunOptions): Promise<{ text: string; sessionId: string }> {
     return await super.chat(sessionId, message, runtimeOptions(options));

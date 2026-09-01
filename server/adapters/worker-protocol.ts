@@ -11,11 +11,28 @@ import type {
 } from '../../shared/types.js';
 import type { AgentRunSettings } from './types.js';
 
+export type RuntimeAuthState = 'connected' | 'expired' | 'missing' | 'error';
+
+export interface WorkerRuntimeModel {
+  id: string;
+  label: string;
+  reasoningEfforts: string[] | null;
+}
+
+export interface WorkerRuntimeStatus {
+  provider: string;
+  profileId: string | null;
+  authState: RuntimeAuthState;
+  checkedAt: string;
+  models: WorkerRuntimeModel[];
+}
+
 export type WorkerRequest =
   | { id: string; type: 'health' }
   | { id: string; type: 'settings.get' }
   | { id: string; type: 'settings.set'; provider?: string | null; model?: string | null; reasoningEffort?: string | null }
   | { id: string; type: 'models.list' }
+  | { id: string; type: 'runtime.status' }
   | { id: string; type: 'scheduledTasks.list'; includeDisabled?: boolean; limit?: number }
   | { id: string; type: 'scheduledTasks.get'; scheduledTaskId: string }
   | { id: string; type: 'scheduledTasks.create' } & ScheduledTaskInput
@@ -69,6 +86,7 @@ export type WorkerResult =
   | { ok: boolean; agentDir?: string | null; python?: string | null }
   | AgentDefaults
   | AgentModelsResponse
+  | WorkerRuntimeStatus
   | { scheduledTasks: ScheduledTask[] }
   | { scheduledTask: ScheduledTask | null }
   | { executed: number }

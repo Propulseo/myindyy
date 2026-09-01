@@ -8,6 +8,7 @@ import { createAgentRouter, createTaskAgentSettingsRouter } from './routes/agent
 import { createScheduledTasksRouter } from './routes/scheduled-tasks.js';
 import { skillsRouter } from './routes/skills.js';
 import { filesRouter } from './routes/files.js';
+import { createRuntimeRouter } from './routes/runtime.js';
 import { HermesOAuthRuntime } from './runtime/hermes-runtime.js';
 import { initSSE, addClient, sendEvent } from './events.js';
 import { getRunStatuses } from './live-chat.js';
@@ -50,6 +51,7 @@ app.use('/api/missions', createRunsRouter({
 app.use('/api/agent', createAgentRouter(adapter));
 app.use('/api/scheduled-tasks', createScheduledTasksRouter(adapter));
 app.use('/api/skills', skillsRouter);
+app.use('/api/runtime', createRuntimeRouter(adapter));
 
 app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
   if (!res.headersSent && error && typeof error === 'object' && (error as { type?: string }).type === 'entity.too.large') {

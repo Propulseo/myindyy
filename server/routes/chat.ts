@@ -409,6 +409,26 @@ chatRouter.post('/:id/messages', async (req, res) => {
     broadcast({ type: 'task_updated', task: updated });
   }
 
+  try {
+    const runtimeStatus = await adapter.getRuntimeStatus();
+    const requestedModel = runTask.agent_model?.trim();
+    const modelAvailable = runtimeStatus.authState === 'connected'
+      && runTask.agent_provider === runtimeStatus.provider
+      && Boolean(requestedModel)
+      && runtimeStatus.models.some((model) => model.id === requestedModel);
+    if (!modelAvailable) {
+      return res.status(409).json({
+        error: 'The requested Codex model is not available for the active OAuth profile',
+        code: 'MODEL_UNAVAILABLE',
+      });
+    }
+  } catch {
+    return res.status(503).json({
+      error: 'Codex runtime status is unavailable',
+      code: 'RUNTIME_UNAVAILABLE',
+    });
+  }
+
   const durableRun = runService.startMission({
     missionId: runTask.id,
     provider: runTask.agent_provider ?? 'unknown',

@@ -8,8 +8,10 @@ instances (HTTP 401 "User not found").
 """
 
 import sys
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server" / "workers"))
 
@@ -116,6 +118,113 @@ class NonCustomProviderNotHijackedTest(unittest.TestCase):
             result, ("deepseek/deepseek-v4-flash-0731", "custom:agent37", PROXY_URL)
         )
 
+
+def _sensitive_keys(value, path=""):
+    if not isinstance(value, (dict, list)):
+        return []
+    if isinstance(value, list):
+        return [
+            item
+            for index, child in enumerate(value)
+            for item in _sensitive_keys(child, f"{path}[{index}]")
+        ]
+    found = []
+    for key, child in value.items():
+        child_path = f"{path}.{key}" if path else key
+        if any(fragment in key.lower() for fragment in (
+            "token", "key", "credential", "authorization", "cookie"
+        )):
+            found.append(child_path)
+        found.extend(_sensitive_keys(child, child_path))
+    return found
+
+
+class RuntimeStatusTest(unittest.TestCase):
+    def test_classifies_all_public_oauth_states_from_structured_error_metadata(self):
+        cases = [
+            (type("Missing", (RuntimeError,), {"code": "codex_auth_missing"})("secret"), "missing"),
+            (type("Expired", (RuntimeError,), {"code": "token_expired"})("secret"), "expired"),
+            (type("Unknown", (RuntimeError,), {"code": "unexpected"})("secret"), "error"),
+        ]
+        for error, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(hermes_worker._runtime_auth_state(error), expected)
+
+    def test_projects_connected_codex_runtime_without_secrets_or_generation(self):
+        fake_runtime_provider = types.ModuleType("hermes_cli.runtime_provider")
+        fake_runtime_provider.resolve_runtime_provider = lambda **_kwargs: {
+            "provider": "openai-codex",
+            "api_key": "oauth-super-secret",
+            "authorization": "Bearer oauth-super-secret",
+            "credential_pool": None,
+            "profile_id": "etienne-openai",
+        }
+        groups = {
+            "defaultModel": "gpt-5.6-sol",
+            "activeProvider": "openai-codex",
+            "groups": [{
+                "provider": "openai-codex",
+                "models": [{
+                    "id": "gpt-5.6-sol",
+                    "label": "gpt-5.6-sol",
+                    "provider": "openai-codex",
+                    "source": "catalog",
+                    "reasoningEfforts": ["low", "medium", "high", "xhigh"],
+                    "apiKey": "model-secret",
+                }, {
+                    "id": "configured-but-not-in-account-catalog",
+                    "label": "configured-but-not-in-account-catalog",
+                    "provider": "openai-codex",
+                    "source": "current",
+                }],
+            }],
+        }
+
+        with patch.dict(sys.modules, {"hermes_cli.runtime_provider": fake_runtime_provider}), \
+             patch.object(hermes_worker, "_list_models", return_value=groups), \
+             patch.object(hermes_worker, "_run_one_shot_agent") as generate:
+            result = hermes_worker._runtime_status()
+
+        checked_at = result.pop("checkedAt")
+        self.assertRegex(checked_at, r"^\d{4}-\d{2}-\d{2}T")
+        self.assertEqual(result, {
+            "provider": "openai-codex",
+            "profileId": "etienne-openai",
+            "authState": "connected",
+            "models": [{
+                "id": "gpt-5.6-sol",
+                "label": "gpt-5.6-sol",
+                "reasoningEfforts": ["low", "medium", "high", "xhigh"],
+            }],
+        })
+        self.assertEqual(_sensitive_keys(result), [])
+        self.assertNotIn("oauth-super-secret", repr(result))
+        generate.assert_not_called()
+
+    def test_classifies_missing_auth_without_serializing_the_raw_secret_error(self):
+        class FakeAuthError(RuntimeError):
+            code = "codex_auth_missing"
+            relogin_required = True
+
+        fake_runtime_provider = types.ModuleType("hermes_cli.runtime_provider")
+
+        def fail(**_kwargs):
+            raise FakeAuthError("token sk-secret-value is missing")
+
+        fake_runtime_provider.resolve_runtime_provider = fail
+        with patch.dict(sys.modules, {"hermes_cli.runtime_provider": fake_runtime_provider}):
+            result = hermes_worker._runtime_status()
+
+        checked_at = result.pop("checkedAt")
+        self.assertRegex(checked_at, r"^\d{4}-\d{2}-\d{2}T")
+        self.assertEqual(result, {
+            "provider": "openai-codex",
+            "profileId": None,
+            "authState": "missing",
+            "models": [],
+        })
+        self.assertEqual(_sensitive_keys(result), [])
+        self.assertNotIn("sk-secret-value", repr(result))
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,7 +16,13 @@ import type {
   TaskMessage,
 } from '../../shared/types.js';
 import type { AgentAdapter, AgentRunOptions, AgentRunSettings, StreamEvent } from './types.js';
-import type { WorkerEvent, WorkerRequest, WorkerResult, WorkerErrorPayload } from './worker-protocol.js';
+import type {
+  WorkerEvent,
+  WorkerRequest,
+  WorkerResult,
+  WorkerErrorPayload,
+  WorkerRuntimeStatus,
+} from './worker-protocol.js';
 import { expandHomePrefix, resolveHermesHome, resolveMinionsWorkspaceDir } from '../paths.js';
 import { sanitizeWorkerEnv } from '../runtime/policy.js';
 
@@ -531,6 +537,10 @@ export class HermesWorkerAdapter implements AgentAdapter {
 
   async getModels(): Promise<AgentModelsResponse> {
     return await this.client.request<AgentModelsResponse>('models.list');
+  }
+
+  async getRuntimeDiagnostic(): Promise<WorkerRuntimeStatus> {
+    return await this.client.request<WorkerRuntimeStatus>('runtime.status');
   }
 
   async listScheduledTasks(includeDisabled = false, limit = 100): Promise<ScheduledTask[]> {
