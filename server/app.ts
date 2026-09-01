@@ -2,7 +2,8 @@ import express from 'express';
 import type { Express, NextFunction, Request, Response } from 'express';
 import cors from 'cors';
 import { tasksRouter } from './routes/tasks.js';
-import { chatRouter } from './routes/chat.js';
+import { chatRouter, launchChatRun } from './routes/chat.js';
+import { createRunsRouter } from './routes/runs.js';
 import { createAgentRouter, createTaskAgentSettingsRouter } from './routes/agent.js';
 import { createScheduledTasksRouter } from './routes/scheduled-tasks.js';
 import { skillsRouter } from './routes/skills.js';
@@ -11,6 +12,7 @@ import { HermesOAuthRuntime } from './runtime/hermes-runtime.js';
 import { initSSE, addClient, sendEvent } from './events.js';
 import { getRunStatuses } from './live-chat.js';
 import { getAppVersion } from './version.js';
+import db from './db/index.js';
 
 const app: Express = express();
 
@@ -40,6 +42,11 @@ app.use(express.json());
 app.use('/api/tasks', tasksRouter);
 app.use('/api/tasks', createTaskAgentSettingsRouter(adapter));
 app.use('/api/tasks', chatRouter);
+app.use('/api/missions', createRunsRouter({
+  database: db,
+  adapter,
+  launchCommandRun: launchChatRun,
+}));
 app.use('/api/agent', createAgentRouter(adapter));
 app.use('/api/scheduled-tasks', createScheduledTasksRouter(adapter));
 app.use('/api/skills', skillsRouter);

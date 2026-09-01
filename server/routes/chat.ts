@@ -25,7 +25,7 @@ import {
 import { taskRunSettings, parseRunSettingsBody } from '../agent-settings.js';
 import { TASK_AGENT_SYSTEM_PROMPT } from '../prompts/task-agent.js';
 import { isRecord, toErrorMessage } from '../errors.js';
-import type { StreamEvent } from '../adapters/types.js';
+import type { AgentRunSettings, StreamEvent } from '../adapters/types.js';
 import { CHAT_RUN_MODES, MINIONS_GOAL_MAX_TURNS, type ChatRunMode, type CompactResult, type ContextUsage, type GoalStateSnapshot, type Task } from '../../shared/types.js';
 import { createRunRepository } from '../runs/repository.js';
 import { createRunService } from '../runs/service.js';
@@ -153,7 +153,11 @@ async function streamChatTurn(
   runId: string,
   sessionId: string,
   content: string,
-  options: { completeOnDone: boolean; captureResponseText?: boolean },
+  options: {
+    completeOnDone: boolean;
+    captureResponseText?: boolean;
+    settings?: AgentRunSettings;
+  },
 ): Promise<StreamChatTurnResult> {
   let sawDone = false;
   let doneContext: ContextUsage | null | undefined;
@@ -165,14 +169,16 @@ async function streamChatTurn(
 
   const persistApplyBroadcast = (event: StreamEvent): void => {
     runService.consumeEvent(runId, event);
-    applyEvent(runTask.id, event);
-    broadcastLive(runTask.id, event);
+    if (getRunStatus(runTask.id)?.runId === runId) {
+      applyEvent(runTask.id, event);
+      broadcastLive(runTask.id, event);
+    }
   };
 
   try {
     const stream = adapter.chatStream(sessionId, content, {
       systemMessage: TASK_AGENT_SYSTEM_PROMPT,
-      settings: taskRunSettings(runTask),
+      settings: options.settings ?? taskRunSettings(runTask),
       task: { id: runTask.id, title: runTask.title },
     });
 
@@ -229,8 +235,17 @@ async function streamChatTurn(
   };
 }
 
-async function consumeChatRun(runTask: Task, sessionId: string, content: string, runId: string): Promise<void> {
-  const result = await streamChatTurn(runTask, runId, sessionId, content, { completeOnDone: true });
+async function consumeChatRun(
+  runTask: Task,
+  sessionId: string,
+  content: string,
+  runId: string,
+  settings?: AgentRunSettings,
+): Promise<void> {
+  const result = await streamChatTurn(runTask, runId, sessionId, content, {
+    completeOnDone: true,
+    settings,
+  });
   if (result.hadError) runService.fail(runId, result.failureReason);
   else runService.complete(runId);
   try {
@@ -238,6 +253,23 @@ async function consumeChatRun(runTask: Task, sessionId: string, content: string,
   } catch {
     finishRun(runTask.id, ERROR_SNAPSHOT_TTL_MS, runId);
   }
+}
+
+export function launchChatRun(
+  runTask: Task,
+  durableRun: { runId: string; sessionId: string },
+  content: string,
+  settings?: AgentRunSettings,
+): void {
+  const { snapshot, state } = startRun(
+    runTask.id,
+    durableRun.sessionId,
+    content,
+    durableRun.runId,
+  );
+  broadcast({ type: 'task_run_updated', run: state });
+  broadcastLive(runTask.id, { type: 'snapshot', run: snapshot });
+  void consumeChatRun(runTask, durableRun.sessionId, content, snapshot.runId, settings);
 }
 
 async function consumeGoalRun(runTask: Task, sessionId: string, initialContent: string, runId: string): Promise<void> {
@@ -387,12 +419,9 @@ chatRouter.post('/:id/messages', async (req, res) => {
     return res.status(202).json({ runId: snapshot.runId });
   }
 
-  const { snapshot, state } = startRun(runTask.id, sessionId, content, runId);
-  broadcast({ type: 'task_run_updated', run: state });
-  broadcastLive(runTask.id, { type: 'snapshot', run: snapshot });
-  void consumeChatRun(runTask, sessionId, content, snapshot.runId);
+  launchChatRun(runTask, durableRun, content);
 
-  res.status(202).json({ runId: snapshot.runId });
+  res.status(202).json({ runId });
 });
 
 chatRouter.post('/:id/interrupt', async (req, res) => {

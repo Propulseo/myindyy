@@ -69,6 +69,12 @@ export interface CommandClaimResult {
   readonly command: OperatorCommand;
 }
 
+export interface CompleteCommandInput {
+  readonly idempotencyKey: string;
+  readonly result: unknown;
+  readonly completedAt?: number;
+}
+
 export interface RunRepository {
   createRun(input: CreateRunInput): MissionRun;
   appendRunEvent(input: AppendRunEventInput): boolean;
@@ -79,6 +85,7 @@ export interface RunRepository {
   listRunEvents(runId: string): RunEvent[];
   findActiveRuns(missionId?: string): MissionRun[];
   claimCommand(input: ClaimCommandInput): CommandClaimResult;
+  completeCommand(input: CompleteCommandInput): OperatorCommand;
 }
 
 export interface RunRepositoryOptions {

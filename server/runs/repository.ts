@@ -4,6 +4,7 @@ import type {
   AppendRunEventInput,
   ClaimCommandInput,
   CommandClaimResult,
+  CompleteCommandInput,
   CreateRunInput,
   FinishRunRecordInput,
   MissionRun,
@@ -195,6 +196,11 @@ export function createRunRepository(
   const getCommand = database.prepare(
     'SELECT * FROM operator_commands WHERE idempotency_key = ?',
   );
+  const completeCommand = database.prepare(`
+    UPDATE operator_commands
+    SET status = 'completed', result_json = @result_json, completed_at = @completed_at
+    WHERE idempotency_key = @idempotency_key AND status = 'claimed'
+  `);
 
   const appendEventTransaction = database.transaction((input: AppendRunEventInput): boolean => {
     const result = insertEvent.run({
@@ -304,6 +310,18 @@ export function createRunRepository(
 
     claimCommand(input: ClaimCommandInput): CommandClaimResult {
       return claimCommandTransaction(input);
+    },
+
+    completeCommand(input: CompleteCommandInput): OperatorCommand {
+      const result = completeCommand.run({
+        idempotency_key: input.idempotencyKey,
+        result_json: JSON.stringify(input.result),
+        completed_at: input.completedAt ?? now(),
+      });
+      if (result.changes === 0) {
+        throw new Error(`Operator command is not claimable: ${input.idempotencyKey}`);
+      }
+      return toCommand(getCommand.get(input.idempotencyKey) as OperatorCommandRow);
     },
   };
 }

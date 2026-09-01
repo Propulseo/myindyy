@@ -53,6 +53,23 @@ export interface RunEvent {
   readonly payload: Readonly<Record<string, unknown>>;
 }
 
+export const RUN_COMMAND_TYPES = ['interrupt', 'correct', 'resume', 'retry', 'stop'] as const;
+export type RunCommandType = (typeof RUN_COMMAND_TYPES)[number];
+
+export interface RunCommandBody {
+  readonly type: RunCommandType;
+  readonly runId: string;
+  readonly reason?: string;
+}
+
+export interface RunCommandResult {
+  readonly type: RunCommandType;
+  readonly missionId: string;
+  readonly runId: string;
+  readonly previousRunId?: string;
+  readonly status: 'accepted';
+}
+
 export interface TaskMessagesResponse {
   messages: TaskMessage[];
   context: ContextUsage | null;

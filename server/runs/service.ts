@@ -16,6 +16,10 @@ export interface StartedMission {
   readonly sessionId: string;
 }
 
+export interface StartLinkedAttemptOptions {
+  readonly sessionRun?: MissionRun;
+}
+
 export interface MissionRunHistory {
   readonly runs: MissionRun[];
   readonly events: RunEvent[];
@@ -23,12 +27,14 @@ export interface MissionRunHistory {
 
 export interface RunService {
   startMission(input: StartMissionInput): StartedMission;
+  startLinkedAttempt(previousRun: MissionRun, options?: StartLinkedAttemptOptions): StartedMission;
   consumeEvent(runId: string, event: StreamEvent, options?: ConsumeEventOptions): RunEvent;
   complete(runId: string, event?: StreamEvent & { type: 'done' }): RunEvent;
   fail(runId: string, error: unknown): RunEvent;
   cancel(runId: string, reason: string): RunEvent;
   getMissionHistory(missionId: string): MissionRunHistory;
   getLatestRun(missionId: string): MissionRun | undefined;
+  getLatestConfirmedRun(missionId: string): MissionRun | undefined;
   getLatestConfirmedSessionId(missionId: string): string | undefined;
 }
 
@@ -45,6 +51,10 @@ function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
   return 'Hermes run failed';
+}
+
+function isTerminalStatus(status: MissionRun['status']): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
 }
 
 export function createRunService(
@@ -78,10 +88,6 @@ export function createRunService(
     return record;
   }
 
-  function persist(run: MissionRun, event: StreamEvent): RunEvent {
-    return persistNormalized(run, normalizeHermesEvent(run, event));
-  }
-
   function finish(runId: string, status: TerminalMissionRunStatus, reason: string): void {
     const run = requireRun(runId);
     repository.finishRunRecord({
@@ -98,7 +104,21 @@ export function createRunService(
     consumeOptions: ConsumeEventOptions = {},
   ): RunEvent {
     const run = requireRun(runId);
-    const persisted = event.type === 'done' && consumeOptions.terminal === false
+    const normalized = normalizeHermesEvent(run, event);
+    const isLateTerminalEvent = isTerminalStatus(run.status)
+      && (normalized.type === 'run.completed'
+        || normalized.type === 'run.failed'
+        || normalized.type === 'run.cancelled');
+    const persisted = isLateTerminalEvent
+      ? persistNormalized(run, {
+          type: 'run.heartbeat',
+          payload: {
+            ignoredAfterTerminal: run.status,
+            originalType: normalized.type,
+            ...normalized.payload,
+          },
+        })
+      : event.type === 'done' && consumeOptions.terminal === false
       ? persistNormalized(run, {
           type: 'run.heartbeat',
           payload: Object.fromEntries(Object.entries({
@@ -108,7 +128,7 @@ export function createRunService(
             interrupted: event.interrupted,
           }).filter(([, value]) => value !== undefined)),
         })
-      : persist(run, event);
+      : persistNormalized(run, normalized);
     if (event.type === 'done' && event.sessionId) {
       repository.updateRunSession(
         runId,
@@ -123,32 +143,72 @@ export function createRunService(
     return repository.listRunEvents(runId).at(-1);
   }
 
+  function durableTerminalEvent(run: MissionRun): RunEvent | undefined {
+    const expectedType = run.status === 'completed'
+      ? 'run.completed'
+      : run.status === 'failed'
+        ? 'run.failed'
+        : run.status === 'cancelled'
+          ? 'run.cancelled'
+          : undefined;
+    if (!expectedType) return undefined;
+    const events = repository.listRunEvents(run.id);
+    for (let index = events.length - 1; index >= 0; index--) {
+      if (events[index]?.type === expectedType) return events[index];
+    }
+    return undefined;
+  }
+
+  function startAttempt(
+    missionId: string,
+    previous: MissionRun | undefined,
+    runtime: Pick<MissionRun, 'provider' | 'model' | 'reasoningEffort'>,
+    confirmedSessionRun?: MissionRun,
+  ): StartedMission {
+    const runId = generateId();
+    const sessionId = confirmedSessionRun?.sessionId ?? `indy:${missionId}:${runId}`;
+    repository.createRun({
+      id: runId,
+      missionId,
+      sessionId,
+      attempt: (previous?.attempt ?? 0) + 1,
+      provider: runtime.provider,
+      model: runtime.model,
+      reasoningEffort: runtime.reasoningEffort,
+      previousRunId: previous?.id ?? null,
+      createdAt: now(),
+    });
+    if (confirmedSessionRun) repository.updateRunSession(runId, sessionId, now());
+    const run = requireRun(runId);
+    persistNormalized(run, { type: 'run.queued', payload: {} });
+    persistNormalized(requireRun(runId), { type: 'run.started', payload: {} });
+    return { runId, sessionId };
+  }
+
   return {
     startMission(input): StartedMission {
       const previousRuns = repository.listMissionRuns(input.missionId);
       const previous = previousRuns.at(-1);
-      const runId = generateId();
-      const sessionId = `indy:${input.missionId}:${runId}`;
-      repository.createRun({
-        id: runId,
-        missionId: input.missionId,
-        sessionId,
-        attempt: (previous?.attempt ?? 0) + 1,
+      return startAttempt(input.missionId, previous, {
         provider: input.provider,
         model: input.model,
         reasoningEffort: input.reasoningEffort ?? null,
-        previousRunId: previous?.id ?? null,
-        createdAt: now(),
       });
-      const run = requireRun(runId);
-      persistNormalized(run, { type: 'run.queued', payload: {} });
-      persistNormalized(requireRun(runId), { type: 'run.started', payload: {} });
-      return { runId, sessionId };
+    },
+
+    startLinkedAttempt(previousRun, startOptions = {}): StartedMission {
+      const runtime = startOptions.sessionRun ?? previousRun;
+      return startAttempt(previousRun.missionId, previousRun, runtime, startOptions.sessionRun);
     },
 
     consumeEvent,
 
     complete(runId, event): RunEvent {
+      const alreadyFinished = requireRun(runId);
+      if (isTerminalStatus(alreadyFinished.status)) {
+        const terminalEvent = durableTerminalEvent(alreadyFinished);
+        if (terminalEvent) return terminalEvent;
+      }
       let terminalEvent = event ? consumeEvent(runId, event) : latestEvent(runId);
       if (terminalEvent?.type !== 'run.completed' && terminalEvent?.type !== 'run.cancelled') {
         terminalEvent = consumeEvent(runId, { type: 'done' });
@@ -159,6 +219,11 @@ export function createRunService(
     },
 
     fail(runId, error): RunEvent {
+      const alreadyFinished = requireRun(runId);
+      if (isTerminalStatus(alreadyFinished.status)) {
+        const terminalEvent = durableTerminalEvent(alreadyFinished);
+        if (terminalEvent) return terminalEvent;
+      }
       const message = errorMessage(error);
       const previous = latestEvent(runId);
       const terminalEvent = previous?.type === 'run.failed'
@@ -169,9 +234,10 @@ export function createRunService(
     },
 
     cancel(runId, reason): RunEvent {
-      const previous = latestEvent(runId);
-      const terminalEvent = previous?.type === 'run.cancelled'
-        ? previous
+      const run = requireRun(runId);
+      const existing = durableTerminalEvent(run);
+      const terminalEvent = existing
+        ? existing
         : persistNormalized(requireRun(runId), {
             type: 'run.cancelled',
             payload: { reason },
@@ -189,10 +255,14 @@ export function createRunService(
       return repository.listMissionRuns(missionId).at(-1);
     },
 
+    getLatestConfirmedRun(missionId): MissionRun | undefined {
+      return repository.listMissionRuns(missionId)
+        .filter((run) => run.sessionConfirmedAt !== null)
+        .at(-1);
+    },
+
     getLatestConfirmedSessionId(missionId): string | undefined {
-      const confirmedRuns = repository.listMissionRuns(missionId)
-        .filter((run) => run.sessionConfirmedAt !== null);
-      return confirmedRuns.at(-1)?.sessionId;
+      return this.getLatestConfirmedRun(missionId)?.sessionId;
     },
   };
 }
