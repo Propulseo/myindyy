@@ -695,6 +695,8 @@ def _model_option_id(provider: str | None, model_id: str, active_provider: str |
 def _list_authenticated_model_groups(
     cfg: dict[str, Any],
     defaults: dict[str, Any],
+    *,
+    fresh: bool = False,
 ) -> dict[str, list[dict[str, Any]]] | None:
     try:
         from hermes_cli.model_switch import list_authenticated_providers
@@ -716,6 +718,7 @@ def _list_authenticated_model_groups(
             user_providers=user_providers,
             custom_providers=custom_providers,
             max_models=500,
+            refresh=fresh,
         )
     except Exception:
         return None
@@ -803,7 +806,7 @@ def _runtime_auth_state(exc: BaseException) -> str:
     code = str(getattr(exc, "code", "") or "").strip().lower()
     if "missing" in code or code in {"no_credentials", "no_credential"}:
         return "missing"
-    if any(fragment in code for fragment in ("expired", "invalid", "revoked", "refresh")):
+    if any(fragment in code for fragment in ("expired", "revoked", "refresh")):
         return "expired"
     if bool(getattr(exc, "relogin_required", False)):
         return "expired"
@@ -825,20 +828,19 @@ def _runtime_profile_id(runtime: dict[str, Any]) -> str | None:
     return None
 
 
-def _runtime_catalog_models(catalog: dict[str, Any]) -> list[dict[str, Any]]:
+def _runtime_catalog_models(groups: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
     projected: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for group in catalog.get("groups") or []:
-        if not isinstance(group, dict):
+    for models in groups.values():
+        if not isinstance(models, list):
             continue
-        group_provider = string_or_none(group.get("provider"))
-        for model in group.get("models") or []:
+        for model in models:
             if not isinstance(model, dict):
                 continue
             if string_or_none(model.get("source")) != "catalog":
                 continue
             model_provider = string_or_none(model.get("provider"))
-            if group_provider != "openai-codex" and model_provider != "openai-codex":
+            if model_provider != "openai-codex":
                 continue
             model_id = string_or_none(model.get("id"))
             if not model_id or model_id in seen:
@@ -870,18 +872,28 @@ def _runtime_status() -> dict[str, Any]:
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider  # type: ignore
 
-        defaults = _defaults_from_config()
+        cfg = _load_config()
+        defaults = _defaults_from_config(cfg)
         runtime = resolve_runtime_provider(
             requested="openai-codex",
             target_model=string_or_none(defaults.get("model")),
         )
         if string_or_none(runtime.get("provider")) != "openai-codex":
             return base
+        # Milestone 1 binds one resolved OAuth credential/profile to one fresh,
+        # authenticated Codex inventory in this request. If that relationship
+        # cannot be established, expose neither a profile nor fallback models.
+        authenticated_groups = _list_authenticated_model_groups(cfg, defaults, fresh=True)
+        if authenticated_groups is None:
+            return base
+        models = _runtime_catalog_models(authenticated_groups)
+        if not models:
+            return base
         return {
             **base,
             "profileId": _runtime_profile_id(runtime),
             "authState": "connected",
-            "models": _runtime_catalog_models(_list_models()),
+            "models": models,
         }
     except Exception as exc:
         return {**base, "authState": _runtime_auth_state(exc)}

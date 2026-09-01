@@ -384,7 +384,6 @@ chatRouter.post('/:id/messages', async (req, res) => {
     return res.status(409).json({ error: 'This task already has a message in progress' });
   }
 
-  let runTask = task;
   const taskUpdates: Partial<Pick<Task, 'status' | 'agent_model' | 'agent_provider' | 'reasoning_effort'>> = {};
   if (runSettings.hasFields) {
     const { taskFields } = runSettings;
@@ -402,18 +401,13 @@ chatRouter.post('/:id/messages', async (req, res) => {
     taskUpdates.status = 'in_progress';
   }
 
-  if (Object.keys(taskUpdates).length > 0) {
-    const updated = updateTask(task.id, taskUpdates);
-    if (!updated) return res.status(404).json({ error: 'Task not found' });
-    runTask = updated;
-    broadcast({ type: 'task_updated', task: updated });
-  }
+  const candidateRunTask: Task = { ...task, ...taskUpdates };
 
   try {
     const runtimeStatus = await adapter.getRuntimeStatus();
-    const requestedModel = runTask.agent_model?.trim();
+    const requestedModel = candidateRunTask.agent_model?.trim();
     const modelAvailable = runtimeStatus.authState === 'connected'
-      && runTask.agent_provider === runtimeStatus.provider
+      && candidateRunTask.agent_provider === runtimeStatus.provider
       && Boolean(requestedModel)
       && runtimeStatus.models.some((model) => model.id === requestedModel);
     if (!modelAvailable) {
@@ -427,6 +421,14 @@ chatRouter.post('/:id/messages', async (req, res) => {
       error: 'Codex runtime status is unavailable',
       code: 'RUNTIME_UNAVAILABLE',
     });
+  }
+
+  let runTask = task;
+  if (Object.keys(taskUpdates).length > 0) {
+    const updated = updateTask(task.id, taskUpdates);
+    if (!updated) return res.status(404).json({ error: 'Task not found' });
+    runTask = updated;
+    broadcast({ type: 'task_updated', task: updated });
   }
 
   const durableRun = runService.startMission({

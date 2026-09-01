@@ -144,6 +144,8 @@ class RuntimeStatusTest(unittest.TestCase):
         cases = [
             (type("Missing", (RuntimeError,), {"code": "codex_auth_missing"})("secret"), "missing"),
             (type("Expired", (RuntimeError,), {"code": "token_expired"})("secret"), "expired"),
+            (type("Revoked", (RuntimeError,), {"code": "oauth_token_revoked"})("secret"), "expired"),
+            (type("InvalidModel", (RuntimeError,), {"code": "invalid_model"})("secret"), "error"),
             (type("Unknown", (RuntimeError,), {"code": "unexpected"})("secret"), "error"),
         ]
         for error, expected in cases:
@@ -159,12 +161,14 @@ class RuntimeStatusTest(unittest.TestCase):
             "credential_pool": None,
             "profile_id": "etienne-openai",
         }
+        cfg = {"model": {"default": "gpt-5.6-sol", "provider": "openai-codex"}}
+        defaults = {
+            "model": "gpt-5.6-sol",
+            "provider": "openai-codex",
+            "baseUrl": None,
+        }
         groups = {
-            "defaultModel": "gpt-5.6-sol",
-            "activeProvider": "openai-codex",
-            "groups": [{
-                "provider": "openai-codex",
-                "models": [{
+            "Codex OAuth": [{
                     "id": "gpt-5.6-sol",
                     "label": "gpt-5.6-sol",
                     "provider": "openai-codex",
@@ -176,12 +180,23 @@ class RuntimeStatusTest(unittest.TestCase):
                     "label": "configured-but-not-in-account-catalog",
                     "provider": "openai-codex",
                     "source": "current",
+                }, {
+                    "id": "wrong-provider",
+                    "label": "wrong-provider",
+                    "provider": "openai",
+                    "source": "catalog",
+                }, {
+                    "id": "missing-provider",
+                    "label": "missing-provider",
+                    "source": "catalog",
                 }],
-            }],
         }
 
         with patch.dict(sys.modules, {"hermes_cli.runtime_provider": fake_runtime_provider}), \
-             patch.object(hermes_worker, "_list_models", return_value=groups), \
+             patch.object(hermes_worker, "_load_config", return_value=cfg), \
+             patch.object(hermes_worker, "_defaults_from_config", return_value=defaults), \
+             patch.object(hermes_worker, "_list_authenticated_model_groups", return_value=groups) as inventory, \
+             patch.object(hermes_worker, "_list_models", side_effect=AssertionError("cached catalog forbidden")), \
              patch.object(hermes_worker, "_run_one_shot_agent") as generate:
             result = hermes_worker._runtime_status()
 
@@ -199,7 +214,56 @@ class RuntimeStatusTest(unittest.TestCase):
         })
         self.assertEqual(_sensitive_keys(result), [])
         self.assertNotIn("oauth-super-secret", repr(result))
+        inventory.assert_called_once_with(cfg, defaults, fresh=True)
         generate.assert_not_called()
+
+    def test_fails_closed_when_fresh_authenticated_inventory_is_unavailable(self):
+        fake_runtime_provider = types.ModuleType("hermes_cli.runtime_provider")
+        fake_runtime_provider.resolve_runtime_provider = lambda **_kwargs: {
+            "provider": "openai-codex",
+            "api_key": "oauth-super-secret",
+            "profile_id": "etienne-openai",
+        }
+        cfg = {"model": {"default": "gpt-live", "provider": "openai-codex"}}
+        defaults = {"model": "gpt-live", "provider": "openai-codex", "baseUrl": None}
+
+        with patch.dict(sys.modules, {"hermes_cli.runtime_provider": fake_runtime_provider}), \
+             patch.object(hermes_worker, "_load_config", return_value=cfg), \
+             patch.object(hermes_worker, "_defaults_from_config", return_value=defaults), \
+             patch.object(hermes_worker, "_list_authenticated_model_groups", return_value=None) as inventory, \
+             patch.object(hermes_worker, "_list_models", side_effect=AssertionError("cached catalog forbidden")):
+            result = hermes_worker._runtime_status()
+
+        self.assertEqual(result["authState"], "error")
+        self.assertIsNone(result["profileId"])
+        self.assertEqual(result["models"], [])
+        inventory.assert_called_once_with(cfg, defaults, fresh=True)
+
+    def test_keeps_connected_with_null_profile_when_credentials_and_inventory_are_resolved(self):
+        fake_runtime_provider = types.ModuleType("hermes_cli.runtime_provider")
+        fake_runtime_provider.resolve_runtime_provider = lambda **_kwargs: {
+            "provider": "openai-codex",
+            "api_key": "oauth-super-secret",
+        }
+        cfg = {"model": {"default": "gpt-live", "provider": "openai-codex"}}
+        defaults = {"model": "gpt-live", "provider": "openai-codex", "baseUrl": None}
+        groups = {"Codex OAuth": [{
+            "id": "gpt-live",
+            "label": "gpt-live",
+            "provider": "openai-codex",
+            "source": "catalog",
+        }]}
+
+        with patch.dict(sys.modules, {"hermes_cli.runtime_provider": fake_runtime_provider}), \
+             patch.object(hermes_worker, "_load_config", return_value=cfg), \
+             patch.object(hermes_worker, "_defaults_from_config", return_value=defaults), \
+             patch.object(hermes_worker, "_list_authenticated_model_groups", return_value=groups), \
+             patch.object(hermes_worker, "_list_models", side_effect=AssertionError("cached catalog forbidden")):
+            result = hermes_worker._runtime_status()
+
+        self.assertEqual(result["authState"], "connected")
+        self.assertIsNone(result["profileId"])
+        self.assertEqual([model["id"] for model in result["models"]], ["gpt-live"])
 
     def test_classifies_missing_auth_without_serializing_the_raw_secret_error(self):
         class FakeAuthError(RuntimeError):

@@ -18,6 +18,21 @@ function sensitiveKeys(value: unknown, path = ''): string[] {
   });
 }
 
+async function loadProductionAppWithBroadcastSpy(prefix: string) {
+  process.env.MINIONS_HOME = mkdtempSync(join(tmpdir(), prefix));
+  vi.resetModules();
+  const broadcast = vi.fn();
+  vi.doMock('../server/events.js', async () => ({
+    ...await vi.importActual<typeof import('../server/events.js')>('../server/events.js'),
+    broadcast,
+  }));
+  const [{ default: app, adapter }, { default: database }] = await Promise.all([
+    import('../server/app.js'),
+    import('../server/db/index.js'),
+  ]);
+  return { app, adapter, broadcast, database };
+}
+
 describe('Codex OAuth runtime status', () => {
   it('keeps only the exact openai-codex catalog group and projects public model fields', () => {
     expect(filterOAuthModels([
@@ -106,19 +121,17 @@ describe('Codex OAuth runtime status', () => {
   });
 
   it('rejects a model removed from the refreshed catalog before creating a run or event', async () => {
-    process.env.MINIONS_HOME = mkdtempSync(join(tmpdir(), 'indy-runtime-model-'));
-    vi.resetModules();
-    const [{ default: productionApp, adapter }, { default: database }] = await Promise.all([
-      import('../server/app.js'),
-      import('../server/db/index.js'),
-    ]);
+    const { app: productionApp, adapter, broadcast, database } = await loadProductionAppWithBroadcastSpy(
+      'indy-runtime-model-',
+    );
     const missionId = `runtime-missing-model-${Date.now()}`;
     database.prepare(`
       INSERT INTO tasks (
         id, title, description, status, agent_model, agent_provider, reasoning_effort,
         created_at, updated_at
-      ) VALUES (?, ?, ?, 'in_progress', ?, ?, ?, 1, 1)
-    `).run(missionId, 'Unavailable model', 'Do not launch', 'gpt-removed', 'openai-codex', 'high');
+      ) VALUES (?, ?, ?, 'done', ?, ?, ?, 1, 1)
+    `).run(missionId, 'Unavailable model', 'Do not launch', 'gpt-live', 'openai-codex', 'high');
+    const before = database.prepare('SELECT * FROM tasks WHERE id = ?').get(missionId);
     const statusSpy = vi.spyOn(adapter, 'getRuntimeStatus').mockResolvedValue({
       provider: 'openai-codex',
       profileId: 'etienne-openai',
@@ -130,22 +143,77 @@ describe('Codex OAuth runtime status', () => {
       yield { type: 'done', sessionId: 'must-not-run' };
     });
 
-    const response = await request(productionApp)
-      .post(`/api/tasks/${missionId}/messages`)
-      .send({ content: 'Launch removed model' });
+    try {
+      const response = await request(productionApp)
+        .post(`/api/tasks/${missionId}/messages`)
+        .send({ content: 'Launch removed model', model: 'gpt-removed', reasoningEffort: 'low' });
 
-    expect(response.status).toBe(409);
-    expect(response.body).toEqual({
-      error: 'The requested Codex model is not available for the active OAuth profile',
-      code: 'MODEL_UNAVAILABLE',
+      expect(response.status).toBe(409);
+      expect(response.body).toEqual({
+        error: 'The requested Codex model is not available for the active OAuth profile',
+        code: 'MODEL_UNAVAILABLE',
+      });
+      expect(database.prepare('SELECT * FROM tasks WHERE id = ?').get(missionId)).toEqual(before);
+      expect(database.prepare('SELECT COUNT(*) AS count FROM mission_runs WHERE mission_id = ?').get(missionId))
+        .toEqual({ count: 0 });
+      expect(database.prepare(`
+        SELECT COUNT(*) AS count FROM run_events
+        WHERE run_id IN (SELECT id FROM mission_runs WHERE mission_id = ?)
+      `).get(missionId)).toEqual({ count: 0 });
+      expect(broadcast).not.toHaveBeenCalled();
+      expect(statusSpy).toHaveBeenCalledOnce();
+      expect(generationSpy).not.toHaveBeenCalled();
+    } finally {
+      statusSpy.mockRestore();
+      generationSpy.mockRestore();
+      database.close();
+      vi.doUnmock('../server/events.js');
+      vi.resetModules();
+    }
+  });
+
+  it('leaves the task and event streams untouched when runtime diagnosis is unavailable', async () => {
+    const { app: productionApp, adapter, broadcast, database } = await loadProductionAppWithBroadcastSpy(
+      'indy-runtime-error-',
+    );
+    const missionId = `runtime-error-${Date.now()}`;
+    database.prepare(`
+      INSERT INTO tasks (
+        id, title, description, status, agent_model, agent_provider, reasoning_effort,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, 'done', ?, ?, ?, 1, 1)
+    `).run(missionId, 'Runtime unavailable', 'Do not mutate', 'gpt-live', 'openai-codex', 'high');
+    const before = database.prepare('SELECT * FROM tasks WHERE id = ?').get(missionId);
+    const statusSpy = vi.spyOn(adapter, 'getRuntimeStatus').mockRejectedValue(
+      new Error('authorization Bearer oauth-super-secret'),
+    );
+    const generationSpy = vi.spyOn(adapter, 'chatStream').mockImplementation(async function* () {
+      yield { type: 'done', sessionId: 'must-not-run' };
     });
-    expect(database.prepare('SELECT COUNT(*) AS count FROM mission_runs WHERE mission_id = ?').get(missionId))
-      .toEqual({ count: 0 });
-    expect(database.prepare(`
-      SELECT COUNT(*) AS count FROM run_events
-      WHERE run_id IN (SELECT id FROM mission_runs WHERE mission_id = ?)
-    `).get(missionId)).toEqual({ count: 0 });
-    expect(statusSpy).toHaveBeenCalledOnce();
-    expect(generationSpy).not.toHaveBeenCalled();
+
+    try {
+      const response = await request(productionApp)
+        .post(`/api/tasks/${missionId}/messages`)
+        .send({ content: 'Do not launch', model: 'gpt-other', reasoningEffort: 'low' });
+
+      expect(response.status).toBe(503);
+      expect(response.body).toEqual({
+        error: 'Codex runtime status is unavailable',
+        code: 'RUNTIME_UNAVAILABLE',
+      });
+      expect(response.text).not.toContain('oauth-super-secret');
+      expect(database.prepare('SELECT * FROM tasks WHERE id = ?').get(missionId)).toEqual(before);
+      expect(database.prepare('SELECT COUNT(*) AS count FROM mission_runs WHERE mission_id = ?').get(missionId))
+        .toEqual({ count: 0 });
+      expect(database.prepare('SELECT COUNT(*) AS count FROM run_events').get()).toEqual({ count: 0 });
+      expect(broadcast).not.toHaveBeenCalled();
+      expect(generationSpy).not.toHaveBeenCalled();
+    } finally {
+      statusSpy.mockRestore();
+      generationSpy.mockRestore();
+      database.close();
+      vi.doUnmock('../server/events.js');
+      vi.resetModules();
+    }
   });
 });
