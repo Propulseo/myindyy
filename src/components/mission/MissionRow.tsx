@@ -4,7 +4,7 @@ import { StatusPill, StatusRail } from "@/components/status/StatusMark";
 import { peopleById, projectsById } from "@/fixtures";
 import { formatDuration, formatRelative, ratio } from "@/lib/format";
 import { isLastAttempt, isStalled } from "@/lib/selectors";
-import { missionStatusMeta } from "@/lib/status";
+import { missionStalledMeta, missionStatusMeta } from "@/lib/status";
 import type { Mission } from "@/types/domain";
 
 /**
@@ -55,7 +55,7 @@ export function MissionRow({ mission }: { mission: Mission }) {
           {/* Une seule pastille : à droite en colonne sur desktop, sur une ligne
               sous le titre sur mobile. */}
           <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 sm:flex-col sm:items-end sm:gap-1.5">
-            <StatusPill meta={meta} live={running && !stalled} />
+            <StatusPill meta={stalled ? missionStalledMeta : meta} live={running && !stalled} />
             <span className="font-mono text-[0.6875rem] whitespace-nowrap text-muted tabular-nums">
               <span className={durationTight ? "text-attention" : "text-ivory/80"}>
                 {formatDuration(mission.duration.elapsedMin)}

@@ -121,6 +121,18 @@ export const missionStatusMeta: Record<MissionStatus, StatusMeta> = {
   },
 };
 
+/**
+ * Une mission en cours qui ne donne plus signe de vie garde le statut « en cours »
+ * côté données, mais s'affiche avec son propre libellé : sans lui, l'inactivité ne
+ * serait portée que par la couleur du rail et de l'horodatage.
+ */
+export const missionStalledMeta: StatusMeta = {
+  label: "Inactive",
+  tone: "danger",
+  shape: "bar",
+  hint: "En cours, mais sans le moindre évènement depuis le seuil d'inactivité",
+};
+
 /** Ordre d'affichage : ce qui demande une action d'abord. */
 export const missionStatusOrder: MissionStatus[] = [
   "attente_validation",
