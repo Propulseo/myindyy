@@ -15,6 +15,7 @@ import { RenameReveal, useRenameAnimation } from './RenameTitle';
 import { RunControls } from './RunControls';
 import { RunTimeline } from './RunTimeline';
 import { RuntimeBadge } from './RuntimeBadge';
+import { MissionWorkspace } from './MissionWorkspace';
 import { commandMission, fetchMessages, fetchRuntime, type AgentRunSettings, type RunCommandRequest, type RuntimeStatus } from '../lib/api';
 import type { TaskStatus } from '@shared/types';
 
@@ -30,7 +31,9 @@ export function TaskDetailPage() {
   const upsertTask = useStore((s) => s.upsertTask);
   const removeTask = useStore((s) => s.removeTask);
   const history = useStore((s) => taskId ? s.missionHistories.get(taskId) : undefined);
+  const historyRevision = useStore((s) => taskId ? s.missionHistoryRevisions.get(taskId) ?? 0 : 0);
   const setMissionHistory = useStore((s) => s.setMissionHistory);
+  const invalidateMissionHistory = useStore((s) => s.invalidateMissionHistory);
 
   const [titleDraft, setTitleDraft] = useState('');
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -41,21 +44,26 @@ export function TaskDetailPage() {
   const markViewedInFlightRef = useRef<string | null>(null);
   const titleAnimation = useRenameAnimation(task?.title ?? '', task?.id ?? null);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
+  const historyRequestsRef = useRef(new Set<number>());
 
-  const refreshHistory = useCallback(async () => {
-    if (!taskId) return;
-    const response = await fetchMessages(taskId);
-    setMissionHistory(taskId, {
-      runs: response.runs,
-      events: response.events,
-      loadedForTaskUpdatedAt: task?.updated_at ?? Date.now(),
-    });
-  }, [setMissionHistory, task?.updated_at, taskId]);
+  const refreshHistory = useCallback(async (revision: number) => {
+    if (!taskId || historyRequestsRef.current.has(revision)) return;
+    historyRequestsRef.current.add(revision);
+    try {
+      const response = await fetchMessages(taskId);
+      setMissionHistory(taskId, { runs: response.runs, events: response.events, revision });
+    } finally {
+      historyRequestsRef.current.delete(revision);
+    }
+  }, [setMissionHistory, taskId]);
 
   useEffect(() => {
-    void refreshHistory().catch(() => {});
+    if (history?.revision !== historyRevision) void refreshHistory(historyRevision).catch(() => {});
+  }, [history?.revision, historyRevision, refreshHistory]);
+
+  useEffect(() => {
     void fetchRuntime().then(setRuntime).catch(() => {});
-  }, [refreshHistory]);
+  }, []);
 
   useEffect(() => {
     if (task) setTitleDraft(task.title);
@@ -123,10 +131,10 @@ export function TaskDetailPage() {
       const taskId = task.id;
       optimisticMoveTask(task, 'done', upsertTask, moveTask);
       navigate('/');
-      toast('Task completed', {
+      toast('Mission terminée', {
         icon: <Check size={14} strokeWidth={2.5} className="text-zinc-500 dark:text-zinc-400" />,
         action: {
-          label: 'Undo',
+          label: 'Annuler',
           onClick: () => {
             const { tasks, upsertTask: storeUpsert } = useStore.getState();
             const current = tasks.find((t) => t.id === taskId);
@@ -163,8 +171,8 @@ export function TaskDetailPage() {
   const handleCommand = useCallback(async (command: RunCommandRequest) => {
     if (!task) return;
     await commandMission(task.id, command);
-    await refreshHistory();
-  }, [refreshHistory, task]);
+    invalidateMissionHistory(task.id);
+  }, [invalidateMissionHistory, task]);
 
   if (!task) {
     if (!tasksLoaded) {
@@ -176,7 +184,7 @@ export function TaskDetailPage() {
     }
     return (
       <div className="flex-1 flex items-center justify-center">
-        <p className="text-sm text-zinc-400 dark:text-zinc-500">Task not found</p>
+        <p className="text-sm text-zinc-400 dark:text-zinc-500">Mission introuvable</p>
       </div>
     );
   }
@@ -184,7 +192,7 @@ export function TaskDetailPage() {
   const statusMeta = STATUS_META[task.status];
 
   return (
-    <div className="flex-1 flex flex-col min-h-0">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:overflow-hidden">
       <div className="w-full px-3 pt-3 pb-2 sm:px-6 sm:pt-4 sm:pb-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 flex-1">
@@ -207,8 +215,8 @@ export function TaskDetailPage() {
                       titleInputRef.current?.blur();
                     }
                   }}
-                  aria-label="Task title"
-                  placeholder="Name this task"
+                  aria-label="Titre de la mission"
+                  placeholder="Nommer cette mission"
                   className={`block w-full cursor-text truncate bg-transparent p-0 text-lg font-semibold leading-7 text-zinc-900 outline-none placeholder:text-zinc-400 dark:text-zinc-100 dark:placeholder:text-zinc-500 sm:text-xl sm:leading-8 ${
                     titleAnimation.isAnimating ? 'rename-title-input-hidden' : ''
                   }`}
@@ -220,8 +228,8 @@ export function TaskDetailPage() {
               </div>
               <button
                 type="button"
-                title="Rename task"
-                aria-label="Rename task"
+                title="Renommer la mission"
+                aria-label="Renommer la mission"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
                   titleInputRef.current?.focus();
@@ -251,11 +259,11 @@ export function TaskDetailPage() {
                 <div className="group relative shrink-0">
                   <button
                     onClick={() => handleStatusChange('done')}
-                    aria-label="Mark complete"
+                    aria-label="Marquer comme terminée"
                     className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-zinc-900 p-1.5 text-zinc-100 transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300 sm:px-3 sm:py-1.5 sm:text-xs sm:font-semibold"
                   >
                     <Check size={14} strokeWidth={2.5} />
-                    <span className="hidden sm:inline">Mark complete</span>
+                    <span className="hidden sm:inline">Marquer comme terminée</span>
                   </button>
                   <div className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-[11px] text-zinc-500 opacity-0 shadow-lg transition-opacity group-hover:opacity-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 max-sm:hidden">
                     <div className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 border-l border-t border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-900" />
@@ -278,7 +286,7 @@ export function TaskDetailPage() {
                 {showMenu && (
                   <div ref={menuRef} className="absolute right-0 top-full mt-1 min-w-[180px] py-1 bg-white dark:bg-zinc-900 rounded-lg border border-zinc-200 dark:border-zinc-700 shadow-xl z-50">
                     <p className="px-3 py-1.5 text-[11px] font-medium text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">
-                      Move to
+                      Déplacer vers
                     </p>
                     {TASK_STATUSES.filter((s) => s !== task.status).map((status) => (
                       <button
@@ -296,7 +304,7 @@ export function TaskDetailPage() {
                       className="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors text-left"
                     >
                       <Trash2 size={14} />
-                      Delete
+                      Supprimer
                     </button>
                   </div>
                 )}
@@ -306,11 +314,9 @@ export function TaskDetailPage() {
         </div>
       </div>
 
-      <div className="grid min-h-0 w-full flex-1 lg:grid-cols-[minmax(0,1fr)_24rem]">
-        <div className="flex min-h-[28rem] min-w-0 flex-col border-t border-[var(--cockpit-panel-line)] lg:min-h-0 lg:border-r">
-          <TaskChat taskId={task.id} initialMessage={initialMessage} initialSettings={initialSettings} />
-        </div>
-        <aside className="cockpit-shell overflow-y-auto bg-[var(--cockpit-ink)] p-5 text-[var(--cockpit-fog)] sm:p-6" aria-label="Exécution de la mission">
+      <MissionWorkspace
+        chat={<TaskChat taskId={task.id} initialMessage={initialMessage} initialSettings={initialSettings} />}
+        execution={<>
           <div className="mb-5">
             <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--cockpit-periwinkle)]">Exécution</p>
             <RuntimeBadge status={runtime} run={history?.runs[history.runs.length - 1] ?? null} />
@@ -321,8 +327,8 @@ export function TaskDetailPage() {
           <div className="mt-6">
             <RunTimeline runs={history?.runs ?? []} events={history?.events ?? []} />
           </div>
-        </aside>
-      </div>
+        </>}
+      />
 
       {showDeleteConfirm && (
         <DeleteConfirmModal

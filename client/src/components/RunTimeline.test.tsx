@@ -5,7 +5,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { MissionRun, RunEvent } from '@shared/types';
 import { RunTimeline } from './RunTimeline';
-import { RuntimeBadge } from './RuntimeBadge';
+import { isEtienneRuntimeReady, RuntimeBadge } from './RuntimeBadge';
 
 const RUN: MissionRun = {
   id: 'run-2',
@@ -45,7 +45,24 @@ describe('RuntimeBadge', () => {
     }} run={RUN} />);
 
     expect(screen.getByText('Codex OAuth connecté')).toBeVisible();
+    expect(screen.getByText('Profil actif · etienne-openai')).toBeVisible();
     expect(screen.getByText('gpt-5.6-sol · high')).toBeVisible();
+  });
+
+  it('rend un profil différent actionnable et bloque la création', () => {
+    const status = {
+      provider: 'openai-codex' as const,
+      profileId: 'profil-secondaire',
+      authState: 'connected' as const,
+      checkedAt: '2026-09-01T10:00:00.000Z',
+      models: [{ id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', reasoningEfforts: null }],
+    };
+    render(<RuntimeBadge status={status} />);
+
+    expect(screen.getByText('Profil actif · profil-secondaire')).toBeVisible();
+    expect(screen.getByText('Reconnecter le profil etienne-openai')).toBeVisible();
+    expect(isEtienneRuntimeReady(status)).toBe(false);
+    expect(isEtienneRuntimeReady({ ...status, profileId: 'etienne-openai', models: [] })).toBe(false);
   });
 });
 
@@ -64,5 +81,19 @@ describe('RunTimeline', () => {
     render(<RunTimeline runs={[]} events={[]} />);
 
     expect(screen.getByText('Lancez la mission pour voir son exécution ici.')).toBeVisible();
+  });
+
+  it('rend un outil terminé en erreur comme un échec', () => {
+    render(<RunTimeline runs={[RUN]} events={[{
+      id: 'event-error',
+      runId: RUN.id,
+      type: 'tool.completed',
+      occurredAt: 1_725_189_020_000,
+      payload: { tool: 'terminal', label: 'Compiler', status: 'error' },
+    }]} />);
+
+    expect(screen.getByText('Compiler')).toBeVisible();
+    expect(screen.getByText('Échec')).toBeVisible();
+    expect(screen.queryByText('Terminé')).not.toBeInTheDocument();
   });
 });

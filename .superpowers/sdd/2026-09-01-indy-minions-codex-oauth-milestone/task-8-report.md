@@ -48,3 +48,29 @@ La première passe risquait de transformer chaque priorité en carte interchange
 - Design, seconde critique : le rail horizontal mobile manquait lors de la première implémentation ; il a été ajouté. Le mouvement est limité au run live et neutralisé par `prefers-reduced-motion`. Les sections restent des bandes éditoriales et non une collection de cartes.
 - Accessibilité : contrôles nommés, labels de formulaire, alert/status sémantiques, focus visible et cibles tactiles de 40 px minimum.
 - Limites honnêtes : aucun champ projet n’existe dans `Task`, donc l’UI affiche « Projet · non renseigné » plutôt que d’inventer une valeur. Le build signale le chunk global historique `index` à 670,21 kB gzip ; sa réduction demande un chantier de découpage des routes hors Task 8.
+
+## Fix round 1/5 — 2026-09-01
+
+### RED / GREEN
+
+- RED : les quatre suites ciblées échouent sur les comportements absents : invalidation `task_run_updated`, fraîcheur du rail, profil réel/mismatch, erreur outil, libellés distincts et layout mobile. Le test layout a ensuite échoué spécifiquement sur l’import absent `AppMain`, avant extraction.
+- GREEN ciblé : `RunTimeline`, `RunControls`, `TodayPage` et `MissionWorkspace` passent, 17 tests sur 17.
+- Suite complète : 12 fichiers, 75 tests, 0 échec.
+
+### Corrections
+
+- Chaque événement board pertinent incrémente maintenant une révision d’historique par mission. `TodayPage` et `TaskDetailPage` rechargent cette révision ; les réponses obsolètes sont rejetées et les requêtes concurrentes sont isolées par révision.
+- `tool.completed` avec `payload.status="error"` utilise `CircleAlert`, le ton ambre et le libellé « Échec ». Les statuts et fallbacks de timeline sont traduits.
+- La création exige OAuth connecté, le profil réel `etienne-openai` et un catalogue non vide. Le badge montre toujours le `profileId` réel et indique comment reconnecter le profil attendu.
+- `AppMain` et `MissionWorkspace` rendent le contenu, le chat, la timeline et les contrôles scrollables sur mobile ; le test DOM vérifie les classes des deux régions.
+- Le pulse rail expose `fresh` avant 15 minutes, `warm` de 15 à moins de 45 minutes, puis `stale`; les frontières et le libellé accessible sont testés. L’animation live utilise une légère mise à l’échelle afin de ne pas écraser l’intensité de fraîcheur, et reste neutralisée par `prefers-reduced-motion`.
+- Les deux champs de contrôle portent désormais les labels distincts « Instruction à ajouter » et « Instruction de correction ».
+
+### Vérifications et auto-revue
+
+- `pnpm test` → 12 fichiers, 75 tests PASS.
+- `pnpm typecheck` → serveur et client, exit 0.
+- Build client Vite direct → exit 0 ; `pnpm build:server` et `pnpm build:assets` → exit 0.
+- `git diff --check` → aucune erreur.
+- `TaskDetailPage.tsx` atteint 341 lignes après intégration du rafraîchissement durable ; il reste sous le maximum autorisé de 350. Les deux zones de layout ont été extraites pour contenir cette croissance.
+- Auto-revue : une réponse réseau ancienne ne peut pas remplacer une révision SSE récente ; un événement board provoque au plus un fetch dans la page actuellement montée ; aucun état de succès local n’est simulé.

@@ -6,7 +6,25 @@ import { fetchMessages, fetchRuntime, type RuntimeStatus } from '../lib/api';
 import { useStore } from '../lib/store';
 import { RuntimeBadge } from './RuntimeBadge';
 
-type Priority = 'decision' | 'blocked' | 'running' | 'review';
+export type Priority = 'decision' | 'blocked' | 'running' | 'review';
+export type ActivityFreshness = 'fresh' | 'warm' | 'stale';
+
+const FIFTEEN_MINUTES_MS = 15 * 60_000;
+const FORTY_FIVE_MINUTES_MS = 45 * 60_000;
+
+const FRESHNESS_LABEL: Record<ActivityFreshness, string> = {
+  fresh: 'activité récente',
+  warm: 'activité tiède',
+  stale: 'activité ancienne',
+};
+
+export function activityFreshness(lastActivityAt: number | null, now = Date.now()): ActivityFreshness {
+  if (lastActivityAt === null) return 'stale';
+  const age = Math.max(0, now - lastActivityAt);
+  if (age < FIFTEEN_MINUTES_MS) return 'fresh';
+  if (age < FORTY_FIVE_MINUTES_MS) return 'warm';
+  return 'stale';
+}
 
 const SECTIONS: Array<{ id: Priority; label: string; empty: string }> = [
   { id: 'decision', label: 'À décider', empty: 'Aucune décision en attente.' },
@@ -51,6 +69,7 @@ function actionFor(priority: Priority): string {
 export function TodayPage() {
   const tasks = useStore((state) => state.tasks);
   const histories = useStore((state) => state.missionHistories);
+  const historyRevisions = useStore((state) => state.missionHistoryRevisions);
   const taskRuns = useStore((state) => state.taskRuns);
   const setMissionHistory = useStore((state) => state.setMissionHistory);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
@@ -66,25 +85,28 @@ export function TodayPage() {
     let cancelled = false;
     const missing = tasks.filter((task) => {
       const history = histories.get(task.id);
-      return (!history || history.loadedForTaskUpdatedAt < task.updated_at) && !pendingHistories.current.has(task.id);
+      const revision = historyRevisions.get(task.id) ?? 0;
+      return (!history || history.revision !== revision) && !pendingHistories.current.has(`${task.id}:${revision}`);
     });
     void Promise.all(missing.map(async (task) => {
-      pendingHistories.current.add(task.id);
+      const revision = historyRevisions.get(task.id) ?? 0;
+      const requestKey = `${task.id}:${revision}`;
+      pendingHistories.current.add(requestKey);
       try {
         const response = await fetchMessages(task.id);
         if (!cancelled) setMissionHistory(task.id, {
           runs: response.runs,
           events: response.events,
-          loadedForTaskUpdatedAt: task.updated_at,
+          revision,
         });
       } catch {
         // The section keeps its directional empty state while the next SSE update retries.
       } finally {
-        pendingHistories.current.delete(task.id);
+        pendingHistories.current.delete(requestKey);
       }
     }));
     return () => { cancelled = true; };
-  }, [histories, setMissionHistory, tasks]);
+  }, [histories, historyRevisions, setMissionHistory, tasks]);
 
   const groups = useMemo(() => {
     const result: Record<Priority, Array<{ task: Task; run: MissionRun | null; live: boolean }>> = {
@@ -171,7 +193,7 @@ function MissionRow({ task, run, priority }: { task: Task; run: MissionRun | nul
       <div className="min-w-0">
         <h3 className="truncate font-[var(--cockpit-mission-font)] text-xl">{task.title}</h3>
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] text-[color:var(--cockpit-fog-muted)]">
-          <span>Projet · non renseigné</span><span>{run?.provider ?? task.agent_provider ?? 'provider —'}</span>
+          <span>Projet · non renseigné</span><span>{run?.provider ?? task.agent_provider ?? 'fournisseur —'}</span>
           <span>{run?.model ?? task.agent_model ?? 'modèle —'}</span><span>{run?.reasoningEffort ?? task.reasoning_effort ?? 'réglage global'}</span>
           <span>{duration(run)}</span><span>Activité {recent(activity)}</span>
         </div>
@@ -183,14 +205,31 @@ function MissionRow({ task, run, priority }: { task: Task; run: MissionRun | nul
   );
 }
 
-function MissionPulseRail({ missions }: { missions: Array<{ task: Task; run: MissionRun | null; live?: boolean; priority: Priority }> }) {
+export function MissionPulseRail({
+  missions,
+  now = Date.now(),
+}: {
+  missions: Array<{ task: Task; run: MissionRun | null; live?: boolean; priority: Priority }>;
+  now?: number;
+}) {
   return (
     <nav aria-label="Pouls des missions" className="flex h-9 w-full shrink-0 items-center border-b border-[var(--cockpit-panel-line)] px-4 sm:h-auto sm:w-12 sm:flex-col sm:border-b-0 sm:border-r sm:px-0 sm:py-7">
       <CircleDot aria-hidden="true" size={14} className="mr-4 shrink-0 text-[var(--cockpit-periwinkle)] sm:mb-6 sm:mr-0" />
       <div className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden sm:flex-col">
-        {missions.map(({ task, live, priority }) => (
-          <Link key={task.id} to={`/tasks/${task.id}`} aria-label={`${task.title} · ${priority}`} title={task.title} className={`mission-pulse block h-1.5 w-5 shrink-0 rounded-full sm:h-5 sm:w-1.5 ${live ? 'mission-pulse-live' : ''}`} data-priority={priority} />
-        ))}
+        {missions.map(({ task, run, live, priority }) => {
+          const freshness = activityFreshness(run?.lastActivityAt ?? null, now);
+          return (
+            <Link
+              key={task.id}
+              to={`/tasks/${task.id}`}
+              aria-label={`${task.title} · ${FRESHNESS_LABEL[freshness]}`}
+              title={`${task.title} · ${FRESHNESS_LABEL[freshness]}`}
+              className={`mission-pulse block h-1.5 w-5 shrink-0 rounded-full sm:h-5 sm:w-1.5 ${live ? 'mission-pulse-live' : ''}`}
+              data-freshness={freshness}
+              data-priority={priority}
+            />
+          );
+        })}
       </div>
     </nav>
   );

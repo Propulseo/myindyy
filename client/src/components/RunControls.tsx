@@ -73,7 +73,7 @@ export function RunControls({ run, onCommand }: RunControlsProps) {
           }}
         >
           <label htmlFor="run-instruction" className="mb-2 block font-mono text-[10px] uppercase tracking-[0.14em] text-[color:var(--cockpit-fog-muted)]">
-            Instruction de correction
+            {mode === 'correct' ? 'Instruction de correction' : 'Instruction à ajouter'}
           </label>
           <div className="flex gap-2">
             <textarea

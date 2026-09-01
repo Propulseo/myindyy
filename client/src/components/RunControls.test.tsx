@@ -34,6 +34,7 @@ describe('RunControls', () => {
     render(<RunControls run={BLOCKED_RUN} onCommand={onCommand} />);
 
     await user.click(screen.getByRole('button', { name: 'Interrompre et corriger' }));
+    expect(screen.getByLabelText('Instruction de correction')).toBeVisible();
     await user.type(screen.getByLabelText('Instruction de correction'), 'Travaille uniquement sur le dépôt client');
     await user.click(screen.getByRole('button', { name: 'Envoyer la correction' }));
 
@@ -47,6 +48,16 @@ describe('RunControls', () => {
 
     resolveCommand?.();
     expect(await screen.findByText('Correction envoyée')).toBeVisible();
+  });
+
+  it('distingue le libellé d’ajout de celui de correction', async () => {
+    const user = userEvent.setup();
+    render(<RunControls run={BLOCKED_RUN} onCommand={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Ajouter une instruction' }));
+
+    expect(screen.getByLabelText('Instruction à ajouter')).toBeVisible();
+    expect(screen.queryByLabelText('Instruction de correction')).not.toBeInTheDocument();
   });
 
   it('affiche la cause serveur sans annoncer de succès', async () => {

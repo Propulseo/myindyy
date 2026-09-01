@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ArrowUp, Loader2 } from 'lucide-react';
 import { AttachButton, AttachDropOverlay, AttachmentTray, UploadErrorBar } from './ChatAttachments';
-import { RuntimeBadge } from './RuntimeBadge';
+import { isEtienneRuntimeReady, RuntimeBadge } from './RuntimeBadge';
 import { createTask, fetchRuntime, type RuntimeStatus } from '../lib/api';
 import { useFileAttachments } from '../hooks/useFileAttachments';
 import { isEditableTarget, handleChatKeyDown } from '../lib/keyboard';
@@ -49,7 +49,7 @@ export function NewTaskPage() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const selectedModel = runtime?.models.find((candidate) => candidate.id === model) ?? null;
-  const runtimeConnected = runtime?.authState === 'connected';
+  const runtimeReady = isEtienneRuntimeReady(runtime);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,7 +89,7 @@ export function NewTaskPage() {
   const handleSubmit = useCallback(async () => {
     const text = input.trim();
     const hasFiles = pendingFiles.length > 0;
-    if ((!text && !hasFiles) || isCreating || !runtimeConnected || !model || uploadBlocksSend) return;
+    if ((!text && !hasFiles) || isCreating || !runtimeReady || !model || uploadBlocksSend) return;
 
     setIsCreating(true);
     setUploadError(null);
@@ -107,7 +107,7 @@ export function NewTaskPage() {
       setUploadError(toErrorMessage(err, 'Failed to create task'));
       setIsCreating(false);
     }
-  }, [uploadBlocksSend, input, isCreating, model, navigate, pendingFiles, reasoningEffort, runtimeConnected, submitWithAttachments, setUploadError]);
+  }, [uploadBlocksSend, input, isCreating, model, navigate, pendingFiles, reasoningEffort, runtimeReady, submitWithAttachments, setUploadError]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => handleChatKeyDown(e, handleSubmit),
@@ -125,7 +125,6 @@ export function NewTaskPage() {
       <div className="w-full max-w-2xl">
         <div className="mb-3 flex justify-between gap-3">
           <RuntimeBadge status={runtime} />
-          <span className="font-mono text-[10px] text-[color:var(--cockpit-fog-muted)]">etienne-openai</span>
         </div>
         <div className="rounded-xl border border-[var(--cockpit-panel-line)] bg-[var(--cockpit-panel)]">
           <textarea
@@ -146,7 +145,7 @@ export function NewTaskPage() {
               <select
                 aria-label="Modèle Codex"
                 value={model}
-                disabled={isCreating || !runtimeConnected}
+                disabled={isCreating || !runtimeReady}
                 onChange={(event) => { setModel(event.target.value); setReasoningEffort(null); }}
                 className="min-h-9 min-w-0 rounded-md border border-[var(--cockpit-panel-line)] bg-[var(--cockpit-ink)] px-2 font-mono text-[11px] text-[var(--cockpit-fog)]"
               >
@@ -156,7 +155,7 @@ export function NewTaskPage() {
               <select
                 aria-label="Effort de raisonnement"
                 value={reasoningEffort ?? ''}
-                disabled={isCreating || !runtimeConnected || !model}
+                disabled={isCreating || !runtimeReady || !model}
                 onChange={(event) => setReasoningEffort(event.target.value ? event.target.value as ReasoningEffort : null)}
                 className="min-h-9 min-w-0 rounded-md border border-[var(--cockpit-panel-line)] bg-[var(--cockpit-ink)] px-2 font-mono text-[11px] text-[var(--cockpit-fog)]"
               >
@@ -166,8 +165,8 @@ export function NewTaskPage() {
             </div>
             <button
               onClick={handleSubmit}
-              disabled={(!input.trim() && pendingFiles.length === 0) || isCreating || !runtimeConnected || !model || uploadBlocksSend}
-              title={sendBlockedLabel ?? (runtimeConnected ? 'Créer la mission' : 'Connectez Codex OAuth pour créer une mission')}
+              disabled={(!input.trim() && pendingFiles.length === 0) || isCreating || !runtimeReady || !model || uploadBlocksSend}
+              title={sendBlockedLabel ?? (runtimeReady ? 'Créer la mission' : 'Reconnecter le profil etienne-openai')}
               aria-label={sendBlockedLabel ?? 'Créer la mission'}
               className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--cockpit-periwinkle)] text-[var(--cockpit-ink)] transition-opacity hover:opacity-90 disabled:opacity-30"
             >

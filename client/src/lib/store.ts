@@ -4,13 +4,14 @@ import type { MissionRun, RunEvent, Task, TaskRunState, TaskStatus } from '@shar
 export interface MissionHistory {
   runs: MissionRun[];
   events: RunEvent[];
-  loadedForTaskUpdatedAt: number;
+  revision: number;
 }
 
 interface AppState {
   tasks: Task[];
   taskRuns: Map<string, TaskRunState>;
   missionHistories: Map<string, MissionHistory>;
+  missionHistoryRevisions: Map<string, number>;
   tasksLoaded: boolean;
   sidebarCollapsed: boolean;
 
@@ -20,6 +21,7 @@ interface AppState {
   setTaskRuns: (runs: TaskRunState[]) => void;
   setTaskRun: (run: TaskRunState) => void;
   setMissionHistory: (taskId: string, history: MissionHistory) => void;
+  invalidateMissionHistory: (taskId: string) => void;
   toggleSidebar: () => void;
 }
 
@@ -47,6 +49,7 @@ export const useStore = create<AppState>((set) => ({
   tasks: [],
   taskRuns: new Map<string, TaskRunState>(),
   missionHistories: new Map<string, MissionHistory>(),
+  missionHistoryRevisions: new Map<string, number>(),
   tasksLoaded: false,
   sidebarCollapsed: localStorage.getItem('sidebarCollapsed') === 'true',
 
@@ -68,9 +71,11 @@ export const useStore = create<AppState>((set) => ({
       const tasks = state.tasks.filter((t) => t.id !== taskId);
       const taskRuns = new Map(state.taskRuns);
       const missionHistories = new Map(state.missionHistories);
+      const missionHistoryRevisions = new Map(state.missionHistoryRevisions);
       taskRuns.delete(taskId);
       missionHistories.delete(taskId);
-      return { tasks, taskRuns, missionHistories };
+      missionHistoryRevisions.delete(taskId);
+      return { tasks, taskRuns, missionHistories, missionHistoryRevisions };
     }),
 
   setTaskRuns: (runs) =>
@@ -104,9 +109,18 @@ export const useStore = create<AppState>((set) => ({
 
   setMissionHistory: (taskId, history) =>
     set((state) => {
+      const currentRevision = state.missionHistoryRevisions.get(taskId) ?? 0;
+      if (history.revision !== currentRevision) return state;
       const missionHistories = new Map(state.missionHistories);
       missionHistories.set(taskId, history);
       return { missionHistories };
+    }),
+
+  invalidateMissionHistory: (taskId) =>
+    set((state) => {
+      const missionHistoryRevisions = new Map(state.missionHistoryRevisions);
+      missionHistoryRevisions.set(taskId, (missionHistoryRevisions.get(taskId) ?? 0) + 1);
+      return { missionHistoryRevisions };
     }),
 
   toggleSidebar: () =>

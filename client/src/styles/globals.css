@@ -76,7 +76,18 @@
 
 .mission-pulse[data-priority="review"] {
   background: var(--cockpit-stable);
-  opacity: 0.75;
+}
+
+.mission-pulse[data-freshness="fresh"] {
+  opacity: 1;
+}
+
+.mission-pulse[data-freshness="warm"] {
+  opacity: 0.62;
+}
+
+.mission-pulse[data-freshness="stale"] {
+  opacity: 0.28;
 }
 
 .mission-pulse-live {
@@ -84,7 +95,7 @@
 }
 
 @keyframes mission-pulse-live {
-  50% { opacity: 0.35; }
+  50% { transform: scale(0.82); }
 }
 
 @layer utilities {

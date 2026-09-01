@@ -4,12 +4,36 @@ import { useStore } from '../lib/store';
 import { fetchTasks } from '../lib/api';
 import { playCompletionSound } from './useSoundOnComplete';
 
+export function applyBoardEvent(event: BoardEvent): void {
+  const state = useStore.getState();
+  if (event.type === 'task_created' || event.type === 'task_updated') {
+    if (event.type === 'task_updated') {
+      const previous = state.tasks.find((task) => task.id === event.task.id);
+      if (previous && previous.status === 'in_progress' && event.task.status === 'in_review') {
+        playCompletionSound();
+      }
+      if (!previous || previous.updated_at !== event.task.updated_at || previous.last_agent_response_at !== event.task.last_agent_response_at) {
+        state.invalidateMissionHistory(event.task.id);
+      }
+    }
+    state.upsertTask(event.task);
+    return;
+  }
+  if (event.type === 'task_deleted') {
+    state.removeTask(event.taskId);
+    return;
+  }
+  if (event.type === 'task_runs_snapshot') {
+    state.setTaskRuns(event.runs);
+    for (const run of event.runs) state.invalidateMissionHistory(run.taskId);
+    return;
+  }
+  state.setTaskRun(event.run);
+  state.invalidateMissionHistory(event.run.taskId);
+}
+
 export function useTasks() {
   const setTasks = useStore((s) => s.setTasks);
-  const upsertTask = useStore((s) => s.upsertTask);
-  const removeTask = useStore((s) => s.removeTask);
-  const setTaskRuns = useStore((s) => s.setTaskRuns);
-  const setTaskRun = useStore((s) => s.setTaskRun);
   const retryRef = useRef(0);
 
   useEffect(() => {
@@ -34,22 +58,7 @@ export function useTasks() {
 
       es.onmessage = (e) => {
         try {
-          const event = JSON.parse(e.data) as BoardEvent;
-          if (event.type === 'task_created' || event.type === 'task_updated') {
-            if (event.type === 'task_updated') {
-              const prev = useStore.getState().tasks.find((t) => t.id === event.task.id);
-              if (prev && prev.status === 'in_progress' && event.task.status === 'in_review') {
-                playCompletionSound();
-              }
-            }
-            upsertTask(event.task);
-          } else if (event.type === 'task_deleted') {
-            removeTask(event.taskId);
-          } else if (event.type === 'task_runs_snapshot') {
-            setTaskRuns(event.runs);
-          } else if (event.type === 'task_run_updated') {
-            setTaskRun(event.run);
-          }
+          applyBoardEvent(JSON.parse(e.data) as BoardEvent);
         } catch {}
       };
 
@@ -68,5 +77,5 @@ export function useTasks() {
       clearTimeout(retryTimeout);
       es?.close();
     };
-  }, [setTasks, upsertTask, removeTask, setTaskRuns, setTaskRun]);
+  }, [setTasks]);
 }
