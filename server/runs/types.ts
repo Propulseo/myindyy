@@ -34,6 +34,8 @@ export type TerminalMissionRunStatus = Extract<
   'completed' | 'failed' | 'cancelled'
 >;
 
+export type ReconciledMissionRunStatus = Extract<MissionRunStatus, 'running' | 'unknown'>;
+
 export interface FinishRunRecordInput {
   readonly runId: string;
   readonly status: TerminalMissionRunStatus;
@@ -79,6 +81,7 @@ export interface RunRepository {
   createRun(input: CreateRunInput): MissionRun;
   appendRunEvent(input: AppendRunEventInput): boolean;
   finishRunRecord(input: FinishRunRecordInput): MissionRun;
+  updateRunStatus(runId: string, status: ReconciledMissionRunStatus): MissionRun;
   updateRunSession(runId: string, sessionId: string, confirmedAt?: number): MissionRun;
   getRunRecord(runId: string): MissionRun | undefined;
   listMissionRuns(missionId: string): MissionRun[];

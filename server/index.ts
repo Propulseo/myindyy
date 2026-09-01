@@ -5,12 +5,17 @@ import { createServer, type Server } from 'node:http';
 import app, { adapter } from './app.js';
 import { mountFrontend, type FrontendCleanup } from './frontend.js';
 import { ensureHermesExternalSkillsDir } from './routes/skills.js';
+import db from './db/index.js';
+import { createRunRepository } from './runs/repository.js';
+import { reconcileActiveRuns } from './runs/reconcile.js';
+import { startRunWatchdog } from './runs/watchdog.js';
 
 const PORT = parseInt(process.env.PORT || '6969', 10);
 const PORT_FALLBACK_ATTEMPTS = 20;
 
 const httpServer = createServer(app);
 let closeFrontend: FrontendCleanup = () => {};
+let runWatchdog: ReturnType<typeof setInterval> | null = null;
 let shuttingDown = false;
 
 type ShutdownReason = NodeJS.Signals | 'startup-error';
@@ -59,7 +64,6 @@ async function main() {
     );
   });
 
-  closeFrontend = await mountFrontend(app, httpServer);
   try {
     await adapter.start();
   } catch (error) {
@@ -68,6 +72,12 @@ async function main() {
       error instanceof Error ? error.message : error,
     );
   }
+
+  const runRepository = createRunRepository(db);
+  await reconcileActiveRuns(runRepository, adapter);
+  runWatchdog = startRunWatchdog(runRepository, adapter);
+
+  closeFrontend = await mountFrontend(app, httpServer);
   const boundPort = await listenWithFallback(httpServer, PORT, PORT_FALLBACK_ATTEMPTS);
 
   console.log(`Hermes Agent Mission Control running on http://localhost:${boundPort}`);
@@ -107,6 +117,11 @@ async function shutdown(reason: ShutdownReason, exitCode = 0): Promise<void> {
     closeFrontend(),
     adapter.stop(),
   ]);
+
+  if (runWatchdog) {
+    clearInterval(runWatchdog);
+    runWatchdog = null;
+  }
 
   for (const result of results) {
     if (result.status === 'rejected') console.error(result.reason);

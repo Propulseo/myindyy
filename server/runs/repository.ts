@@ -12,6 +12,7 @@ import type {
   RunEvent,
   RunRepository,
   RunRepositoryOptions,
+  ReconciledMissionRunStatus,
 } from './types.js';
 
 export type { RunRepository } from './types.js';
@@ -279,6 +280,12 @@ export function createRunRepository(
       });
       if (result.changes === 0) throw new Error(`Unknown mission run: ${input.runId}`);
       return getRunRecord(input.runId)!;
+    },
+
+    updateRunStatus(runId: string, status: ReconciledMissionRunStatus): MissionRun {
+      const result = setRunStatus.run(status, runId);
+      if (result.changes === 0) throw new Error(`Unknown mission run: ${runId}`);
+      return getRunRecord(runId)!;
     },
 
     updateRunSession(runId: string, sessionId: string, confirmedAt = now()): MissionRun {
