@@ -301,6 +301,7 @@ async function consumeGoalRun(runTask: Task, sessionId: string, initialContent: 
     broadcastLive(runTask.id, event);
   } finally {
     if (hadError) runService.fail(runId, failureReason);
+    else if (wasInterrupted) runService.cancel(runId, 'operator-interrupt');
     else runService.complete(runId);
     if (!hadError && getRunStatus(runTask.id)?.status === 'streaming') {
       updateRunStatus(runTask.id, wasInterrupted ? 'stopped' : 'done', { context: finalContext ?? null });

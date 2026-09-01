@@ -26,6 +26,7 @@ export interface RunService {
   consumeEvent(runId: string, event: StreamEvent, options?: ConsumeEventOptions): RunEvent;
   complete(runId: string, event?: StreamEvent & { type: 'done' }): RunEvent;
   fail(runId: string, error: unknown): RunEvent;
+  cancel(runId: string, reason: string): RunEvent;
   getMissionHistory(missionId: string): MissionRunHistory;
   getLatestRun(missionId: string): MissionRun | undefined;
   getLatestConfirmedSessionId(missionId: string): string | undefined;
@@ -164,6 +165,18 @@ export function createRunService(
         ? previous
         : consumeEvent(runId, { type: 'error', error: message });
       finish(runId, 'failed', message);
+      return terminalEvent;
+    },
+
+    cancel(runId, reason): RunEvent {
+      const previous = latestEvent(runId);
+      const terminalEvent = previous?.type === 'run.cancelled'
+        ? previous
+        : persistNormalized(requireRun(runId), {
+            type: 'run.cancelled',
+            payload: { reason },
+          });
+      finish(runId, 'cancelled', reason);
       return terminalEvent;
     },
 

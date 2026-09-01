@@ -5,6 +5,7 @@ import type { StreamEvent } from '../server/adapters/types.js';
 import { createRunRepository, type RunRepository } from '../server/runs/repository.js';
 import { normalizeHermesEvent } from '../server/runs/event-normalizer.js';
 import { createRunService, type RunService } from '../server/runs/service.js';
+import { getRun, startGoalRun, updateRunContext, updateRunStatus } from '../server/live-chat.js';
 
 const schema = readFileSync(new URL('../server/db/schema.sql', import.meta.url), 'utf8');
 
@@ -184,6 +185,43 @@ describe('durable run service', () => {
     expect(repository.listRunEvents(started.runId).filter((event) => event.type === 'run.completed'))
       .toHaveLength(1);
     expect(repository.getRunRecord(started.runId)).toMatchObject({ status: 'completed' });
+  });
+
+  it('cancels an interrupted goal without ever recording run completion', () => {
+    const started = service.startMission({
+      missionId: 'mission-1', provider: 'openai-codex', model: 'gpt-5.6-sol',
+    });
+    startGoalRun('mission-1', started.sessionId, null, started.runId);
+    const context = { used_tokens: 12, window_tokens: 100 };
+
+    service.consumeEvent(started.runId, {
+      type: 'done', sessionId: 'native-goal', context, interrupted: true,
+    }, { terminal: false });
+    updateRunContext('mission-1', context, 'native-goal');
+    service.cancel(started.runId, 'operator-interrupt');
+    service.cancel(started.runId, 'operator-interrupt');
+    updateRunStatus('mission-1', 'stopped', { context });
+
+    expect(getRun('mission-1')).toMatchObject({
+      runId: started.runId, sessionId: 'native-goal', status: 'stopped', context,
+    });
+    expect(repository.getRunRecord(started.runId)).toMatchObject({
+      sessionId: 'native-goal', status: 'cancelled', finishReason: 'operator-interrupt',
+    });
+    const events = repository.listRunEvents(started.runId);
+    expect(events.find((event) => event.payload.transportDone === true)).toMatchObject({
+      type: 'run.heartbeat',
+      payload: {
+        sessionId: 'native-goal',
+        interrupted: true,
+        context: { used_tokens: '[REDACTED]', window_tokens: '[REDACTED]' },
+      },
+    });
+    const terminalEvents = events
+      .filter((event) => ['run.cancelled', 'run.completed'].includes(event.type));
+    expect(terminalEvents).toMatchObject([
+      { type: 'run.cancelled', payload: { reason: 'operator-interrupt' } },
+    ]);
   });
 
   it('falls back to the latest confirmed session when a newer attempt fails before done', () => {
