@@ -75,6 +75,7 @@ interface SourceCharacter {
   readonly character: string;
   readonly line: number;
   readonly sourceIndex: number;
+  readonly sourceEndIndex: number;
 }
 
 function sourceBoundary(source: string, index: number, direction: -1 | 1): boolean {
@@ -88,10 +89,100 @@ function sourceCharacters(source: string): SourceCharacter[] {
   let line = 1;
   for (let sourceIndex = 0; sourceIndex < source.length; sourceIndex += 1) {
     const character = source[sourceIndex]!;
-    characters.push({ character, line, sourceIndex });
+    characters.push({ character, line, sourceIndex, sourceEndIndex: sourceIndex });
     if (character === '\n') line += 1;
   }
   return characters;
+}
+
+function decodeLiteralEscapes(
+  source: string,
+  characters: readonly SourceCharacter[],
+): SourceCharacter[] {
+  const result: SourceCharacter[] = [];
+  for (let index = 0; index < characters.length; index += 1) {
+    const current = characters[index]!;
+    if (current.character !== '\\') {
+      result.push(current);
+      continue;
+    }
+
+    const remaining = source.slice(current.sourceIndex);
+    const match = remaining.match(/^\\(?:u\{([0-9a-fA-F]{1,6})\}|u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))/);
+    if (!match) {
+      result.push(current);
+      continue;
+    }
+    const endIndex = current.sourceIndex + match[0].length - 1;
+    const representedCharacters = characters.slice(index, index + match[0].length);
+    if (representedCharacters.length !== match[0].length
+      || representedCharacters.some((character, offset) => character.sourceIndex !== current.sourceIndex + offset)) {
+      result.push(current);
+      continue;
+    }
+    const codePoint = Number.parseInt(match[1] ?? match[2] ?? match[3]!, 16);
+    if (codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+      throw new Error(`Invalid Unicode literal escape at line ${current.line}`);
+    }
+    for (const character of String.fromCodePoint(codePoint)) {
+      result.push({
+        character,
+        line: current.line,
+        sourceIndex: current.sourceIndex,
+        sourceEndIndex: endIndex,
+      });
+    }
+    index += match[0].length - 1;
+  }
+  return result;
+}
+
+function foldEnvironmentFromCharCode(
+  source: string,
+  characters: readonly SourceCharacter[],
+): SourceCharacter[] {
+  const expression = /process\s*\.\s*env\s*\[\s*String\s*\.\s*fromCharCode\s*\(([^)]*)\)/gi;
+  const matches = [...source.matchAll(expression)];
+  if (matches.length === 0) return [...characters];
+
+  const replacements = new Map<number, { readonly end: number; readonly value: string }>();
+  for (const match of matches) {
+    const argumentsText = match[1] ?? '';
+    if (!/^\s*(?:0x[0-9a-f]+|\d+)(?:\s*,\s*(?:0x[0-9a-f]+|\d+))*\s*$/i.test(argumentsText)) continue;
+    const values = argumentsText.split(',').map((value) => Number(value.trim()));
+    if (values.some((value) => !Number.isInteger(value) || value < 0 || value > 0xffff)) {
+      throw new Error('Invalid constant String.fromCharCode argument in environment access');
+    }
+    const full = match[0]!;
+    const callOffset = full.search(/String\s*\.\s*fromCharCode/i);
+    const callStart = match.index! + callOffset;
+    replacements.set(callStart, {
+      end: match.index! + full.length - 1,
+      value: String.fromCharCode(...values),
+    });
+  }
+  if (replacements.size === 0) return [...characters];
+
+  const result: SourceCharacter[] = [];
+  for (let index = 0; index < characters.length; index += 1) {
+    const current = characters[index]!;
+    const replacement = replacements.get(current.sourceIndex);
+    if (!replacement) {
+      result.push(current);
+      continue;
+    }
+    for (const character of replacement.value) {
+      result.push({
+        character,
+        line: current.line,
+        sourceIndex: current.sourceIndex,
+        sourceEndIndex: replacement.end,
+      });
+    }
+    while (index + 1 < characters.length
+      && characters[index + 1]!.sourceIndex <= replacement.end) index += 1;
+  }
+  return result;
 }
 
 function withoutComments(characters: readonly SourceCharacter[]): SourceCharacter[] {
@@ -174,7 +265,8 @@ function addNormalizedFindings(
       const first = mapping[matchIndex];
       const last = mapping[matchIndex + name.length - 1];
       if (!first || !last) continue;
-      if (!sourceBoundary(source, first.sourceIndex, -1) || !sourceBoundary(source, last.sourceIndex, 1)) continue;
+      if (!sourceBoundary(source, first.sourceIndex, -1)
+        || !sourceBoundary(source, last.sourceEndIndex, 1)) continue;
       addFinding({ path, line: first.line, name });
     }
   }
@@ -206,6 +298,14 @@ export function findForbiddenModelKeyAssignments(
     const characters = sourceCharacters(content);
     addNormalizedFindings(file.path, content, characters, addFinding);
     addNormalizedFindings(file.path, content, withoutComments(characters), addFinding);
+    addNormalizedFindings(file.path, content, decodeLiteralEscapes(content, characters), addFinding);
+    addNormalizedFindings(
+      file.path,
+      content,
+      decodeLiteralEscapes(content, withoutComments(characters)),
+      addFinding,
+    );
+    addNormalizedFindings(file.path, content, foldEnvironmentFromCharCode(content, characters), addFinding);
   }
   return findings;
 }

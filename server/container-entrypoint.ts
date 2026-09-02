@@ -2,7 +2,6 @@ import { execFileSync, spawn } from 'node:child_process';
 import {
   chmodSync,
   cpSync,
-  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -10,6 +9,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  statSync,
 } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -102,6 +102,18 @@ function pathIsWithin(root: string, candidate: string): boolean {
   return within === '' || (within !== '..' && !within.startsWith(`..${sep}`) && !isAbsolute(within));
 }
 
+function resolveManifestAnchor(manifestFile: string, environment: NodeJS.ProcessEnv): string {
+  const anchor = realpathSync(manifestFile);
+  const metadata = statSync(anchor);
+  if (!metadata.isFile()) throw new Error('Hermes runtime manifest anchor must be a regular file');
+  if (environment.NODE_ENV === 'production' && process.platform !== 'win32') {
+    if (metadata.uid !== 0 || (metadata.mode & 0o222) !== 0) {
+      throw new Error('Production Hermes runtime manifest anchor must be root-owned and read-only');
+    }
+  }
+  return anchor;
+}
+
 function removePrivateScratch(scratchRoot: string): void {
   if (!existsSync(scratchRoot)) return;
   const makeDirectoriesWritable = (directory: string) => {
@@ -133,6 +145,7 @@ export function materializeHermesRuntime(
 
   const resolvedSource = realpathSync(sourceRoot);
   const resolvedSourcePython = realpathSync(sourcePython);
+  const manifestAnchor = resolveManifestAnchor(manifestFile, environment);
   if (!pathIsWithin(resolvedSource, resolvedSourcePython)) {
     throw new Error('Hermes source Python resolves outside the reviewed runtime');
   }
@@ -149,10 +162,8 @@ export function materializeHermesRuntime(
 
   const scratchRoot = mkdtempSync(join(resolvedPrivateParent, 'hermes-'));
   const runtimeRoot = join(scratchRoot, 'runtime');
-  const manifestSnapshot = join(scratchRoot, 'reviewed-manifest.json');
   try {
-    copyFileSync(realpathSync(manifestFile), manifestSnapshot);
-    validateHermesRuntimeManifest(resolvedSource, manifestSnapshot);
+    validateHermesRuntimeManifest(resolvedSource, manifestAnchor);
     hooks.afterSourceValidation?.(resolvedSource);
     cpSync(resolvedSource, runtimeRoot, {
       dereference: false,
@@ -160,20 +171,19 @@ export function materializeHermesRuntime(
       recursive: true,
       verbatimSymlinks: true,
     });
-    validateHermesRuntimeManifest(runtimeRoot, manifestSnapshot);
+    validateHermesRuntimeManifest(runtimeRoot, manifestAnchor);
     const privatePython = join(runtimeRoot, pythonRelativePath);
     const resolvedPrivatePython = realpathSync(privatePython);
     if (!pathIsWithin(realpathSync(runtimeRoot), resolvedPrivatePython)) {
       throw new Error('Private Hermes Python resolves outside the reviewed runtime copy');
     }
     hardenHermesRuntimeCopy(runtimeRoot, privatePython);
-    chmodSync(manifestSnapshot, 0o440);
-    validateHermesRuntimeExecution(runtimeRoot, manifestSnapshot, privatePython);
+    validateHermesRuntimeExecution(runtimeRoot, manifestAnchor, privatePython);
     const preparedEnvironment: NodeJS.ProcessEnv = {
       ...environment,
       HERMES_AGENT_DIR: runtimeRoot,
       HERMES_PYTHON: privatePython,
-      HERMES_RUNTIME_MANIFEST_FILE: manifestSnapshot,
+      HERMES_RUNTIME_MANIFEST_FILE: manifestAnchor,
       INDY_HERMES_RUNTIME_GUARD: '1',
       PYTHONNOUSERSITE: '1',
       PYTHONSAFEPATH: '1',

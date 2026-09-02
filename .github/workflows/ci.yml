@@ -78,7 +78,7 @@ jobs:
             if (service.environment.HERMES_RUNTIME_MANIFEST_FILE !== "/run/indy-config/hermes-runtime-manifest.json") process.exit(1);
             if (service.environment.HERMES_SOURCE_DIR !== "/opt/hermes") process.exit(1);
             if (service.environment.HERMES_PRIVATE_RUNTIME_PARENT !== "/run/indy-runtime") process.exit(1);
-            if (!service.configs.some((config) => config.target === "/run/indy-config/hermes-runtime-manifest.json")) process.exit(1);
+            if (!service.configs.some((config) => config.target === "/run/indy-config/hermes-runtime-manifest.json" && String(config.uid) === "0" && String(config.gid) === "0" && String(config.mode) === "0444")) process.exit(1);
             if (!service.tmpfs.includes("/run/indy-runtime:rw,nosuid,nodev,size=1g,uid=10001,gid=10001,mode=0700")) process.exit(1);
           ' "$RUNNER_TEMP/indy-compose.json"
 
@@ -90,5 +90,12 @@ jobs:
           test "$(docker image inspect indy-ci:${{ github.sha }} --format '{{.Config.User}}')" = "indy:indy"
           docker image inspect indy-ci:${{ github.sha }} --format '{{json .Config.Healthcheck.Test}}' | grep -F 'dist/server/server/healthcheck.js'
           docker run --rm --entrypoint node indy-ci:${{ github.sha }} dist/server/server/security/model-key-scan.js --environment
+          printf '{}\n' > "$RUNNER_TEMP/hermes-runtime-manifest.json"
+          anchor_container="$(docker create --entrypoint sh indy-ci:${{ github.sha }} -c 'test "$(id -u)" = 10001 && test "$(stat -c %u /run/indy-config/hermes-runtime-manifest.json)" = 0 && test ! -w /run/indy-config/hermes-runtime-manifest.json')"
+          trap 'docker rm -f "$anchor_container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$RUNNER_TEMP/hermes-runtime-manifest.json" "$anchor_container:/run/indy-config/hermes-runtime-manifest.json"
+          docker start --attach "$anchor_container"
+          docker rm "$anchor_container"
+          trap - EXIT
           test "$(docker image inspect indy-ci:${{ github.sha }} --format '{{index .Config.Labels "io.propulseo.indy.node-base-digest"}}')" = "sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b"
           test "$(docker image inspect indy-ci:${{ github.sha }} --format '{{index .Config.Labels "io.propulseo.indy.debian-snapshot"}}')" = "20260801T000000Z"

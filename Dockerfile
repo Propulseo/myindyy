@@ -51,6 +51,7 @@ RUN dpkg-deb --extract /tmp/ca-certificates.deb /tmp/ca-bootstrap \
     && groupadd --gid "${APP_GID}" indy \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" --home-dir /var/lib/indy --no-create-home --shell /usr/sbin/nologin indy \
     && install -d -o indy -g indy -m 0700 /var/lib/indy /var/lib/hermes /run/indy-runtime \
+    && install -d -o root -g root -m 0555 /run/indy-config \
     && install -d -o indy -g indy -m 0755 /app
 
 WORKDIR /app

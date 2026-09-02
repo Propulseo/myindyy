@@ -36,13 +36,57 @@ import { validateHermesRuntimeExecution } from '../hermes-runtime-manifest.js';
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const WORKER_INTERRUPT_TIMEOUT_MS = 10_000;
 
-export function createWorkerEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  assertWorkerRuntimeIntegrity(source);
+export interface WorkerRuntimeContract {
+  readonly runtimeRoot: string;
+  readonly manifestAnchor: string;
+  readonly python: string;
+}
+
+export function captureWorkerRuntimeContract(
+  environment: NodeJS.ProcessEnv,
+): WorkerRuntimeContract | undefined {
+  if (environment.INDY_HERMES_RUNTIME_GUARD !== '1') return undefined;
+  const runtimeRoot = environment.HERMES_AGENT_DIR?.trim();
+  const manifestAnchor = environment.HERMES_RUNTIME_MANIFEST_FILE?.trim();
+  const python = environment.HERMES_PYTHON?.trim();
+  if (!runtimeRoot || !manifestAnchor || !python) {
+    throw new Error('Guarded Hermes worker runtime paths are incomplete');
+  }
+  return Object.freeze({ runtimeRoot, manifestAnchor, python });
+}
+
+const PROCESS_WORKER_RUNTIME_CONTRACT = captureWorkerRuntimeContract(process.env);
+
+function selectWorkerRuntimeContract(
+  environment: NodeJS.ProcessEnv,
+  contract?: WorkerRuntimeContract,
+): WorkerRuntimeContract | undefined {
+  if (contract) return contract;
+  if (environment === process.env && PROCESS_WORKER_RUNTIME_CONTRACT) {
+    return PROCESS_WORKER_RUNTIME_CONTRACT;
+  }
+  return captureWorkerRuntimeContract(environment);
+}
+
+export function createWorkerEnvironment(
+  source: NodeJS.ProcessEnv = process.env,
+  contract?: WorkerRuntimeContract,
+): NodeJS.ProcessEnv {
+  const selectedContract = selectWorkerRuntimeContract(source, contract);
+  assertWorkerRuntimeIntegrity(source, selectedContract);
   const environment: NodeJS.ProcessEnv = {
     ...sanitizeWorkerEnv(source),
     HERMES_QUIET: '1',
     HERMES_YOLO_MODE: '1',
   };
+  if (selectedContract) {
+    Object.assign(environment, {
+      HERMES_AGENT_DIR: selectedContract.runtimeRoot,
+      HERMES_PYTHON: selectedContract.python,
+      HERMES_RUNTIME_MANIFEST_FILE: selectedContract.manifestAnchor,
+      INDY_HERMES_RUNTIME_GUARD: '1',
+    });
+  }
   delete environment.HERMES_SOURCE_DIR;
   delete environment.HERMES_SOURCE_PYTHON;
   delete environment.PYTHONHOME;
@@ -51,15 +95,17 @@ export function createWorkerEnvironment(source: NodeJS.ProcessEnv = process.env)
   return environment;
 }
 
-export function assertWorkerRuntimeIntegrity(environment: NodeJS.ProcessEnv = process.env): void {
-  if (environment.INDY_HERMES_RUNTIME_GUARD !== '1') return;
-  const runtimeRoot = environment.HERMES_AGENT_DIR?.trim();
-  const manifestFile = environment.HERMES_RUNTIME_MANIFEST_FILE?.trim();
-  const python = environment.HERMES_PYTHON?.trim();
-  if (!runtimeRoot || !manifestFile || !python) {
-    throw new Error('Guarded Hermes worker runtime paths are incomplete');
-  }
-  validateHermesRuntimeExecution(runtimeRoot, manifestFile, python);
+export function assertWorkerRuntimeIntegrity(
+  environment: NodeJS.ProcessEnv = process.env,
+  contract?: WorkerRuntimeContract,
+): void {
+  const selectedContract = selectWorkerRuntimeContract(environment, contract);
+  if (!selectedContract) return;
+  validateHermesRuntimeExecution(
+    selectedContract.runtimeRoot,
+    selectedContract.manifestAnchor,
+    selectedContract.python,
+  );
 }
 
 export function createWorkerArguments(

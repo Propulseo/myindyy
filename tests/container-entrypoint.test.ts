@@ -10,7 +10,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createWorkerEnvironment } from '../server/adapters/hermes-worker.js';
+import {
+  captureWorkerRuntimeContract,
+  createWorkerEnvironment,
+} from '../server/adapters/hermes-worker.js';
 import {
   assertSchedulerArtifact,
   extractSupportedSchedulerHash,
@@ -77,6 +80,27 @@ describe('container Hermes artifact gate', () => {
     })).toThrow('hash mismatch: run_agent.py');
   });
 
+  it.runIf(process.platform !== 'win32')('rejects a production manifest anchor owned or writable by the service identity', async () => {
+    const entrypoint = await import('../server/container-entrypoint.js');
+    const parent = mkdtempSync(join(tmpdir(), 'indy-hermes-anchor-owner-'));
+    const sourceRoot = join(parent, 'bind-source');
+    const sourcePython = join(sourceRoot, 'venv', 'bin', 'python');
+    mkdirSync(join(sourcePython, '..'), { recursive: true });
+    writeFileSync(sourcePython, '# reviewed python fixture\n');
+    writeFileSync(join(sourceRoot, 'run_agent.py'), '# reviewed runner\n');
+    const manifestFile = join(parent, 'service-owned-manifest.json');
+    writeFileSync(manifestFile, JSON.stringify(createHermesRuntimeManifest(sourceRoot)));
+    chmodSync(manifestFile, 0o644);
+
+    expect(() => entrypoint.materializeHermesRuntime({
+      NODE_ENV: 'production',
+      HERMES_SOURCE_DIR: sourceRoot,
+      HERMES_SOURCE_PYTHON: sourcePython,
+      HERMES_PRIVATE_RUNTIME_PARENT: join(parent, 'private'),
+      HERMES_RUNTIME_MANIFEST_FILE: manifestFile,
+    })).toThrow(/root-owned and read-only/i);
+  });
+
   it('materializes and revalidates a private runtime before exposing execution paths', async () => {
     const entrypoint = await import('../server/container-entrypoint.js') as typeof import('../server/container-entrypoint.js') & {
       materializeHermesRuntime?: (environment: NodeJS.ProcessEnv) => {
@@ -119,7 +143,8 @@ describe('container Hermes artifact gate', () => {
     expect(prepared.environment.HERMES_SOURCE_DIR).toBeUndefined();
     expect(prepared.environment.HERMES_SOURCE_PYTHON).toBeUndefined();
     expect(prepared.environment.INDY_HERMES_RUNTIME_GUARD).toBe('1');
-    expect(prepared.environment.HERMES_RUNTIME_MANIFEST_FILE).toBe(join(prepared.scratchRoot, 'reviewed-manifest.json'));
+    expect(prepared.environment.HERMES_RUNTIME_MANIFEST_FILE).toBe(manifestFile);
+    expect(readdirSync(prepared.scratchRoot)).toEqual(['runtime']);
     expect(prepared.environment.HERMES_HOME).toBe(join(parent, 'oauth-home'));
     expect(prepared.environment.PYTHONHOME).toBeUndefined();
     expect(prepared.environment.PYTHONPATH).toBeUndefined();
@@ -143,6 +168,43 @@ describe('container Hermes artifact gate', () => {
     chmodSync(privateRunner, 0o660);
     writeFileSync(privateRunner, '# private runtime tampered before worker restart\n');
     expect(() => createWorkerEnvironment(prepared.environment)).toThrow('hash mismatch: run_agent.py');
+  });
+
+  it('keeps runtime gates pinned to the external anchor when the worker identity forges a private manifest', async () => {
+    const entrypoint = await import('../server/container-entrypoint.js');
+    const parent = mkdtempSync(join(tmpdir(), 'indy-hermes-anchor-'));
+    const sourceRoot = join(parent, 'bind-source');
+    const sourcePython = join(sourceRoot, 'venv', 'bin', 'python');
+    const sourceRunner = join(sourceRoot, 'run_agent.py');
+    mkdirSync(join(sourcePython, '..'), { recursive: true });
+    writeFileSync(sourcePython, '# reviewed python fixture\n');
+    writeFileSync(sourceRunner, '# reviewed runner\n');
+    const manifestFile = join(parent, 'root-owned-manifest.json');
+    writeFileSync(manifestFile, JSON.stringify(createHermesRuntimeManifest(sourceRoot)));
+
+    const prepared = entrypoint.materializeHermesRuntime({
+      HERMES_SOURCE_DIR: sourceRoot,
+      HERMES_SOURCE_PYTHON: sourcePython,
+      HERMES_PRIVATE_RUNTIME_PARENT: join(parent, 'private'),
+      HERMES_RUNTIME_MANIFEST_FILE: manifestFile,
+    });
+    const contract = captureWorkerRuntimeContract(prepared.environment);
+    expect(contract).toBeDefined();
+    expect(Object.isFrozen(contract)).toBe(true);
+    const privateRunner = join(prepared.runtimeRoot, 'run_agent.py');
+    const forgedManifest = join(prepared.scratchRoot, 'forged-manifest.json');
+    expect(createWorkerEnvironment({
+      ...prepared.environment,
+      HERMES_RUNTIME_MANIFEST_FILE: forgedManifest,
+    }, contract).HERMES_RUNTIME_MANIFEST_FILE).toBe(manifestFile);
+    chmodSync(privateRunner, 0o660);
+    writeFileSync(privateRunner, '# private bytes accepted only by forged manifest\n');
+    writeFileSync(forgedManifest, JSON.stringify(createHermesRuntimeManifest(prepared.runtimeRoot)));
+
+    expect(() => createWorkerEnvironment({
+      ...prepared.environment,
+      HERMES_RUNTIME_MANIFEST_FILE: forgedManifest,
+    }, contract)).toThrow('hash mismatch: run_agent.py');
   });
 
   it('rejects a copied Python path configuration file even when it is reviewed', async () => {
@@ -218,7 +280,6 @@ describe('container Hermes artifact gate', () => {
     }, {
       afterSourceValidation: () => {
         writeFileSync(sourceRunner, '# mutated while materializing\n');
-        writeFileSync(manifestFile, JSON.stringify(createHermesRuntimeManifest(sourceRoot)));
       },
     })).toThrow('hash mismatch: run_agent.py');
     expect(readdirSync(privateParent)).toEqual([]);

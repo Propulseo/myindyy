@@ -79,6 +79,39 @@ describe('tracked-file model credential scan', () => {
     ]);
   });
 
+  it('decodes JavaScript and YAML literal escapes before scanning credential names', () => {
+    const [first, second] = CREDENTIAL_NAMES as [string, string];
+    const unicodeEscaped = [...first]
+      .map((character) => `\\u${character.codePointAt(0)!.toString(16).padStart(4, '0')}`)
+      .join('');
+    const hexEscaped = [...second]
+      .map((character) => `\\x${character.codePointAt(0)!.toString(16).padStart(2, '0')}`)
+      .join('');
+    const braceEscaped = [...first]
+      .map((character) => `\\u{${character.codePointAt(0)!.toString(16)}}`)
+      .join('');
+
+    expect(findForbiddenModelKeyAssignments([
+      { path: 'server/escaped.ts', content: `process.env["${unicodeEscaped}"] = "leaked";\n` },
+      { path: 'deploy/escaped.yml', content: `environment:\n  "${hexEscaped}": inherited\n` },
+      { path: 'server/escaped-brace.ts', content: `process.env["${braceEscaped}"] = "leaked";\n` },
+    ])).toEqual([
+      { path: 'server/escaped.ts', line: 1, name: first },
+      { path: 'deploy/escaped.yml', line: 2, name: second },
+      { path: 'server/escaped-brace.ts', line: 1, name: first },
+    ]);
+  });
+
+  it('constant-folds String.fromCharCode in process environment access', () => {
+    const name = CREDENTIAL_NAMES[2]!;
+    const codePoints = [...name].map((character) => character.codePointAt(0)!).join(', ');
+
+    expect(findForbiddenModelKeyAssignments([{
+      path: 'server/from-char-code.ts',
+      content: `process.env[String.fromCharCode(${codePoints})] = "leaked";\n`,
+    }])).toEqual([{ path: 'server/from-char-code.ts', line: 1, name }]);
+  });
+
   it('decodes BOM-marked UTF-16 PowerShell and fails closed on ambiguous NUL text', () => {
     const name = CREDENTIAL_NAMES[0]!;
     const script = `$env:${name} = 'inherited'\r\n`;

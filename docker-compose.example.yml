@@ -44,8 +44,8 @@ services:
     configs:
       - source: hermes_runtime_manifest
         target: /run/indy-config/hermes-runtime-manifest.json
-        uid: "10001"
-        gid: "10001"
+        uid: "0"
+        gid: "0"
         mode: 0444
     volumes:
       - type: bind
