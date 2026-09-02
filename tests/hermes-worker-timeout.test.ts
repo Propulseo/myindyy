@@ -19,6 +19,10 @@ import { createInterface } from 'node:readline';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 const mode = ${JSON.stringify(mode)};
 const runtimeCounter = ${JSON.stringify(runtimeCounter)};
+const runtimeGeneration = existsSync(runtimeCounter)
+  ? Number(readFileSync(runtimeCounter, 'utf8')) + 1
+  : 1;
+writeFileSync(runtimeCounter, String(runtimeGeneration));
 const lines = createInterface({ input: process.stdin });
 const send = (id, data) => process.stdout.write(JSON.stringify({ id, type: 'result', data }) + '\\n');
 lines.on('line', (line) => {
@@ -42,9 +46,7 @@ lines.on('line', (line) => {
     return;
   }
   if (request.type !== 'runtime.status' || mode === 'frozen') return;
-  const runtimeRequests = existsSync(runtimeCounter) ? Number(readFileSync(runtimeCounter, 'utf8')) + 1 : 1;
-  writeFileSync(runtimeCounter, String(runtimeRequests));
-  const first = runtimeRequests === 1;
+  const first = runtimeGeneration === 1;
   setTimeout(() => send(request.id, {
     provider: 'openai-codex',
     profileId: 'etienne-openai',
@@ -115,7 +117,7 @@ describe('Hermes worker bounded request lifecycle', () => {
     ]);
   });
 
-  it('ignores a response arriving after timeout and resolves the next request with its own result', async () => {
+  it('retires a timed-out worker and resolves the next request from a fresh generation', async () => {
     const adapter = adapterFor('late-then-ready');
 
     expect(await outcomeWithin(adapter.getRuntimeDiagnostic(20))).toEqual({
