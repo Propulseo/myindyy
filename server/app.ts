@@ -15,6 +15,7 @@ import { getAppVersion } from './version.js';
 import { requireEtienne } from './auth/etienne.js';
 import db from './db/index.js';
 import { createRunRepository } from './runs/repository.js';
+import { createHealthRouter, operationalReadiness } from './health/readiness.js';
 
 const app: Express = express();
 
@@ -23,10 +24,12 @@ app.use('/api', requireEtienne);
 const adapter = new HermesOAuthRuntime();
 const runRepository = createRunRepository(db);
 
-app.get('/api/health', async (_req, res) => {
-  const hermes = await adapter.healthCheck();
-  res.json({ ok: true, hermes });
-});
+app.use('/api/health', createHealthRouter({
+  database: db,
+  runtime: adapter,
+  controlLoopsReady: operationalReadiness.controlLoopsReady,
+  onFailure: (reason) => console.warn(`Readiness unavailable: ${reason}`),
+}));
 
 app.get('/api/version', (_req, res) => {
   res.json(getAppVersion());

@@ -1,0 +1,85 @@
+name: indy-cockpit
+
+services:
+  indy:
+    image: ${INDY_IMAGE:?Set INDY_IMAGE to an immutable image digest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    cpus: 2.0
+    mem_limit: 2g
+    environment:
+      NODE_ENV: production
+      PORT: "6969"
+      MINIONS_HOME: /var/lib/indy
+      DB_PATH: /var/lib/indy/data/indy.db
+      HERMES_HOME: /var/lib/hermes
+      HERMES_AGENT_DIR: /opt/hermes
+      HERMES_PYTHON: /opt/hermes/venv/bin/python
+      HERMES_AGENT_RUN_LIMIT: "${HERMES_AGENT_RUN_LIMIT:-4}"
+      HEARTBEAT_CONCURRENCY: "${HEARTBEAT_CONCURRENCY:-2}"
+      MINIONS_MODEL_LIST_CACHE_TTL_SECONDS: "${MINIONS_MODEL_LIST_CACHE_TTL_SECONDS:-60}"
+      INDY_PUBLIC_ORIGIN: "${INDY_PUBLIC_ORIGIN:?Set the canonical public HTTPS origin}"
+      INDY_PROXY_SECRET_FILE: /run/secrets/indy-proxy
+      INDY_TRUSTED_PROXY_CIDRS: "${INDY_TRUSTED_PROXY_CIDRS:?Set the exact private proxy source CIDR}"
+      INDY_SCHEDULED_WORKDIRS: /var/lib/indy/workspace:/workspaces/project
+    ports:
+      - "127.0.0.1:${INDY_LOOPBACK_PORT:-6969}:6969"
+    secrets:
+      - source: indy_proxy
+        target: indy-proxy
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+    volumes:
+      - indy_state:/var/lib/indy
+      - type: bind
+        source: ${INDY_HERMES_HOME:?Set the host Hermes OAuth/state directory}
+        target: /var/lib/hermes
+        read_only: false
+      - type: bind
+        source: ${INDY_HERMES_RUNTIME_DIR:?Set the reviewed Hermes runtime directory}
+        target: /opt/hermes
+        read_only: true
+      - type: bind
+        source: ${INDY_WORKSPACE_ROOT:?Set the default Indy workspace directory}
+        target: /var/lib/indy/workspace
+        read_only: false
+      - type: bind
+        source: ${INDY_PROJECT_WORKSPACE:?Set an explicitly allowed project workspace}
+        target: /workspaces/project
+        read_only: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=1700
+    healthcheck:
+      test: ["CMD", "node", "dist/server/server/healthcheck.js"]
+      interval: 30s
+      timeout: 8s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    networks:
+      - indy_private
+volumes:
+  indy_state:
+
+secrets:
+  indy_proxy:
+    file: ${INDY_PROXY_SECRET_HOST_FILE:?Set the host path to the proxy transport secret}
+
+networks:
+  indy_private:
+    driver: bridge

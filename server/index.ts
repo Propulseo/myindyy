@@ -17,6 +17,7 @@ import {
   startCronDispatchRecoveryLoop,
   type CronDispatchRecoveryLoop,
 } from './routes/scheduled-tasks.js';
+import { operationalReadiness } from './health/readiness.js';
 
 const PORT = parseInt(process.env.PORT || '6969', 10);
 const PORT_FALLBACK_ATTEMPTS = 20;
@@ -104,6 +105,7 @@ async function main() {
     },
   });
   await scheduledOccurrenceReconciler.ready;
+  operationalReadiness.markControlLoopsReady();
 
   closeFrontend = await mountFrontend(app, httpServer);
   const boundPort = await listenWithFallback(httpServer, PORT, PORT_FALLBACK_ATTEMPTS);
@@ -133,6 +135,7 @@ async function shutdown(reason: ShutdownReason, exitCode = 0): Promise<void> {
     process.exit(1);
   }
   shuttingDown = true;
+  operationalReadiness.markStopping();
 
   const forceExit = setTimeout(() => {
     console.error(`Forced shutdown after ${reason}`);
