@@ -11,7 +11,6 @@ import os
 import sys
 import threading
 import time
-import traceback
 import uuid
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
@@ -875,7 +874,7 @@ def _runtime_catalog_models(groups: dict[str, list[dict[str, Any]]]) -> list[dic
                 continue
             seen.add(model_id)
             raw_efforts = model.get("reasoningEfforts")
-            efforts = list(ALLOWED_REASONING_ORDER)
+            efforts: list[str] = []
             if isinstance(raw_efforts, list):
                 efforts = [
                     effort for effort in raw_efforts
@@ -1040,9 +1039,9 @@ def _register_mcp_servers(cfg: dict[str, Any]) -> None:
         from tools.mcp_tool import register_mcp_servers
 
         register_mcp_servers(servers)
-    except Exception as exc:
+    except Exception:
         print(
-            f"[hermes-worker] mcp_servers registration failed (will retry on next agent create): {exc}",
+            "[hermes-worker] mcp server registration failed; retry scheduled",
             file=sys.stderr,
             flush=True,
         )
@@ -1808,9 +1807,8 @@ def _run_loop() -> None:
             if not isinstance(request, dict):
                 continue
             _handle_request(request)
-        except Exception as exc:
-            print(f"[hermes-worker] failed to handle request: {exc}", file=sys.stderr, flush=True)
-            traceback.print_exc(file=sys.stderr)
+        except Exception:
+            print("[hermes-worker] request handling failed", file=sys.stderr, flush=True)
 
 
 def _self_test() -> int:

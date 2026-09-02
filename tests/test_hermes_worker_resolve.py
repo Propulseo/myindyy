@@ -7,6 +7,7 @@ to the built-in openrouter provider, which holds no credentials on managed
 instances (HTTP 401 "User not found").
 """
 
+import io
 import json
 import inspect
 import sys
@@ -145,7 +146,7 @@ def _sensitive_keys(value, path=""):
 
 
 class RuntimeStatusTest(unittest.TestCase):
-    def test_projects_parser_supported_reasoning_efforts_when_catalog_omits_metadata(self):
+    def test_projects_parser_does_not_invent_efforts_when_catalog_omits_metadata(self):
         groups = {
             "Codex OAuth": [{
                 "id": "gpt-account-model",
@@ -158,8 +159,44 @@ class RuntimeStatusTest(unittest.TestCase):
         self.assertEqual(hermes_worker._runtime_catalog_models(groups), [{
             "id": "gpt-account-model",
             "label": "Account model",
-            "reasoningEfforts": ["none", "minimal", "low", "medium", "high", "xhigh"],
+            "reasoningEfforts": [],
         }])
+
+    def test_run_loop_never_prints_an_untrusted_exception_or_traceback(self):
+        stderr = io.StringIO()
+        with patch.object(sys, "stdin", io.StringIO('{"id":"request"}\n')), \
+             patch.object(sys, "stderr", stderr), \
+             patch.object(
+                 hermes_worker,
+                 "_handle_request",
+                 side_effect=RuntimeError("provider rejected opaque-oauth-value-123456789"),
+             ):
+            hermes_worker._run_loop()
+
+        self.assertEqual(stderr.getvalue(), "[hermes-worker] request handling failed\n")
+
+    def test_mcp_registration_never_prints_an_untrusted_exception(self):
+        stderr = io.StringIO()
+        tools_module = types.ModuleType("tools")
+        mcp_module = types.ModuleType("tools.mcp_tool")
+        mcp_module.register_mcp_servers = lambda _servers: (_ for _ in ()).throw(
+            RuntimeError("provider rejected opaque-mcp-secret-987654321")
+        )
+        registered = hermes_worker._mcp_servers_registered
+        hermes_worker._mcp_servers_registered = False
+        try:
+            with patch.object(sys, "stderr", stderr), patch.dict(
+                sys.modules,
+                {"tools": tools_module, "tools.mcp_tool": mcp_module},
+            ):
+                hermes_worker._register_mcp_servers({"mcp_servers": {"test": {}}})
+        finally:
+            hermes_worker._mcp_servers_registered = registered
+
+        self.assertEqual(
+            stderr.getvalue(),
+            "[hermes-worker] mcp server registration failed; retry scheduled\n",
+        )
 
     def test_classifies_all_public_oauth_states_from_structured_error_metadata(self):
         cases = [
