@@ -1,0 +1,79 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out tracked sources
+        uses: actions/checkout@v4
+
+      - name: Install pinned pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.2
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+          cache: pnpm
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Frozen dependency install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: TypeScript tests
+        run: pnpm test
+
+      - name: Python tests
+        run: pnpm test:python
+
+      - name: Build client and server
+        run: pnpm build
+
+      - name: Reject model API key assignments
+        run: pnpm secret:scan
+
+      - name: Install Chromium
+        run: pnpm test:e2e:install
+
+      - name: Production-auth E2E
+        run: pnpm test:e2e
+
+      - name: Validate Compose example
+        env:
+          INDY_HERMES_HOME: /srv/indy/hermes-home
+          INDY_HERMES_RUNTIME_DIR: /opt/indy/hermes-runtime
+          INDY_IMAGE: ghcr.io/example/indy@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          INDY_PROJECT_WORKSPACE: /srv/indy/workspaces/project
+          INDY_PROXY_SECRET_HOST_FILE: /etc/indy/proxy-secret
+          INDY_PUBLIC_ORIGIN: https://indy.example.test
+          INDY_STATE_DIR: /srv/indy/state
+          INDY_TRUSTED_PROXY_CIDRS: 172.20.0.0/24
+          INDY_WORKSPACE_ROOT: /srv/indy/workspace
+        run: docker compose -f docker-compose.example.yml config --quiet
+
+      - name: Build production image
+        run: docker build --tag indy-ci:${{ github.sha }} .
+
+      - name: Verify image safety contract
+        run: |
+          test "$(docker image inspect indy-ci:${{ github.sha }} --format '{{.Config.User}}')" = "indy:indy"
+          docker image inspect indy-ci:${{ github.sha }} --format '{{json .Config.Healthcheck.Test}}' | grep -F 'dist/server/server/healthcheck.js'
+          docker image inspect indy-ci:${{ github.sha }} --format '{{json .Config.Env}}' | grep -Ev 'OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY'

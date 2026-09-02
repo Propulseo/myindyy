@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 ARG NODE_IMAGE=node:22.14.0-bookworm-slim
-ARG PNPM_VERSION=11.12.0
+ARG PNPM_VERSION=11.1.2
 
 FROM ${NODE_IMAGE} AS toolchain
 ARG PNPM_VERSION

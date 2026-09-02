@@ -4,6 +4,7 @@
   "description": "Mission Control for Hermes Agent — a Kanban board for autonomous agent tasks",
   "license": "MIT",
   "type": "module",
+  "packageManager": "pnpm@11.1.2",
   "bin": {
     "minions": "bin/minions.mjs"
   },
@@ -33,7 +34,11 @@
     "start": "cross-env NODE_ENV=production node dist/server/server/index.js",
     "prod": "pnpm build && pnpm start",
     "prepublishOnly": "pnpm build",
+    "secret:scan": "node dist/server/server/security/model-key-scan.js",
     "test": "vitest run",
+    "test:e2e": "pnpm build && playwright test",
+    "test:e2e:install": "playwright install --with-deps chromium",
+    "test:python": "python -m unittest discover -s tests -p \"test_*.py\"",
     "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -65,6 +70,7 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.6",

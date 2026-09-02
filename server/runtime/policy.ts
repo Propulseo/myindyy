@@ -2,12 +2,14 @@ import type { AgentRunSettings } from '../adapters/types.js';
 
 export const FIRST_MILESTONE_PROVIDER = 'openai-codex' as const;
 
-const MODEL_KEY_NAMES = new Set([
+export const FORBIDDEN_MODEL_KEY_NAMES = Object.freeze([
   'OPENAI_API_KEY',
   'ANTHROPIC_API_KEY',
   'OPENROUTER_API_KEY',
   'CODEX_API_KEY',
-]);
+] as const);
+
+const MODEL_KEY_NAMES = new Set<string>(FORBIDDEN_MODEL_KEY_NAMES);
 
 export interface ResolvedRuntimePolicy {
   provider: typeof FIRST_MILESTONE_PROVIDER;

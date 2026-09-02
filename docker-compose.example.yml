@@ -41,7 +41,10 @@ services:
         gid: "10001"
         mode: 0400
     volumes:
-      - indy_state:/var/lib/indy
+      - type: bind
+        source: ${INDY_STATE_DIR:?Set the host Indy state directory}
+        target: /var/lib/indy
+        read_only: false
       - type: bind
         source: ${INDY_HERMES_HOME:?Set the host Hermes OAuth/state directory}
         target: /var/lib/hermes
@@ -73,9 +76,6 @@ services:
         max-file: "5"
     networks:
       - indy_private
-volumes:
-  indy_state:
-
 secrets:
   indy_proxy:
     file: ${INDY_PROXY_SECRET_HOST_FILE:?Set the host path to the proxy transport secret}
@@ -83,3 +83,6 @@ secrets:
 networks:
   indy_private:
     driver: bridge
+    ipam:
+      config:
+        - subnet: ${INDY_PRIVATE_SUBNET:-172.30.44.0/28}

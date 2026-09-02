@@ -1,6 +1,6 @@
 import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync, mkdirSync, realpathSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -98,7 +98,13 @@ function resolvePython(): string {
   return 'python3';
 }
 
-function resolveWorkerScript(): string {
+export function resolveWorkerScript(environment: NodeJS.ProcessEnv = process.env): string {
+  const explicit = environment.HERMES_WORKER_SCRIPT?.trim();
+  if (explicit) {
+    if (!isAbsolute(explicit)) throw new Error('HERMES_WORKER_SCRIPT must be absolute');
+    if (!existsSync(explicit)) throw new Error('HERMES_WORKER_SCRIPT does not exist');
+    return explicit;
+  }
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     resolve(here, '../workers/hermes_worker.py'),
