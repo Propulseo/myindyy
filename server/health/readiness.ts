@@ -4,6 +4,7 @@ import type { RuntimeStatus } from '../runtime/hermes-runtime.js';
 
 const CATALOG_MAX_AGE_MS = 2 * 60_000;
 const CATALOG_MAX_FUTURE_SKEW_MS = 30_000;
+const RUNTIME_STATUS_TIMEOUT_MS = 2_000;
 
 const REQUIRED_COLUMNS = Object.freeze({
   tasks: ['id', 'mission_kind', 'updated_at'],
@@ -20,7 +21,7 @@ const REQUIRED_COLUMNS = Object.freeze({
 
 export interface ReadinessRuntime {
   healthCheck(): Promise<boolean>;
-  getRuntimeStatus(): Promise<RuntimeStatus>;
+  getRuntimeStatus(timeoutMs?: number): Promise<RuntimeStatus>;
 }
 
 export interface HealthRouterDependencies {
@@ -29,6 +30,7 @@ export interface HealthRouterDependencies {
   readonly controlLoopsReady: () => boolean;
   readonly now?: () => number;
   readonly onFailure?: (reason: ReadinessFailure) => void;
+  readonly runtimeStatusTimeoutMs?: number;
 }
 
 export type ReadinessFailure =
@@ -109,6 +111,27 @@ function catalogIsReady(status: RuntimeStatus, now: number): 'ready' | 'stale' |
   return 'ready';
 }
 
+async function runtimeStatusWithin(
+  runtime: ReadinessRuntime,
+  requestedTimeoutMs: number | undefined,
+): Promise<RuntimeStatus> {
+  const timeoutMs = Number.isFinite(requestedTimeoutMs) && (requestedTimeoutMs ?? 0) > 0
+    ? Math.floor(requestedTimeoutMs as number)
+    : RUNTIME_STATUS_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      runtime.getRuntimeStatus(timeoutMs),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('Runtime status timed out')), timeoutMs);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function readinessFailure(
   dependencies: HealthRouterDependencies,
 ): Promise<ReadinessFailure | null> {
@@ -122,7 +145,7 @@ export async function readinessFailure(
   if (!await dependencies.runtime.healthCheck()) return 'worker';
   try {
     const catalog = catalogIsReady(
-      await dependencies.runtime.getRuntimeStatus(),
+      await runtimeStatusWithin(dependencies.runtime, dependencies.runtimeStatusTimeoutMs),
       (dependencies.now ?? Date.now)(),
     );
     if (catalog === 'stale') return 'catalog-stale';

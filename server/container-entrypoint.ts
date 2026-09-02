@@ -2,6 +2,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateHermesRuntimeManifest } from './hermes-runtime-manifest.js';
 
 const HASH_ASSIGNMENT = /_SUPPORTED_SCHEDULER_SHA256\s*=\s*["']([a-f0-9]{64})["']/;
 
@@ -64,9 +65,11 @@ function inspectImportedScheduler(python: string): { actualHash: string; sourceP
 export function validateMountedHermesRuntime(environment: NodeJS.ProcessEnv = process.env): void {
   const python = environment.HERMES_PYTHON?.trim() ?? '';
   const runtimeRoot = environment.HERMES_AGENT_DIR?.trim() ?? '';
-  if (!isAbsolute(python) || !isAbsolute(runtimeRoot)) {
-    throw new Error('HERMES_PYTHON and HERMES_AGENT_DIR must be absolute mounted paths');
+  const manifestFile = environment.HERMES_RUNTIME_MANIFEST_FILE?.trim() ?? '';
+  if (!isAbsolute(python) || !isAbsolute(runtimeRoot) || !isAbsolute(manifestFile)) {
+    throw new Error('HERMES_PYTHON, HERMES_AGENT_DIR, and HERMES_RUNTIME_MANIFEST_FILE must be absolute mounted paths');
   }
+  validateHermesRuntimeManifest(runtimeRoot, manifestFile);
   assertSchedulerArtifact({
     ...inspectImportedScheduler(python),
     runtimeRoot,

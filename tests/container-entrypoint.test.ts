@@ -5,7 +5,9 @@ import { describe, expect, it } from 'vitest';
 import {
   assertSchedulerArtifact,
   extractSupportedSchedulerHash,
+  validateMountedHermesRuntime,
 } from '../server/container-entrypoint.js';
+import { createHermesRuntimeManifest } from '../server/hermes-runtime-manifest.js';
 
 const SUPPORTED_HASH = '5b4326fffe1b783fd2016a0c5c0bde21c3c8af613cc665897b9f48565d74e3c5';
 
@@ -45,5 +47,22 @@ describe('container Hermes artifact gate', () => {
       runtimeRoot,
       supportedHash: SUPPORTED_HASH,
     })).toThrow('mounted runtime');
+  });
+
+  it('checks the externally anchored full runtime manifest before executing mounted Python', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'indy-hermes-entrypoint-'));
+    const runtimeRoot = join(parent, 'runtime');
+    const runner = join(runtimeRoot, 'run_agent.py');
+    mkdirSync(runtimeRoot, { recursive: true });
+    writeFileSync(runner, '# reviewed runner\n');
+    const manifestFile = join(parent, 'reviewed-manifest.json');
+    writeFileSync(manifestFile, JSON.stringify(createHermesRuntimeManifest(runtimeRoot)));
+    writeFileSync(runner, '# drifted runner\n');
+
+    expect(() => validateMountedHermesRuntime({
+      HERMES_AGENT_DIR: runtimeRoot,
+      HERMES_PYTHON: process.execPath,
+      HERMES_RUNTIME_MANIFEST_FILE: manifestFile,
+    })).toThrow('hash mismatch: run_agent.py');
   });
 });

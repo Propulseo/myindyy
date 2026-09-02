@@ -24,12 +24,13 @@ services:
       HERMES_HOME: /var/lib/hermes
       HERMES_AGENT_DIR: /opt/hermes
       HERMES_PYTHON: /opt/hermes/venv/bin/python
+      HERMES_RUNTIME_MANIFEST_FILE: /run/indy-config/hermes-runtime-manifest.json
       HERMES_AGENT_RUN_LIMIT: "${HERMES_AGENT_RUN_LIMIT:-4}"
       HEARTBEAT_CONCURRENCY: "${HEARTBEAT_CONCURRENCY:-2}"
       MINIONS_MODEL_LIST_CACHE_TTL_SECONDS: "${MINIONS_MODEL_LIST_CACHE_TTL_SECONDS:-60}"
       INDY_PUBLIC_ORIGIN: "${INDY_PUBLIC_ORIGIN:?Set the canonical public HTTPS origin}"
       INDY_PROXY_SECRET_FILE: /run/secrets/indy-proxy
-      INDY_TRUSTED_PROXY_CIDRS: "${INDY_TRUSTED_PROXY_CIDRS:?Set the exact private proxy source CIDR}"
+      INDY_TRUSTED_PROXY_CIDRS: "127.0.0.1/32,::1/128,${INDY_PRIVATE_PROXY_CIDRS:?Set the exact private proxy source CIDR}"
       INDY_SCHEDULED_WORKDIRS: /var/lib/indy/workspace:/workspaces/project
     ports:
       - "127.0.0.1:${INDY_LOOPBACK_PORT:-6969}:6969"
@@ -39,6 +40,12 @@ services:
         uid: "10001"
         gid: "10001"
         mode: 0400
+    configs:
+      - source: hermes_runtime_manifest
+        target: /run/indy-config/hermes-runtime-manifest.json
+        uid: "10001"
+        gid: "10001"
+        mode: 0444
     volumes:
       - type: bind
         source: ${INDY_STATE_DIR:?Set the host Indy state directory}
@@ -78,6 +85,10 @@ services:
 secrets:
   indy_proxy:
     file: ${INDY_PROXY_SECRET_HOST_FILE:?Set the host path to the proxy transport secret}
+
+configs:
+  hermes_runtime_manifest:
+    file: ${INDY_HERMES_RUNTIME_MANIFEST_FILE:?Set the reviewed Hermes runtime manifest path}
 
 networks:
   indy_private:

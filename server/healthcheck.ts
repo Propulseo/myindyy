@@ -17,13 +17,13 @@ function mountedSecret(path: string): string {
   return value;
 }
 
-export function probeReady(options: HealthcheckOptions): Promise<void> {
+function probeHealth(options: HealthcheckOptions, path: '/api/health/live' | '/api/health/ready'): Promise<void> {
   const secret = mountedSecret(options.secretFile);
   return new Promise((resolve, reject) => {
     const probe = request({
       host: '127.0.0.1',
       port: options.port,
-      path: '/api/health/ready',
+      path,
       method: 'GET',
       headers: {
         Host: options.host,
@@ -35,23 +35,35 @@ export function probeReady(options: HealthcheckOptions): Promise<void> {
       response.resume();
       response.once('end', () => {
         if (response.statusCode === 200) resolve();
-        else reject(new Error(`Readiness returned HTTP ${response.statusCode ?? 0}`));
+        else reject(new Error(`Health probe returned HTTP ${response.statusCode ?? 0}`));
       });
     });
-    probe.once('timeout', () => probe.destroy(new Error('Readiness probe timed out')));
+    probe.once('timeout', () => probe.destroy(new Error('Health probe timed out')));
     probe.once('error', reject);
     probe.end();
   });
 }
 
-async function main(): Promise<void> {
-  const origin = new URL(process.env.INDY_PUBLIC_ORIGIN ?? '');
-  const port = Number.parseInt(process.env.PORT ?? '6969', 10);
-  const secretFile = process.env.INDY_PROXY_SECRET_FILE ?? '';
+export function probeLive(options: HealthcheckOptions): Promise<void> {
+  return probeHealth(options, '/api/health/live');
+}
+
+export function probeReady(options: HealthcheckOptions): Promise<void> {
+  return probeHealth(options, '/api/health/ready');
+}
+
+export function healthcheckOptionsFromEnvironment(environment: NodeJS.ProcessEnv = process.env): HealthcheckOptions {
+  const origin = new URL(environment.INDY_PUBLIC_ORIGIN ?? '');
+  const port = Number.parseInt(environment.PORT ?? '6969', 10);
+  const secretFile = environment.INDY_PROXY_SECRET_FILE ?? '';
   if (origin.protocol !== 'https:' || !origin.host || !Number.isInteger(port) || port < 1 || !secretFile) {
     throw new Error('Healthcheck configuration is incomplete');
   }
-  await probeReady({ host: origin.host, port, secretFile });
+  return { host: origin.host, port, secretFile };
+}
+
+async function main(): Promise<void> {
+  await probeLive(healthcheckOptionsFromEnvironment());
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

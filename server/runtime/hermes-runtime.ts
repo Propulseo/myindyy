@@ -71,8 +71,8 @@ export class HermesOAuthRuntime extends HermesWorkerAdapter {
   private readonly activeSessions = new Map<string, number>();
   private readonly completedSessions = new Set<string>();
 
-  async getRuntimeStatus(): Promise<RuntimeStatus> {
-    const diagnostic = await super.getRuntimeDiagnostic();
+  async getRuntimeStatus(timeoutMs?: number): Promise<RuntimeStatus> {
+    const diagnostic = await super.getRuntimeDiagnostic(timeoutMs);
     const providerMatches = diagnostic.provider === 'openai-codex';
     const authState = providerMatches ? diagnostic.authState : 'error';
     return {

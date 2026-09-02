@@ -8,7 +8,7 @@ The supported scheduler bytes are immutable for this release:
 cron/scheduler.py SHA-256 = 5b4326fffe1b783fd2016a0c5c0bde21c3c8af613cc665897b9f48565d74e3c5
 ```
 
-The repository cannot reconstruct those exact reviewed Hermes bytes from a stable package coordinate. Do not install `latest`, infer compatibility from a version label, or let the container download Hermes. Prepare and review the runtime separately, then mount it read-only. The container entrypoint hashes the Python module actually imported and refuses to start if its bytes differ or its real path escapes the mount. Record the reviewed upstream revision, retrieval URL, review date, and digest in a root-owned `/opt/indy/hermes-runtime/REVIEWED-MANIFEST`; backup and upgrade procedures preserve it as the provenance record.
+The repository cannot reconstruct those exact reviewed Hermes bytes from a stable package coordinate. Do not install `latest`, infer compatibility from a version label, or let the container download Hermes. Prepare the runtime separately and mount it read-only. A complete reviewed manifest inventories every regular file by SHA-256 and every symlink by its exact target. The manifest is anchored outside the runtime mount at `/etc/indy/hermes-runtime-manifest.json`; startup rejects missing, changed, or additional entries before it executes mounted Python, then independently verifies the module actually imported as `cron.scheduler`. Record the upstream revision, retrieval URL, review date, and scheduler digest in `/opt/indy/hermes-runtime/REVIEWED-MANIFEST`; that provenance file is itself covered by the external manifest.
 
 ## Host and directory provisioning
 
@@ -25,13 +25,38 @@ sudo install -d -o root -g root -m 0700 /srv/indy/backups
 
 If UID `10001` already belongs to another account, stop: either choose another dedicated UID and build with matching `APP_UID`/`APP_GID`, or migrate ownership explicitly. Never run the service as root and never make the state/OAuth directories world-readable.
 
-Place the reviewed Hermes source plus its venv under `/opt/indy/hermes-runtime`. Its Python must import `cron.scheduler` from inside that directory. Lock it after preparation:
+Place the reviewed Hermes source plus its venv under `/opt/indy/hermes-runtime`. Its Python must import `cron.scheduler` from inside that directory. Before locking the tree, create the provenance record. Then generate the complete inventory with the exact candidate image, inspect its diff against the previously approved inventory, and install it outside the runtime mount:
+
+```bash
+sudo install -o root -g indy -m 0440 REVIEWED-MANIFEST /opt/indy/hermes-runtime/REVIEWED-MANIFEST
+candidate_image='ghcr.io/propulseo/indy@sha256:REPLACE_WITH_VERIFIED_DIGEST'
+review_dir="$(mktemp -d)"
+docker run --rm --entrypoint node \
+  --mount type=bind,src=/opt/indy/hermes-runtime,dst=/opt/hermes,readonly \
+  "$candidate_image" \
+  dist/server/server/hermes-runtime-manifest.js /opt/hermes \
+  > "$review_dir/hermes-runtime-manifest.json"
+jq -e '.schemaVersion == 1 and (.entries | length > 0)' \
+  "$review_dir/hermes-runtime-manifest.json"
+if sudo test -f /etc/indy/hermes-runtime-manifest.json; then
+  sudo diff -u /etc/indy/hermes-runtime-manifest.json \
+    "$review_dir/hermes-runtime-manifest.json"
+fi
+sudo install -o root -g indy -m 0440 \
+  "$review_dir/hermes-runtime-manifest.json" \
+  /etc/indy/hermes-runtime-manifest.json
+rm -rf -- "$review_dir"
+```
+
+The `diff` is a review input, not an ignorable check: explain every added, removed, changed, or retargeted entry before installing the candidate. Generate while the runtime is quiescent. Re-running the generator over identical bytes and symlink targets yields the same ordered JSON; do not let the service regenerate or approve its own manifest. Lock the runtime after approval:
 
 ```bash
 sudo chown -R root:indy /opt/indy/hermes-runtime
 sudo find /opt/indy/hermes-runtime -type d -exec chmod 0550 {} +
 sudo find /opt/indy/hermes-runtime -type f -exec chmod 0440 {} +
 sudo find /opt/indy/hermes-runtime/venv/bin -type f -exec chmod 0550 {} +
+sudo chown root:indy /etc/indy/hermes-runtime-manifest.json
+sudo chmod 0440 /etc/indy/hermes-runtime-manifest.json
 ```
 
 VPS validation — prove the imported artifact, interpreter, and containment before deployment:
@@ -102,20 +127,21 @@ INDY_PUBLIC_ORIGIN=https://indy.example.com
 INDY_STATE_DIR=/srv/indy/state
 INDY_HERMES_HOME=/srv/indy/hermes-home
 INDY_HERMES_RUNTIME_DIR=/opt/indy/hermes-runtime
+INDY_HERMES_RUNTIME_MANIFEST_FILE=/etc/indy/hermes-runtime-manifest.json
 INDY_WORKSPACE_ROOT=/srv/indy/workspace
 INDY_PROJECT_WORKSPACE=/srv/indy/workspaces/project
 INDY_PROXY_SECRET_HOST_FILE=/etc/indy/proxy-secret
 INDY_LOOPBACK_PORT=6969
 INDY_PRIVATE_SUBNET=172.30.44.0/28
-INDY_TRUSTED_PROXY_CIDRS=172.30.44.1/32
+INDY_PRIVATE_PROXY_CIDRS=172.30.44.1/32
 HERMES_AGENT_RUN_LIMIT=4
 HEARTBEAT_CONCURRENCY=2
 MINIONS_MODEL_LIST_CACHE_TTL_SECONDS=60
 ```
 
-The allowlisted application environment is: `NODE_ENV`, `PORT`, `MINIONS_HOME`, `DB_PATH`, `HERMES_HOME`, `HERMES_AGENT_DIR`, `HERMES_PYTHON`, `HERMES_AGENT_RUN_LIMIT`, `HEARTBEAT_CONCURRENCY`, `MINIONS_MODEL_LIST_CACHE_TTL_SECONDS`, `INDY_PUBLIC_ORIGIN`, `INDY_PROXY_SECRET_FILE`, `INDY_TRUSTED_PROXY_CIDRS`, and `INDY_SCHEDULED_WORKDIRS`. Deployment substitutions beginning `INDY_` above are consumed by Compose. Do not set `HERMES_WORKER_SCRIPT` in production. Model API keys are forbidden; CI derives their exact names from `server/runtime/policy.ts` and rejects nonempty assignments.
+The allowlisted application environment is: `NODE_ENV`, `PORT`, `MINIONS_HOME`, `DB_PATH`, `HERMES_HOME`, `HERMES_AGENT_DIR`, `HERMES_PYTHON`, `HERMES_RUNTIME_MANIFEST_FILE`, `HERMES_AGENT_RUN_LIMIT`, `HEARTBEAT_CONCURRENCY`, `MINIONS_MODEL_LIST_CACHE_TTL_SECONDS`, `INDY_PUBLIC_ORIGIN`, `INDY_PROXY_SECRET_FILE`, `INDY_TRUSTED_PROXY_CIDRS`, and `INDY_SCHEDULED_WORKDIRS`. Deployment substitutions beginning `INDY_` above are consumed by Compose. Do not set `HERMES_WORKER_SCRIPT` in production. Model API keys are forbidden; CI derives their exact names from `server/runtime/policy.ts` and rejects nonempty assignments in tracked application, deployment, and E2E files.
 
-The default bridge gateway is `172.30.44.1`, which is the expected socket peer when host Nginx connects to the loopback-published container port. Before starting, verify the subnet does not collide with a host/VPN route. After network creation, validate the gateway and keep `INDY_TRUSTED_PROXY_CIDRS` narrower than the full bridge whenever possible:
+The default bridge gateway is `172.30.44.1`, which is the expected socket peer when host Nginx connects to the loopback-published container port. Compose constructs the runtime trust list as exact container loopbacks (`127.0.0.1/32,::1/128`) plus `INDY_PRIVATE_PROXY_CIDRS`. The loopback entries are required only for the authenticated in-container probes; a host or proxy connection reaches Indy from its bridge peer, never from container loopback. Keep `INDY_PRIVATE_PROXY_CIDRS` to the exact real proxy peer, not the full bridge, so enabling internal health does not widen external proxy trust. Before starting, verify the subnet does not collide with a host/VPN route:
 
 ```bash
 docker compose -f docker-compose.example.yml config --quiet
@@ -124,7 +150,32 @@ docker network inspect indy-cockpit_indy_private --format '{{(index .IPAM.Config
 docker compose -f docker-compose.example.yml ps
 ```
 
-If a Coolify/Traefik container proxies directly over a shared private Docker network, omit the host `ports` mapping in the Coolify override, attach Indy to that network, and set the trusted CIDR/IP to the proxy's actual private socket source. Never trust a public range.
+VPS validation — inspect the created container configuration and the environment of a real process inside it. Either match is a release blocker; `grep -q` prevents an accidental value from being printed:
+
+```bash
+container_id="$(docker compose -f docker-compose.example.yml ps -q indy)"
+if docker inspect "$container_id" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then
+  echo 'forbidden model API key exists in container configuration' >&2
+  exit 1
+fi
+if docker compose -f docker-compose.example.yml exec -T indy env \
+  | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then
+  echo 'forbidden model API key exists in the running container environment' >&2
+  exit 1
+fi
+```
+
+The production base is pinned to the immutable Node image digest recorded in the Dockerfile. Runtime apt resolution uses Debian snapshot `20260801T000000Z` and exact direct versions for `ca-certificates`, `python3`, and `tini`; transitive packages resolve only from that immutable snapshot. GitHub Actions are referenced by commit SHA. These controls pin supply inputs for one target platform, but this runbook does **not** claim bit-for-bit image reproducibility across BuildKit versions, CPU architectures, or native toolchains. Build once in the controlled CI builder, record the resulting registry digest and provenance, scan it, and deploy that same digest. Verify the embedded inputs:
+
+```bash
+candidate_image='ghcr.io/propulseo/indy@sha256:REPLACE_WITH_VERIFIED_DIGEST'
+docker image inspect "$candidate_image" --format \
+  '{{index .Config.Labels "io.propulseo.indy.node-base-digest"}} {{index .Config.Labels "io.propulseo.indy.debian-snapshot"}}'
+# Expected: sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b 20260801T000000Z
+```
+
+If a Coolify/Traefik container proxies directly over a shared private Docker network, omit the host `ports` mapping in the Coolify override, attach Indy to that network, and set `INDY_PRIVATE_PROXY_CIDRS` to the proxy's actual private socket source. Never trust a public range.
 
 ## Canonical private reverse proxy
 
@@ -206,11 +257,11 @@ sudo ufw enable
 sudo ufw status verbose
 ```
 
-In Coolify, create a Docker Compose application from the repository and select `docker-compose.example.yml`. Configure the substitutions above as non-build variables, configure `/srv/indy/state`, `/srv/indy/hermes-home`, the workspace roots, and `/opt/indy/hermes-runtime` as persistent host mounts with the documented read/write modes, and use the root-owned secret file. Disable automatic public port exposure. Either keep the host-loopback Nginx path or attach only Coolify's private proxy network. Set the health path indirectly through the image healthcheck; a public unauthenticated health URL is intentionally unsupported. Deploy an immutable image digest, not a mutable tag.
+In Coolify, create a Docker Compose application from the repository and select `docker-compose.example.yml`. Configure the substitutions above as non-build variables, configure `/srv/indy/state`, `/srv/indy/hermes-home`, the workspace roots, and `/opt/indy/hermes-runtime` as persistent host mounts with the documented read/write modes, and mount the reviewed manifest plus root-owned transport secret. Disable automatic public port exposure. Either keep the host-loopback Nginx path or attach only Coolify's private proxy network. Let the image healthcheck measure liveness only; make protected readiness a separate rollout gate. A public unauthenticated health URL is intentionally unsupported. Deploy an immutable image digest, not a mutable tag.
 
 ## Health, logs, and alerts
 
-`/api/health/live` proves only that the HTTP process can respond. `/api/health/ready` returns only `ready`/`not-ready` and fails closed on schema drift, a non-writable database, incomplete control loops, worker failure, wrong/missing `etienne-openai`, or a stale/empty authenticated catalog. Both are protected by Task 9 transport authentication. The Docker healthcheck reads the mounted secret internally; the secret is absent from its argv and output.
+`/api/health/live` proves only that the HTTP process can respond. `/api/health/ready` returns only `ready`/`not-ready` and fails closed on schema drift, a non-writable database, incomplete control loops, worker failure, wrong/missing `etienne-openai`, or a stale/empty authenticated catalog. The runtime-status RPC has a two-second server deadline; timed-out worker requests are removed and late responses are ignored. Both routes are protected by Task 9 transport authentication. The Docker `HEALTHCHECK` calls only liveness through `healthcheck.js`, so a transient OAuth/database/catalog problem does not restart a healthy process. Rollout and traffic switching call `readinesscheck.js` separately. Both helpers read the mounted secret internally; it is absent from argv and output.
 
 ```bash
 docker compose -f docker-compose.example.yml ps
@@ -218,6 +269,8 @@ docker inspect --format '{{json .State.Health}}' indy-cockpit-indy-1 | jq
 docker compose -f docker-compose.example.yml logs --since=15m indy
 docker compose -f docker-compose.example.yml exec -T indy \
   node dist/server/server/healthcheck.js
+docker compose -f docker-compose.example.yml exec -T indy \
+  node dist/server/server/readinesscheck.js
 ```
 
 Alert on three consecutive liveness failures, readiness unavailable for more than two minutes, any restart loop, scheduler hash/contract errors, `database-write`/migration warnings, worker exits, OAuth expiry, stale catalog, and outbox recovery failures. Logs rotate at 10 MiB with five files in the example. Never enable debug logging that prints auth stores, request headers, task secrets, or raw manifests.
@@ -236,6 +289,7 @@ sudo rsync -a --numeric-ids \
   --exclude='*.tmp' --exclude='*.lock' --exclude='__pycache__/' \
   /srv/indy/hermes-home/cron/ "$backup/hermes-cron/"
 sudo cp --preserve=mode,timestamps /opt/indy/hermes-runtime/REVIEWED-MANIFEST "$backup/"
+sudo cp --preserve=mode,timestamps /etc/indy/hermes-runtime-manifest.json "$backup/"
 sudo sha256sum "$backup/indy.db" > "$backup/SHA256SUMS"
 ```
 
@@ -246,7 +300,7 @@ Restore drill on a disposable host:
 1. Verify archive hashes and `PRAGMA integrity_check`.
 2. Provision the dedicated UID/directories again.
 3. Restore `indy.db` to `/srv/indy/state/data/indy.db` and cron state to `/srv/indy/hermes-home/cron`, preserving UID `10001` and mode `0700` parents.
-4. Mount the same reviewed Hermes runtime and deploy the recorded previous image digest with external traffic blocked.
+4. Mount the same reviewed Hermes runtime, restore its matching external full-tree manifest to `/etc/indy/hermes-runtime-manifest.json`, and deploy the recorded previous image digest with external traffic blocked.
 5. Perform a fresh `etienne-openai` device login.
 6. Start Indy, require Docker health plus protected readiness, inspect cron/manifests/receipts, and confirm no duplicate scheduler exists.
 7. Run one idempotent manual occurrence in a disposable schedule and verify exactly one Hermes execution/manifest projection before ending the drill.
@@ -260,6 +314,7 @@ docker compose -f docker-compose.example.yml config --quiet
 docker compose -f docker-compose.example.yml pull indy
 docker compose -f docker-compose.example.yml up -d --no-deps indy
 timeout 120 sh -c 'until docker compose -f docker-compose.example.yml exec -T indy node dist/server/server/healthcheck.js; do sleep 2; done'
+timeout 120 sh -c 'until docker compose -f docker-compose.example.yml exec -T indy node dist/server/server/readinesscheck.js; do sleep 2; done'
 docker compose -f docker-compose.example.yml ps
 ```
 
@@ -268,17 +323,17 @@ Reopen traffic only after readiness and the runtime/catalog check pass. Roll bac
 For a Hermes scheduler upgrade:
 
 1. Build a separate candidate runtime; never modify the mounted production runtime in place.
-2. Diff the imported `cron/scheduler.py`, scheduler signatures, execution-ID chain, locking, receipt, and hook points against the reviewed source.
+2. Diff the whole generated runtime manifest, then separately review imported `cron/scheduler.py`, scheduler signatures, execution-ID chain, locking, receipt, and hook points against the reviewed source.
 3. Run all Python contract/drift/crash/concurrency tests and all TypeScript/E2E tests against the candidate.
-4. Compute the imported file's SHA-256. Update the worker contract constant, image label, tests, and this runbook together only after review.
-5. Mount the candidate read-only in staging; require entrypoint validation, fresh exact catalog, and one controlled cron occurrence.
+4. Generate and approve a new externally anchored runtime manifest. Compute the imported scheduler SHA-256; update the worker contract constant, image label, tests, and this runbook together only after review.
+5. Mount the candidate read-only with its matching external manifest in staging; require full-tree and imported-scheduler entrypoint validation, fresh exact catalog, and one controlled cron occurrence.
 6. Back up, roll out by immutable image/runtime digest, observe, then retire the previous runtime only after the rollback window.
 
 Hermes cron is the only scheduler authority. Do not add systemd timers, host cron, Coolify scheduled jobs, Kubernetes CronJobs, or another ticker for Indy occurrences. Indy has only passive projection and recovery of already-claimed operator commands.
 
 ## Incident recovery
 
-- **Scheduler hash/contract mismatch:** keep traffic closed; compare the actually imported source path/hash. Restore the previous read-only runtime and previous image digest. Never bypass the gate.
+- **Runtime manifest or scheduler mismatch:** keep traffic closed; compare the full-tree inventory and actually imported scheduler path/hash. Restore the matching previous read-only runtime, external manifest, and image digest. Never bypass either gate.
 - **OAuth missing/expired/catalog stale:** keep mission launch blocked, confirm clock/DNS/TLS, repeat the `etienne-openai` device login, then require a fresh nonempty catalog and readiness.
 - **Worker crash loop:** inspect bounded logs, verify Python/runtime permissions and imports, and roll back the runtime/image together.
 - **SQLite read-only/corrupt:** stop Indy, preserve the files for forensics, run `integrity_check` on a copy, and restore the latest verified online backup. Do not delete WAL/SHM files from a running service.
@@ -293,6 +348,10 @@ docker compose -f docker-compose.example.yml config --quiet
 docker compose -f docker-compose.example.yml pull indy
 docker compose -f docker-compose.example.yml up -d
 docker compose -f docker-compose.example.yml exec -T indy node dist/server/server/healthcheck.js
+docker compose -f docker-compose.example.yml exec -T indy node dist/server/server/readinesscheck.js
+container_id="$(docker compose -f docker-compose.example.yml ps -q indy)"
+if docker inspect "$container_id" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then exit 1; fi
+if docker compose -f docker-compose.example.yml exec -T indy env | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then exit 1; fi
 curl -fsS https://indy.example.com/api/runtime | jq -e \
   '.provider == "openai-codex" and .profileId == "etienne-openai" and .authState == "connected" and (.models | length > 0)'
 sudo sqlite3 /srv/indy/state/data/indy.db 'PRAGMA integrity_check;'

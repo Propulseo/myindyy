@@ -323,8 +323,10 @@ class HermesWorkerClient {
       if (timeoutMs) {
         timeout = setTimeout(() => {
           this.pending.delete(request.id);
+          timeout = null;
           reject(new Error(`Hermes worker did not respond within ${timeoutMs}ms`));
         }, timeoutMs);
+        timeout.unref();
       }
 
       try {
@@ -551,8 +553,8 @@ export class HermesWorkerAdapter implements AgentAdapter {
     return await this.client.request<AgentModelsResponse>('models.list');
   }
 
-  async getRuntimeDiagnostic(): Promise<WorkerRuntimeStatus> {
-    return await this.client.request<WorkerRuntimeStatus>('runtime.status');
+  async getRuntimeDiagnostic(timeoutMs?: number): Promise<WorkerRuntimeStatus> {
+    return await this.client.request<WorkerRuntimeStatus>('runtime.status', timeoutMs);
   }
 
   async listScheduledTasks(includeDisabled = false, limit = 100): Promise<ScheduledTask[]> {

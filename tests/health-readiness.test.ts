@@ -7,7 +7,7 @@ import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDatabase } from '../server/db/index.js';
 import { createHealthRouter } from '../server/health/readiness.js';
-import { probeReady } from '../server/healthcheck.js';
+import { probeLive, probeReady } from '../server/healthcheck.js';
 
 const databases: Array<ReturnType<typeof createDatabase>> = [];
 
@@ -39,6 +39,7 @@ function healthApp(options: {
   readonly runtime?: ReturnType<typeof connectedRuntime>;
   readonly controlLoopsReady?: () => boolean;
   readonly now?: () => number;
+  readonly runtimeStatusTimeoutMs?: number;
 } = {}) {
   const app = express();
   app.use('/api/health', createHealthRouter({
@@ -46,6 +47,7 @@ function healthApp(options: {
     runtime: options.runtime ?? connectedRuntime(),
     controlLoopsReady: options.controlLoopsReady ?? (() => true),
     now: options.now,
+    runtimeStatusTimeoutMs: options.runtimeStatusTimeoutMs,
   }));
   return app;
 }
@@ -153,17 +155,82 @@ describe('operational health', () => {
     expect(missingResponse.body).toEqual({ status: 'not-ready' });
     expect(readOnlyResponse.body).toEqual({ status: 'not-ready' });
   });
+
+  it('bounds a frozen runtime status RPC and keeps repeated readiness probes responsive', async () => {
+    const runtime = connectedRuntime('2026-09-02T08:00:00.000Z');
+    runtime.getRuntimeStatus.mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => resolve({
+        provider: 'openai-codex',
+        profileId: 'etienne-openai',
+        authState: 'connected',
+        checkedAt: '2026-09-02T08:00:00.000Z',
+        models: [{ id: 'late-model', label: 'late-model', reasoningEfforts: ['high'] }],
+      }), 120);
+    }));
+    const app = healthApp({
+      runtime,
+      now: () => Date.parse('2026-09-02T08:00:30.000Z'),
+      runtimeStatusTimeoutMs: 20,
+    });
+
+    const startedAt = performance.now();
+    const first = await request(app).get('/api/health/ready');
+    const second = await request(app).get('/api/health/ready');
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(first.status).toBe(503);
+    expect(second.status).toBe(503);
+    expect(first.body).toEqual({ status: 'not-ready' });
+    expect(second.body).toEqual({ status: 'not-ready' });
+    expect(elapsedMs).toBeLessThan(100);
+    expect(runtime.getRuntimeStatus).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('container healthcheck client', () => {
-  it('reads the mounted secret outside argv and sends only the internal authenticated probe headers', async () => {
+  it('probes authenticated process liveness without coupling Docker restarts to readiness', async () => {
     const secret = 'healthcheck-test-secret-at-least-32-bytes';
     const directory = mkdtempSync(join(tmpdir(), 'indy-healthcheck-'));
     const secretFile = join(directory, 'proxy-secret');
     writeFileSync(secretFile, `${secret}\n`, { encoding: 'utf8', mode: 0o600 });
     let receivedHeaders: typeof import('node:http').IncomingHttpHeaders = {};
+    let receivedPath: string | undefined;
     const server = createServer((req, res) => {
       receivedHeaders = req.headers;
+      receivedPath = req.url;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"status":"ready"}');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not bind');
+
+    try {
+      await expect(probeLive({
+        port: address.port,
+        host: 'indy.example.test',
+        secretFile,
+      })).resolves.toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+
+    expect(receivedHeaders).toMatchObject({
+      host: 'indy.example.test',
+      'x-indy-user': 'etienne',
+      'x-indy-proxy-secret': secret,
+    });
+    expect(receivedPath).toBe('/api/health/live');
+    expect(receivedHeaders.origin).toBeUndefined();
+  });
+
+  it('keeps an explicit authenticated readiness probe for rollout gating', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'indy-readinesscheck-'));
+    const secretFile = join(directory, 'proxy-secret');
+    writeFileSync(secretFile, 'readiness-test-secret-at-least-32-bytes\n', { encoding: 'utf8', mode: 0o600 });
+    let receivedPath: string | undefined;
+    const server = createServer((req, res) => {
+      receivedPath = req.url;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end('{"status":"ready"}');
     });
@@ -181,11 +248,6 @@ describe('container healthcheck client', () => {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
 
-    expect(receivedHeaders).toMatchObject({
-      host: 'indy.example.test',
-      'x-indy-user': 'etienne',
-      'x-indy-proxy-secret': secret,
-    });
-    expect(receivedHeaders.origin).toBeUndefined();
+    expect(receivedPath).toBe('/api/health/ready');
   });
 });
