@@ -16,6 +16,7 @@ import type {
   RunRepositoryOptions,
   ReconciledMissionRunStatus,
 } from './types.js';
+import { serializeRedacted } from '../security/redaction.js';
 
 export type { RunRepository } from './types.js';
 
@@ -57,28 +58,8 @@ interface OperatorCommandRow {
   completed_at: number | null;
 }
 
-const REDACTED = '[REDACTED]';
-const SENSITIVE_KEY_PARTS = [
-  'token',
-  'key',
-  'secret',
-  'credential',
-  'authorization',
-  'cookie',
-] as const;
-
-function redactSensitiveText(value: string): string {
-  return value
-    .replace(/(bearer\s+)[^\s,;]+/gi, '$1[REDACTED]')
-    .replace(/((?:access[_-]?)?token|api[_-]?key|secret|credential|authorization)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]');
-}
-
 function serializeRedactedEventPayload(payload: Readonly<Record<string, unknown>>): string {
-  return JSON.stringify(payload, (key, value: unknown) => {
-    const normalizedKey = key.toLowerCase();
-    if (SENSITIVE_KEY_PARTS.some((part) => normalizedKey.includes(part))) return REDACTED;
-    return typeof value === 'string' ? redactSensitiveText(value) : value;
-  });
+  return serializeRedacted(payload);
 }
 
 function toRun(row: MissionRunRow): MissionRun {
@@ -217,6 +198,11 @@ export function createRunRepository(
     SET status = 'completed', result_json = @result_json, completed_at = @completed_at
     WHERE idempotency_key = @idempotency_key AND status = 'claimed'
   `);
+  const listPendingCommands = database.prepare(`
+    SELECT * FROM operator_commands
+    WHERE status = 'claimed' AND (? IS NULL OR command_type = ?)
+    ORDER BY created_at ASC, idempotency_key ASC
+  `);
   const nextMissionAttempt = database.prepare(`
     SELECT COALESCE(MAX(attempt), 0) + 1 AS attempt
     FROM mission_runs
@@ -239,20 +225,19 @@ export function createRunRepository(
     if (existing) return { created: false, run: toRun(existing) };
 
     const attempt = (nextMissionAttempt.get(input.missionId) as { attempt: number }).attempt;
-    const terminalAt = input.occurredAt + 1;
     const result = insertCronOccurrence.run({
       id: input.occurrenceKey,
       mission_id: input.missionId,
       session_id: input.sessionId,
-      session_confirmed_at: input.occurredAt,
+      session_confirmed_at: input.startedAt,
       attempt,
       provider: input.provider,
       model: input.model,
       reasoning_effort: input.reasoningEffort,
       status: input.status,
-      started_at: input.occurredAt,
-      last_activity_at: terminalAt,
-      finished_at: terminalAt,
+      started_at: input.startedAt,
+      last_activity_at: input.finishedAt,
+      finished_at: input.finishedAt,
       finish_reason: input.finishReason,
       occurrence_key: input.occurrenceKey,
       workdir: input.workdir,
@@ -272,14 +257,14 @@ export function createRunRepository(
       id: `${input.occurrenceKey}:started`,
       run_id: input.occurrenceKey,
       type: 'run.started',
-      occurred_at: input.occurredAt,
+      occurred_at: input.startedAt,
       payload_json: startedPayload,
     });
     insertEvent.run({
       id: `${input.occurrenceKey}:terminal`,
       run_id: input.occurrenceKey,
       type: input.status === 'completed' ? 'run.completed' : 'run.failed',
-      occurred_at: terminalAt,
+      occurred_at: input.finishedAt,
       payload_json: serializeRedactedEventPayload({
         source: 'hermes-cron-output',
         reason: input.finishReason,
@@ -423,6 +408,10 @@ export function createRunRepository(
         throw new Error(`Operator command is not claimable: ${input.idempotencyKey}`);
       }
       return toCommand(getCommand.get(input.idempotencyKey) as OperatorCommandRow);
+    },
+
+    listPendingCommands(commandType?: string): OperatorCommand[] {
+      return (listPendingCommands.all(commandType ?? null, commandType ?? null) as OperatorCommandRow[]).map(toCommand);
     },
 
     upsertCronOccurrence(input: CronOccurrenceInput): CronOccurrenceUpsertResult {

@@ -13,6 +13,7 @@ import {
   startScheduledTaskOccurrenceReconciler,
   type ScheduledTaskOccurrenceReconciler,
 } from './scheduled-tasks/projection.js';
+import { recoverPendingCronDispatches } from './routes/scheduled-tasks.js';
 
 const PORT = parseInt(process.env.PORT || '6969', 10);
 const PORT_FALLBACK_ATTEMPTS = 20;
@@ -79,6 +80,12 @@ async function main() {
   }
 
   const runRepository = createRunRepository(db);
+  await recoverPendingCronDispatches(adapter, runRepository).catch((error) => {
+    console.error(
+      'Hermes cron dispatch outbox recovery failed:',
+      error instanceof Error ? error.message : error,
+    );
+  });
   await reconcileActiveRuns(runRepository, adapter);
   runWatchdog = startRunWatchdog(runRepository, adapter);
   scheduledOccurrenceReconciler = startScheduledTaskOccurrenceReconciler(db, adapter, {

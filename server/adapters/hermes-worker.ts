@@ -594,12 +594,19 @@ export class HermesWorkerAdapter implements AgentAdapter {
     return result.scheduledTask;
   }
 
-  async runScheduledTask(scheduledTaskId: string): Promise<ScheduledTask | null> {
-    const result = await this.client.request<{ scheduledTask: ScheduledTask | null }>({
+  async runScheduledTask(scheduledTaskId: string, dispatchToken?: string): Promise<{
+    scheduledTask: ScheduledTask | null;
+    dispatchReceipt: { token: string; state: 'accepted' | 'missing' } | null;
+  }> {
+    const result = await this.client.request<{
+      scheduledTask: ScheduledTask | null;
+      dispatchReceipt?: { token: string; state: 'accepted' | 'missing' };
+    }>({
       type: 'scheduledTasks.run',
       scheduledTaskId,
+      dispatchToken,
     });
-    return result.scheduledTask;
+    return { scheduledTask: result.scheduledTask, dispatchReceipt: result.dispatchReceipt ?? null };
   }
 
   async removeScheduledTask(scheduledTaskId: string): Promise<boolean> {

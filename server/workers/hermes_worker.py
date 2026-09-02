@@ -1721,7 +1721,7 @@ def _handle_request(request: dict[str, Any]) -> None:
         elif request_type == "scheduledTasks.resume":
             _result(request_id, resume_scheduled_task(request.get("scheduledTaskId")))
         elif request_type == "scheduledTasks.run":
-            _result(request_id, trigger_scheduled_task(request.get("scheduledTaskId")))
+            _result(request_id, trigger_scheduled_task(request.get("scheduledTaskId"), request.get("dispatchToken")))
         elif request_type == "scheduledTasks.remove":
             _result(request_id, remove_scheduled_task(request.get("scheduledTaskId")))
         elif request_type == "scheduledTasks.tick":

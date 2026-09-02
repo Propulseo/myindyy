@@ -22,12 +22,13 @@ const stmtInsertTask = db.prepare(`
     @last_context_used_tokens, @last_context_window_tokens
   )
 `);
-const stmtDeleteTask = db.prepare('DELETE FROM tasks WHERE id = ?');
-const stmtTouchTask = db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ?');
+const stmtDeleteTask = db.prepare("DELETE FROM tasks WHERE id = ? AND mission_kind = 'interactive'");
+const stmtTouchTask = db.prepare("UPDATE tasks SET updated_at = ? WHERE id = ? AND mission_kind = 'interactive'");
 const stmtMarkTaskViewed = db.prepare(`
   UPDATE tasks
   SET last_viewed_at = last_agent_response_at
   WHERE id = ?
+    AND mission_kind = 'interactive'
     AND last_agent_response_at IS NOT NULL
     AND (last_viewed_at IS NULL OR last_viewed_at < last_agent_response_at)
 `);
@@ -100,7 +101,7 @@ function getUpdateStmt(fieldKeys: string[]): ReturnType<typeof db.prepare> {
   let stmt = updateStmtCache.get(key);
   if (!stmt) {
     const sets = fieldKeys.map(f => `${f} = @${f}`).join(', ');
-    stmt = db.prepare(`UPDATE tasks SET ${sets}, updated_at = @updated_at WHERE id = @id`);
+    stmt = db.prepare(`UPDATE tasks SET ${sets}, updated_at = @updated_at WHERE id = @id AND mission_kind = 'interactive'`);
     updateStmtCache.set(key, stmt);
   }
   return stmt;

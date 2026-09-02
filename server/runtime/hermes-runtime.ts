@@ -174,11 +174,14 @@ export class HermesOAuthRuntime extends HermesWorkerAdapter {
     return await super.resumeScheduledTask(scheduledTaskId);
   }
 
-  async runScheduledTask(scheduledTaskId: string): Promise<ScheduledTask | null> {
+  async runScheduledTask(scheduledTaskId: string, dispatchToken?: string): Promise<{
+    scheduledTask: ScheduledTask | null;
+    dispatchReceipt: { token: string; state: 'accepted' | 'missing' } | null;
+  }> {
     const scheduledTask = await super.getScheduledTask(scheduledTaskId);
-    if (!scheduledTask) return null;
+    if (!scheduledTask) return { scheduledTask: null, dispatchReceipt: null };
     assertAllowedRuntime({ provider: scheduledTask.provider, model: scheduledTask.model, reasoningEffort: scheduledTask.reasoningEffort });
-    return await super.runScheduledTask(scheduledTaskId);
+    return await super.runScheduledTask(scheduledTaskId, dispatchToken);
   }
 
   async tickScheduledTasks(): Promise<number> {

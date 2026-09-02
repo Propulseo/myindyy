@@ -361,8 +361,11 @@ export function resumeScheduledTask(scheduledTaskId: string) {
 
 export function runScheduledTask(scheduledTaskId: string, idempotencyKey: string) {
   return request<{
-    accepted: true;
+    accepted: false;
+    pending: true;
+    dispatchAccepted?: true;
     durableRun: null;
+    dispatchToken: string;
     idempotencyKey: string;
     scheduledTaskId: string;
   }>(`/scheduled-tasks/${encodeURIComponent(scheduledTaskId)}/run`, {

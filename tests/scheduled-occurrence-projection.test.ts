@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ScheduledTask, ScheduledTaskRun } from '../shared/types.js';
+import type { ScheduledTask } from '../shared/types.js';
 import { createDatabase } from '../server/db/index.js';
+import type { ScheduledTaskOccurrenceManifest } from '../server/scheduled-tasks/manifests.js';
 import {
   cronMissionId,
   reconcileScheduledTaskOccurrences,
@@ -33,22 +34,34 @@ const TASK: ScheduledTask = {
   createdAt: '2026-09-01T08:00:00.000Z',
 };
 
-const RUNS: ScheduledTaskRun[] = [
+const MANIFESTS: ScheduledTaskOccurrenceManifest[] = [
   {
-    id: '2026-09-01_08-00-00',
+    schemaVersion: 1,
+    hermesRunId: '2026-09-01_08-00-00',
     scheduledTaskId: TASK.id,
-    ranAt: '2026-09-01T08:00:00',
-    path: 'C:\\hermes\\cron\\output\\hermes-daily-brief\\2026-09-01_08-00-00.md',
-    status: 'ok',
-    preview: 'Brief prêt',
+    scheduledTaskName: TASK.name,
+    startedAt: '2026-09-01T08:00:00.000Z',
+    finishedAt: '2026-09-01T08:00:01.000Z',
+    status: 'completed',
+    error: null,
+    outputRef: 'C:\\hermes\\cron\\indy-manifests\\hermes-daily-brief\\2026-09-01_08-00-00.output.json',
+    provider: 'openai-codex', model: 'gpt-5.6-sol', reasoningEffort: 'high', workdir: 'C:\\work\\client',
+    dispatchToken: null,
+    manifestPath: 'C:\\hermes\\cron\\indy-manifests\\hermes-daily-brief\\2026-09-01_08-00-00.json',
   },
   {
-    id: '2026-09-02_08-00-00',
+    schemaVersion: 1,
+    hermesRunId: '2026-09-02_08-00-00',
     scheduledTaskId: TASK.id,
-    ranAt: '2026-09-02T08:00:00',
-    path: 'C:\\hermes\\cron\\output\\hermes-daily-brief\\2026-09-02_08-00-00.md',
-    status: 'error',
-    preview: 'Bearer another-secret-must-not-persist',
+    scheduledTaskName: TASK.name,
+    startedAt: '2026-09-02T08:00:00.000Z',
+    finishedAt: '2026-09-02T08:00:01.000Z',
+    status: 'failed',
+    error: 'Bearer another-secret-must-not-persist',
+    outputRef: 'C:\\hermes\\cron\\indy-manifests\\hermes-daily-brief\\2026-09-02_08-00-00.output.json',
+    provider: 'openai-codex', model: 'gpt-5.6-sol', reasoningEffort: 'high', workdir: 'C:\\work\\client',
+    dispatchToken: null,
+    manifestPath: 'C:\\hermes\\cron\\indy-manifests\\hermes-daily-brief\\2026-09-02_08-00-00.json',
   },
 ];
 
@@ -64,15 +77,15 @@ describe('Hermes cron occurrence projection', () => {
   it('imports every durable Hermes occurrence exactly once with stable mission identity and provenance', async () => {
     const database = createDatabase(':memory:');
     const adapter = source();
-    const listRuns = vi.fn().mockResolvedValue(RUNS);
+    const listManifests = vi.fn().mockResolvedValue(MANIFESTS);
 
     try {
-      const first = await reconcileScheduledTaskOccurrences(database, adapter, { listRuns });
-      const replay = await reconcileScheduledTaskOccurrences(database, adapter, { listRuns });
+      const first = await reconcileScheduledTaskOccurrences(database, adapter, { listManifests });
+      const replay = await reconcileScheduledTaskOccurrences(database, adapter, { listManifests });
 
       expect(first).toEqual({ seen: 2, imported: 2 });
       expect(replay).toEqual({ seen: 2, imported: 0 });
-      expect(adapter.listScheduledTasks).toHaveBeenCalledWith(true, 0);
+      expect(adapter.listScheduledTasks).not.toHaveBeenCalled();
       expect(database.prepare(`
         SELECT id, mission_kind, title FROM tasks WHERE id = ?
       `).get(cronMissionId(TASK.id))).toEqual({
@@ -129,11 +142,11 @@ describe('Hermes cron occurrence projection', () => {
   it('remains idempotent after a projector restart and relies on a database uniqueness guarantee', async () => {
     const database = createDatabase(':memory:');
     const adapter = source();
-    const listRuns = vi.fn().mockResolvedValue([RUNS[0]]);
+    const listManifests = vi.fn().mockResolvedValue([MANIFESTS[0]]);
 
     try {
-      await reconcileScheduledTaskOccurrences(database, adapter, { listRuns });
-      await reconcileScheduledTaskOccurrences(database, source(), { listRuns });
+      await reconcileScheduledTaskOccurrences(database, adapter, { listManifests });
+      await reconcileScheduledTaskOccurrences(database, source(), { listManifests });
 
       expect(database.prepare('SELECT COUNT(*) AS count FROM mission_runs').get()).toEqual({ count: 1 });
       const row = database.prepare('SELECT * FROM mission_runs').get() as Record<string, unknown>;
@@ -154,14 +167,14 @@ describe('Hermes cron occurrence projection', () => {
   it('projects a manual Hermes occurrence only after its durable run record appears', async () => {
     const database = createDatabase(':memory:');
     const adapter = source();
-    let durableRuns: ScheduledTaskRun[] = [];
-    const listRuns = vi.fn().mockImplementation(async () => durableRuns);
+    let durableManifests: ScheduledTaskOccurrenceManifest[] = [];
+    const listManifests = vi.fn().mockImplementation(async () => durableManifests);
 
     try {
-      const beforeEvidence = await reconcileScheduledTaskOccurrences(database, adapter, { listRuns });
-      durableRuns = [RUNS[0]];
-      const afterEvidence = await reconcileScheduledTaskOccurrences(database, adapter, { listRuns });
-      const replay = await reconcileScheduledTaskOccurrences(database, adapter, { listRuns });
+      const beforeEvidence = await reconcileScheduledTaskOccurrences(database, adapter, { listManifests });
+      durableManifests = [MANIFESTS[0]];
+      const afterEvidence = await reconcileScheduledTaskOccurrences(database, adapter, { listManifests });
+      const replay = await reconcileScheduledTaskOccurrences(database, adapter, { listManifests });
 
       expect(beforeEvidence).toEqual({ seen: 0, imported: 0 });
       expect(afterEvidence).toEqual({ seen: 1, imported: 1 });
@@ -176,18 +189,18 @@ describe('Hermes cron occurrence projection', () => {
     vi.useFakeTimers();
     const database = createDatabase(':memory:');
     const adapter = source();
-    let durableRuns = [RUNS[0]];
-    const listRuns = vi.fn().mockImplementation(async () => durableRuns);
+    let durableManifests = [MANIFESTS[0]];
+    const listManifests = vi.fn().mockImplementation(async () => durableManifests);
 
     try {
       const reconciler = startScheduledTaskOccurrenceReconciler(database, adapter, {
-        listRuns,
+        listManifests,
         intervalMs: 60_000,
       });
       await reconciler.ready;
       expect(database.prepare('SELECT COUNT(*) AS count FROM mission_runs').get()).toEqual({ count: 1 });
 
-      durableRuns = RUNS;
+      durableManifests = MANIFESTS;
       await vi.advanceTimersByTimeAsync(60_000);
       expect(database.prepare('SELECT COUNT(*) AS count FROM mission_runs').get()).toEqual({ count: 2 });
       expect(adapter.runScheduledTask).not.toHaveBeenCalled();

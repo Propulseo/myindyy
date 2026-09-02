@@ -6,7 +6,7 @@ import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import type { ScheduledTask, ScheduledTaskInput } from '../shared/types.js';
 import type { RuntimeStatus } from '../server/runtime/hermes-runtime.js';
-import { createScheduledTasksRouter } from '../server/routes/scheduled-tasks.js';
+import { createScheduledTasksRouter, recoverPendingCronDispatches } from '../server/routes/scheduled-tasks.js';
 import { createDatabase } from '../server/db/index.js';
 import { createRunRepository, type RunRepository } from '../server/runs/repository.js';
 import {
@@ -185,6 +185,7 @@ function routeFixture(overrides: {
   runRepository?: RunRepository;
 } = {}) {
   const paths = fixture();
+  const fallbackDatabase = overrides.runRepository ? null : createDatabase(':memory:');
   const task = overrides.task ?? scheduledTaskRecord(paths.valid);
   const adapter = {
     getRuntimeStatus: overrides.runtimeError
@@ -198,7 +199,10 @@ function routeFixture(overrides: {
     )),
     pauseScheduledTask: vi.fn(),
     resumeScheduledTask: vi.fn(),
-    runScheduledTask: vi.fn().mockResolvedValue(task),
+    runScheduledTask: vi.fn().mockImplementation(async (_id: string, dispatchToken: string) => ({
+      scheduledTask: task,
+      dispatchReceipt: { token: dispatchToken, state: 'accepted' as const },
+    })),
     removeScheduledTask: vi.fn(),
   };
   const app = express();
@@ -209,9 +213,9 @@ function routeFixture(overrides: {
   });
   app.use('/api/scheduled-tasks', createScheduledTasksRouter(adapter as never, {
     workdirRegistry: paths.registry,
-    runRepository: overrides.runRepository,
+    runRepository: overrides.runRepository ?? createRunRepository(fallbackDatabase!),
   } as never));
-  return { ...paths, adapter, app, task };
+  return { ...paths, adapter, app, task, fallbackDatabase };
 }
 
 const INVALID_RUNTIME_FIELDS = [
@@ -342,8 +346,11 @@ describe('scheduled task HTTP policy boundary', () => {
       expect(replay.status).toBe(202);
       expect(replay.body).toEqual(first.body);
       expect(first.body).toEqual({
-        accepted: true,
+        accepted: false,
+        pending: true,
+        dispatchAccepted: true,
         durableRun: null,
+        dispatchToken: expect.any(String),
         idempotencyKey: 'manual-cron-1',
         scheduledTaskId: 'cron-policy-1',
       });
@@ -352,6 +359,76 @@ describe('scheduled task HTTP policy boundary', () => {
     } finally {
       database.close();
     }
+  });
+
+  it('claims before lookup/policy so stored refusal replays after deletion/runtime expiry', async () => {
+    const database = createDatabase(':memory:');
+    const runRepository = createRunRepository(database, { now: () => 100 });
+    const invalid = scheduledTaskRecord({ ...fixture().valid, provider: 'openai' });
+    const { adapter, app } = routeFixture({ runRepository, task: invalid });
+    try {
+      const first = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'stored-refusal');
+      adapter.getScheduledTask.mockResolvedValueOnce(null);
+      adapter.getRuntimeStatus.mockRejectedValueOnce(new Error('expired'));
+      const replay = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'stored-refusal');
+
+      expect(first.status).toBe(400);
+      expect(replay.status).toBe(400);
+      expect(replay.body).toEqual(first.body);
+      expect(adapter.getScheduledTask).toHaveBeenCalledOnce();
+      expect(adapter.getRuntimeStatus).toHaveBeenCalledOnce();
+      expect(adapter.runScheduledTask).not.toHaveBeenCalled();
+    } finally { database.close(); }
+  });
+
+  it('returns a truthful pending replay while the command owner is unresolved', async () => {
+    const database = createDatabase(':memory:');
+    const runRepository = createRunRepository(database);
+    const { adapter, app } = routeFixture({ runRepository });
+    let release!: () => void;
+    adapter.runScheduledTask.mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => resolve({ scheduledTask: routeFixture().task, dispatchReceipt: { token: 'owner', state: 'accepted' } });
+    }));
+    try {
+      const ownerPromise = request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'concurrent-owner').then((response) => response);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const duplicate = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'concurrent-owner');
+      expect(duplicate.status).toBe(202);
+      expect(duplicate.body).toMatchObject({ accepted: false, pending: true });
+      expect(duplicate.body).not.toHaveProperty('dispatchAccepted');
+      release();
+      await ownerPromise;
+      expect(adapter.runScheduledTask).toHaveBeenCalledOnce();
+    } finally { database.close(); }
+  });
+
+  it('recovers a crash-before-receipt outbox entry on restart with the same dispatch token', async () => {
+    const database = createDatabase(':memory:');
+    const runRepository = createRunRepository(database);
+    const { adapter, app, registry } = routeFixture({ runRepository });
+    adapter.runScheduledTask.mockRejectedValueOnce(new Error('worker died after durable claim'));
+    try {
+      const pending = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'restart-recovery');
+      expect(pending.status).toBe(202);
+      expect(pending.body).toMatchObject({ accepted: false, pending: true });
+      expect(runRepository.listPendingCommands('cron.run')).toHaveLength(1);
+
+      const result = await recoverPendingCronDispatches(adapter as never, runRepository, registry);
+      const replay = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'restart-recovery');
+      expect(result).toEqual({ recovered: 1, deferred: 0 });
+      expect(replay.body).toMatchObject({
+        accepted: false, pending: true, dispatchAccepted: true,
+        dispatchToken: pending.body.dispatchToken,
+      });
+      expect(adapter.runScheduledTask).toHaveBeenNthCalledWith(1, 'cron-policy-1', pending.body.dispatchToken);
+      expect(adapter.runScheduledTask).toHaveBeenNthCalledWith(2, 'cron-policy-1', pending.body.dispatchToken);
+    } finally { database.close(); }
   });
 
   it('returns 409 when a manual idempotency key is reused with a different payload', async () => {

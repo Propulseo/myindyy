@@ -8,8 +8,10 @@ instances (HTTP 401 "User not found").
 """
 
 import sys
+import tempfile
 import types
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -373,6 +375,240 @@ class ScheduledTaskRuntimeFieldsTest(unittest.TestCase):
         self.assertEqual(captured["job_id"], "cron-1")
         self.assertEqual(captured["updates"]["reasoning_effort"], "xhigh")
         self.assertEqual(result["scheduledTask"]["reasoningEffort"], "xhigh")
+
+
+class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
+    def test_tick_installs_per_job_admission_and_refuses_invalid_due_job(self):
+        cron_module = types.ModuleType("cron")
+        jobs_module = types.ModuleType("cron.jobs")
+        scheduler_module = types.ModuleType("cron.scheduler")
+        executions_module = types.ModuleType("cron.executions")
+        executed = []
+        def original_run_job(candidate, *args, **kwargs):
+            executed.append(candidate["id"])
+            return True, "secret output", "", None
+
+        scheduler_module.run_job = original_run_job
+
+        job = {}
+
+        def tick(verbose=False):
+            scheduler_module.run_job(job, execution_id="automatic-run-1")
+            return 1
+
+        scheduler_module.tick = tick
+        executions_module.list_executions = lambda job_id=None, limit=50: [{
+            "id": "automatic-run-1", "job_id": "cron-invalid", "status": "failed",
+            "started_at": "2026-09-02T08:00:00Z", "finished_at": "2026-09-02T08:00:01Z",
+            "error": "SCHEDULED_PROVIDER_UNSUPPORTED",
+        }]
+
+        with tempfile.TemporaryDirectory() as hermes_home:
+            allowed = Path(hermes_home) / "allowed"
+            workdir = allowed / "client"
+            workdir.mkdir(parents=True)
+            job.update({
+                "id": "cron-invalid",
+                "name": "Invalid automatic occurrence",
+                "provider": None,
+                "model": None,
+                "reasoning_effort": "high",
+                "workdir": str(workdir),
+            })
+            with \
+             patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+             patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", return_value={
+                 "provider": "openai-codex",
+                 "profileId": "etienne-openai",
+                 "authState": "connected",
+                 "models": [{"id": "gpt-5.6-sol", "reasoningEfforts": ["high"]}],
+             }), \
+             patch.object(hermes_scheduled_tasks, "_scheduled_workdir_roots", return_value=[allowed]), \
+             patch.dict(sys.modules, {
+                 "cron": cron_module,
+                 "cron.jobs": jobs_module,
+                 "cron.scheduler": scheduler_module,
+                 "cron.executions": executions_module,
+             }), \
+             patch.dict("os.environ", {"HERMES_HOME": hermes_home}):
+                executed_count = hermes_scheduled_tasks.tick_scheduled_tasks()
+
+                manifests = [path for path in (Path(hermes_home) / "cron" / "indy-manifests").rglob("*.json") if not path.name.endswith(".output.json")]
+                manifest = manifests[0].read_text(encoding="utf-8")
+
+        self.assertEqual(executed_count, 1)
+        self.assertEqual(executed, [])
+        self.assertEqual(len(manifests), 1)
+        self.assertIn('"status":"failed"', manifest)
+        self.assertIn("SCHEDULED_PROVIDER_REQUIRED", manifest)
+        self.assertIn('"provider":"<missing>"', manifest)
+        self.assertIn('"model":"<missing>"', manifest)
+
+    def test_admission_is_fresh_for_every_job_in_one_global_tick(self):
+        cron_module = types.ModuleType("cron")
+        scheduler_module = types.ModuleType("cron.scheduler")
+        executed = []
+        jobs = []
+        scheduler_module.run_job = lambda candidate, *args, **kwargs: (executed.append(candidate["id"]) or (True, "ok", "", None))
+
+        def tick(verbose=False):
+            for index, candidate in enumerate(jobs):
+                scheduler_module.run_job(candidate, execution_id=f"run-{index}")
+            return 2
+
+        scheduler_module.tick = tick
+        runtimes = [
+            {"provider": "openai-codex", "profileId": "etienne-openai", "authState": "connected", "models": [{"id": "gpt-5.6-sol", "reasoningEfforts": ["high"]}]},
+            {"provider": "openai-codex", "profileId": "etienne-openai", "authState": "expired", "models": []},
+        ]
+
+        with tempfile.TemporaryDirectory() as hermes_home:
+            allowed = Path(hermes_home) / "allowed"
+            workdir = allowed / "client"
+            workdir.mkdir(parents=True)
+            jobs.extend([
+                {"id": "valid", "name": "valid", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high", "workdir": str(workdir)},
+                {"id": "expired", "name": "expired", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high", "workdir": str(workdir)},
+            ])
+            with \
+             patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+             patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", side_effect=runtimes) as runtime_status, \
+             patch.object(hermes_scheduled_tasks, "_scheduled_workdir_roots", return_value=[allowed]), \
+             patch.dict(sys.modules, {"cron": cron_module, "cron.scheduler": scheduler_module}), \
+             patch.dict("os.environ", {"HERMES_HOME": hermes_home}):
+                hermes_scheduled_tasks.tick_scheduled_tasks()
+
+        self.assertEqual(runtime_status.call_count, 2)
+        self.assertEqual(executed, ["valid"])
+
+    def test_admitted_cron_disables_fallback_only_inside_its_execution_context(self):
+        cron_module = types.ModuleType("cron")
+        scheduler_module = types.ModuleType("cron.scheduler")
+        executions_module = types.ModuleType("cron.executions")
+        observed = []
+        scheduler_module.get_fallback_chain = lambda config: [{"provider": "other", "model": "fallback"}]
+
+        def original_run_job(job, *args, **kwargs):
+            observed.append(scheduler_module.get_fallback_chain({}))
+            return True, "ok", "", None
+
+        scheduler_module.run_job = original_run_job
+        scheduler_module.tick = lambda verbose=False: (scheduler_module.run_job(job) and 1)
+        executions_module.list_executions = lambda job_id=None, limit=50: [{
+            "id": "hermes-execution-1", "job_id": "no-fallback", "status": "completed",
+            "started_at": "2026-09-02T08:00:00Z", "finished_at": "2026-09-02T08:00:01Z", "error": None,
+        }]
+        with tempfile.TemporaryDirectory() as hermes_home:
+            allowed = Path(hermes_home) / "allowed"
+            workdir = allowed / "client"
+            workdir.mkdir(parents=True)
+            job = {"id": "no-fallback", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high", "workdir": str(workdir), "execution_id": "hermes-execution-1"}
+            with patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+                 patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", return_value={"provider": "openai-codex", "profileId": "etienne-openai", "authState": "connected", "models": [{"id": "gpt-5.6-sol", "reasoningEfforts": ["high"]}]}), \
+                 patch.object(hermes_scheduled_tasks, "_scheduled_workdir_roots", return_value=[allowed]), \
+                 patch.dict(sys.modules, {"cron": cron_module, "cron.scheduler": scheduler_module, "cron.executions": executions_module}), \
+                 patch.dict("os.environ", {"HERMES_HOME": hermes_home}):
+                hermes_scheduled_tasks.tick_scheduled_tasks()
+                outside = scheduler_module.get_fallback_chain({})
+                manifest = next(path for path in (Path(hermes_home) / "cron" / "indy-manifests").rglob("*.json") if not path.name.endswith(".output.json"))
+
+        self.assertEqual(observed, [[]])
+        self.assertEqual(outside, [{"provider": "other", "model": "fallback"}])
+        self.assertEqual(manifest.stem, "hermes-execution-1")
+
+    def test_terminal_manifest_waits_for_durable_hermes_execution_evidence(self):
+        cron_module = types.ModuleType("cron")
+        scheduler_module = types.ModuleType("cron.scheduler")
+        executions_module = types.ModuleType("cron.executions")
+        record = {"id": "ledger-run", "job_id": "ledger-job", "status": "running", "started_at": "2026-09-02T08:00:00Z", "finished_at": None, "error": None}
+        executions_module.list_executions = lambda job_id=None, limit=50: [dict(record)]
+        scheduler_module.run_job = lambda job, *args, **kwargs: (
+            True,
+            'Bearer durable-secret {"access_token":"json-token","credential":"json-credential"}',
+            "",
+            None,
+        )
+        scheduler_module.tick = lambda verbose=False: 0
+
+        with tempfile.TemporaryDirectory() as hermes_home:
+            allowed = Path(hermes_home) / "allowed"
+            workdir = allowed / "client"
+            workdir.mkdir(parents=True)
+            job = {"id": "ledger-job", "name": "Ledger", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high", "workdir": str(workdir), "execution_id": "ledger-run"}
+            with patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+                 patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", return_value={"provider": "openai-codex", "profileId": "etienne-openai", "authState": "connected", "models": [{"id": "gpt-5.6-sol", "reasoningEfforts": ["high"]}]}), \
+                 patch.object(hermes_scheduled_tasks, "_scheduled_workdir_roots", return_value=[allowed]), \
+                 patch.dict(sys.modules, {"cron": cron_module, "cron.scheduler": scheduler_module, "cron.executions": executions_module}), \
+                 patch.dict("os.environ", {"HERMES_HOME": hermes_home}):
+                hermes_scheduled_tasks.install_scheduled_task_execution_hook()
+                scheduler_module.run_job(job)
+                self.assertEqual(hermes_scheduled_tasks._finalize_pending_manifests_once(), 0)
+                self.assertFalse((Path(hermes_home) / "cron" / "indy-manifests" / "ledger-job" / "ledger-run.json").exists())
+                record.update({"status": "completed", "finished_at": "2026-09-02T08:00:01Z"})
+                self.assertEqual(hermes_scheduled_tasks._finalize_pending_manifests_once(), 1)
+                terminal = (Path(hermes_home) / "cron" / "indy-manifests" / "ledger-job" / "ledger-run.json").read_text(encoding="utf-8")
+
+        self.assertIn('"startedAt":"2026-09-02T08:00:00Z"', terminal)
+        self.assertIn('"finishedAt":"2026-09-02T08:00:01Z"', terminal)
+        self.assertNotIn("durable-secret", terminal)
+        self.assertNotIn("json-token", terminal)
+        self.assertNotIn("json-credential", terminal)
+
+    def test_manual_dispatch_receipt_recovers_crash_after_atomic_job_marker_without_retrigger(self):
+        cron_module = types.ModuleType("cron")
+        jobs_module = types.ModuleType("cron.jobs")
+        stored = {"id": "cron-1", "name": "Cron", "state": "scheduled", "enabled": True}
+        writes = []
+        jobs_module._jobs_lock = nullcontext
+        jobs_module.get_job = lambda job_id: dict(stored) if job_id == "cron-1" else None
+        jobs_module.resolve_job_ref = jobs_module.get_job
+        jobs_module.is_terminal_job = lambda job: False
+
+        def update_job(job_id, updates):
+            writes.append(dict(updates))
+            stored.update(updates)
+            return dict(stored)
+
+        jobs_module.update_job = update_job
+        with tempfile.TemporaryDirectory() as hermes_home, \
+             patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+             patch.object(hermes_scheduled_tasks, "_kick_immediate_tick"), \
+             patch.object(hermes_scheduled_tasks, "_after_dispatch_job_update", side_effect=[RuntimeError("crash"), None]), \
+             patch.dict(sys.modules, {"cron": cron_module, "cron.jobs": jobs_module}), \
+             patch.dict("os.environ", {"HERMES_HOME": hermes_home}):
+            with self.assertRaisesRegex(RuntimeError, "crash"):
+                hermes_scheduled_tasks.trigger_scheduled_task("cron-1", "dispatch-token-1")
+            replay = hermes_scheduled_tasks.trigger_scheduled_task("cron-1", "dispatch-token-1")
+
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(stored["indy_dispatch_token"], "dispatch-token-1")
+        self.assertEqual(replay["dispatchReceipt"]["state"], "accepted")
+
+    def test_unrelated_concurrent_job_update_does_not_fake_a_crash_before_effect_receipt(self):
+        cron_module = types.ModuleType("cron")
+        jobs_module = types.ModuleType("cron.jobs")
+        stored = {"id": "cron-1", "name": "Cron", "state": "scheduled", "enabled": True}
+        writes = []
+        jobs_module._jobs_lock = nullcontext
+        jobs_module.get_job = lambda job_id: dict(stored) if job_id == "cron-1" else None
+        jobs_module.resolve_job_ref = jobs_module.get_job
+        jobs_module.is_terminal_job = lambda job: False
+        jobs_module.update_job = lambda job_id, updates: (writes.append(dict(updates)), stored.update(updates), dict(stored))[2]
+
+        with tempfile.TemporaryDirectory() as hermes_home, \
+             patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+             patch.object(hermes_scheduled_tasks, "_kick_immediate_tick"), \
+             patch.object(hermes_scheduled_tasks, "_before_dispatch_job_update", side_effect=[RuntimeError("crash-before"), None]), \
+             patch.dict(sys.modules, {"cron": cron_module, "cron.jobs": jobs_module}), \
+             patch.dict("os.environ", {"HERMES_HOME": hermes_home}):
+            with self.assertRaisesRegex(RuntimeError, "crash-before"):
+                hermes_scheduled_tasks.trigger_scheduled_task("cron-1", "dispatch-token-2")
+            stored["name"] = "Concurrent rename"
+            replay = hermes_scheduled_tasks.trigger_scheduled_task("cron-1", "dispatch-token-2")
+
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(stored["indy_dispatch_token"], "dispatch-token-2")
+        self.assertEqual(replay["dispatchReceipt"]["state"], "accepted")
 
 if __name__ == "__main__":
     unittest.main()

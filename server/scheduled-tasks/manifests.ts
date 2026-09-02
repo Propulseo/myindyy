@@ -1,0 +1,92 @@
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { REASONING_EFFORTS, type ReasoningEffort } from '../../shared/types.js';
+import { resolveHermesHome } from '../paths.js';
+
+export interface ScheduledTaskOccurrenceManifest {
+  readonly schemaVersion: 1;
+  readonly hermesRunId: string;
+  readonly scheduledTaskId: string;
+  readonly scheduledTaskName: string;
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly status: 'completed' | 'failed';
+  readonly error: string | null;
+  readonly outputRef: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly reasoningEffort: ReasoningEffort | null;
+  readonly workdir: string | null;
+  readonly dispatchToken: string | null;
+  readonly manifestPath: string;
+}
+
+function text(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function parseManifest(value: unknown, manifestPath: string): ScheduledTaskOccurrenceManifest | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  if (raw.schemaVersion !== 1) return null;
+  const hermesRunId = text(raw.hermesRunId);
+  const scheduledTaskId = text(raw.scheduledTaskId);
+  const scheduledTaskName = text(raw.scheduledTaskName);
+  const startedAt = text(raw.startedAt);
+  const finishedAt = text(raw.finishedAt);
+  const outputRef = text(raw.outputRef);
+  const provider = text(raw.provider);
+  const model = text(raw.model);
+  const workdir = text(raw.workdir);
+  const effort = text(raw.reasoningEffort);
+  const started = startedAt ? Date.parse(startedAt) : NaN;
+  const finished = finishedAt ? Date.parse(finishedAt) : NaN;
+  if (!hermesRunId || !scheduledTaskId || !scheduledTaskName || !startedAt || !finishedAt
+    || !outputRef || !provider || !model || !Number.isFinite(started) || !Number.isFinite(finished)
+    || finished < started || (raw.status !== 'completed' && raw.status !== 'failed')) return null;
+  if (effort !== null && !REASONING_EFFORTS.includes(effort as ReasoningEffort)) return null;
+  return {
+    schemaVersion: 1,
+    hermesRunId,
+    scheduledTaskId,
+    scheduledTaskName,
+    startedAt,
+    finishedAt,
+    status: raw.status,
+    error: text(raw.error),
+    outputRef,
+    provider,
+    model,
+    reasoningEffort: effort as ReasoningEffort | null,
+    workdir,
+    dispatchToken: text(raw.dispatchToken),
+    manifestPath,
+  };
+}
+
+export function resolveScheduledTaskManifestDir(): string {
+  return join(resolveHermesHome(), 'cron', 'indy-manifests');
+}
+
+export async function listScheduledTaskOccurrenceManifests(
+  root = resolveScheduledTaskManifestDir(),
+): Promise<ScheduledTaskOccurrenceManifest[]> {
+  let taskEntries;
+  try { taskEntries = await readdir(root, { withFileTypes: true }); } catch { return []; }
+  const paths: string[] = [];
+  for (const taskEntry of taskEntries) {
+    if (!taskEntry.isDirectory()) continue;
+    const taskDir = join(root, taskEntry.name);
+    let entries;
+    try { entries = await readdir(taskDir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.json') && !entry.name.endsWith('.output.json') && !entry.name.endsWith('.tmp')) {
+        paths.push(join(taskDir, entry.name));
+      }
+    }
+  }
+  const manifests = await Promise.all(paths.sort().map(async (path) => {
+    try { return parseManifest(JSON.parse(await readFile(path, 'utf8')), path); } catch { return null; }
+  }));
+  return manifests.filter((value): value is ScheduledTaskOccurrenceManifest => value !== null);
+}

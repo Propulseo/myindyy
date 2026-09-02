@@ -1,16 +1,17 @@
 import type { Database } from 'better-sqlite3';
-import type { ScheduledTask, ScheduledTaskRun } from '../../shared/types.js';
+import type { ScheduledTask } from '../../shared/types.js';
 import { createRunRepository } from '../runs/repository.js';
-import { listAllScheduledTaskRuns } from './runs.js';
-
-const MISSING_RUNTIME_FIELD = '<missing>';
+import {
+  listScheduledTaskOccurrenceManifests,
+  type ScheduledTaskOccurrenceManifest,
+} from './manifests.js';
 
 export interface ScheduledTaskOccurrenceSource {
   listScheduledTasks(includeDisabled?: boolean, limit?: number): Promise<ScheduledTask[]>;
 }
 
 export interface ScheduledTaskOccurrenceProjectionOptions {
-  readonly listRuns?: (scheduledTaskId: string) => Promise<ScheduledTaskRun[]>;
+  readonly listManifests?: () => Promise<ScheduledTaskOccurrenceManifest[]>;
   readonly now?: () => number;
 }
 
@@ -37,15 +38,7 @@ export function cronOccurrenceKey(scheduledTaskId: string, hermesRunId: string):
   return `cron:${scheduledTaskId}:${hermesRunId}`;
 }
 
-function occurredAt(run: ScheduledTaskRun, now: () => number): number {
-  if (run.ranAt) {
-    const parsed = new Date(run.ranAt).getTime();
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return now();
-}
-
-function ensureCronMission(database: Database, task: ScheduledTask, at: number): void {
+function ensureCronMission(database: Database, manifest: ScheduledTaskOccurrenceManifest, at: number): void {
   database.prepare(`
     INSERT INTO tasks (
       id, title, description, status, mission_kind, agent_model, agent_provider,
@@ -60,12 +53,12 @@ function ensureCronMission(database: Database, task: ScheduledTask, at: number):
       reasoning_effort = excluded.reasoning_effort,
       updated_at = excluded.updated_at
   `).run(
-    cronMissionId(task.id),
-    task.name || task.id,
+    cronMissionId(manifest.scheduledTaskId),
+    manifest.scheduledTaskName || manifest.scheduledTaskId,
     'Projection de l’identité du cron Hermes; Hermes reste la source du planning.',
-    task.model,
-    task.provider,
-    task.reasoningEffort,
+    manifest.model,
+    manifest.provider,
+    manifest.reasoningEffort,
     at,
     at,
   );
@@ -73,53 +66,46 @@ function ensureCronMission(database: Database, task: ScheduledTask, at: number):
 
 export async function reconcileScheduledTaskOccurrences(
   database: Database,
-  source: ScheduledTaskOccurrenceSource,
+  _source: ScheduledTaskOccurrenceSource,
   options: ScheduledTaskOccurrenceProjectionOptions = {},
 ): Promise<ScheduledTaskOccurrenceProjectionResult> {
-  const listRuns = options.listRuns ?? listAllScheduledTaskRuns;
-  const now = options.now ?? Date.now;
+  const listManifests = options.listManifests ?? listScheduledTaskOccurrenceManifests;
   const repository = createRunRepository(database);
-  // The worker reserves limit=0 for an internal, unbounded snapshot. The HTTP
-  // route never exposes this sentinel, so reconciliation cannot silently skip
-  // an occurrence merely because more than 100 Hermes schedules exist.
-  const tasks = await source.listScheduledTasks(true, 0);
+  const manifests = await listManifests();
   let seen = 0;
   let imported = 0;
 
-  for (const task of tasks) {
-    const runs = await listRuns(task.id);
-    seen += runs.length;
-    for (const run of runs) {
-      const at = occurredAt(run, now);
-      ensureCronMission(database, task, at);
-      const occurrenceKey = cronOccurrenceKey(task.id, run.id);
-      const status = run.status === 'ok' ? 'completed' : 'failed';
-      const finishReason = run.status === 'ok'
-        ? 'hermes-cron-completed'
-        : run.status === 'error'
-          ? 'hermes-cron-failed'
-          : 'hermes-cron-output-unclassified';
+  for (const manifest of manifests) {
+      seen += 1;
+      const startedAt = Date.parse(manifest.startedAt);
+      const finishedAt = Date.parse(manifest.finishedAt);
+      ensureCronMission(database, manifest, finishedAt);
+      const occurrenceKey = cronOccurrenceKey(manifest.scheduledTaskId, manifest.hermesRunId);
+      const status = manifest.status;
+      const finishReason = status === 'completed' ? 'hermes-cron-completed' : 'hermes-cron-failed';
       const result = repository.upsertCronOccurrence({
-        missionId: cronMissionId(task.id),
+        missionId: cronMissionId(manifest.scheduledTaskId),
         occurrenceKey,
         sessionId: occurrenceKey,
-        provider: task.provider ?? MISSING_RUNTIME_FIELD,
-        model: task.model ?? MISSING_RUNTIME_FIELD,
-        reasoningEffort: task.reasoningEffort,
-        workdir: task.workdir,
-        occurredAt: at,
+        provider: manifest.provider,
+        model: manifest.model,
+        reasoningEffort: manifest.reasoningEffort,
+        workdir: manifest.workdir,
+        startedAt,
+        finishedAt,
         status,
         finishReason,
-        error: run.status === 'error' ? (run.preview || 'Hermes cron failed') : null,
+        error: status === 'failed' ? (manifest.error || 'Hermes cron failed') : null,
         provenance: {
-          source: 'hermes-cron-output',
-          scheduledTaskId: task.id,
-          hermesRunId: run.id,
-          outputPath: run.path,
+          source: 'indy-hermes-occurrence-manifest',
+          scheduledTaskId: manifest.scheduledTaskId,
+          hermesRunId: manifest.hermesRunId,
+          outputRef: manifest.outputRef,
+          manifestPath: manifest.manifestPath,
+          dispatchToken: manifest.dispatchToken,
         },
       });
       if (result.created) imported += 1;
-    }
   }
 
   return { seen, imported };

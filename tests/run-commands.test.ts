@@ -357,6 +357,34 @@ describe('operator run commands', () => {
     expect(hermes.interruptions).toEqual([]);
   });
 
+  it('rejects every generic run command for a cron projection before any Hermes side effect', async () => {
+    database.prepare(`
+      INSERT INTO tasks (
+        id, title, description, status, mission_kind, agent_model, agent_provider,
+        reasoning_effort, created_at, updated_at
+      ) VALUES (?, ?, ?, 'done', 'cron', ?, ?, ?, 1, 1)
+    `).run('cron:scheduled-1', 'Projected cron', 'Hermes-owned', 'gpt-5.6-sol', 'openai-codex', 'high');
+    database.prepare(`
+      INSERT INTO mission_runs (
+        id, mission_id, session_id, attempt, provider, model, reasoning_effort,
+        status, last_activity_at, occurrence_key
+      ) VALUES (?, ?, ?, 1, ?, ?, ?, 'failed', 1, ?)
+    `).run('cron-run-1', 'cron:scheduled-1', 'cron-session', 'openai-codex', 'gpt-5.6-sol', 'high', 'cron:scheduled-1:occurrence-1');
+
+    for (const type of ['interrupt', 'correct', 'resume', 'retry', 'stop'] as const) {
+      const response = await request(app)
+        .post('/api/missions/cron:scheduled-1/commands')
+        .set('Idempotency-Key', `cron-generic-${type}`)
+        .send({ type, runId: 'cron-run-1', ...(type === 'correct' ? { reason: 'mutate cron' } : {}) });
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({ error: 'Mission not found' });
+    }
+
+    expect(hermes.interruptions).toEqual([]);
+    expect(launched).toEqual([]);
+    expect(database.prepare("SELECT status FROM tasks WHERE id = 'cron:scheduled-1'").get()).toEqual({ status: 'done' });
+  });
+
   it('corrects in the latest confirmed session after interrupting and links a new attempt', async () => {
     const current = startRun();
     confirm(current.runId, 'native-session-1');

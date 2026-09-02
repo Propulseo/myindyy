@@ -1,7 +1,13 @@
-import { open, readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { open, readdir, readFile, realpath } from 'node:fs/promises';
+import { isAbsolute, join, relative } from 'node:path';
 import { resolveHermesHome } from '../paths.js';
 import type { ScheduledTaskRun, ScheduledTaskRunContent } from '../../shared/types.js';
+import { redactSensitiveText } from '../security/redaction.js';
+import {
+  listScheduledTaskOccurrenceManifests,
+  resolveScheduledTaskManifestDir,
+  type ScheduledTaskOccurrenceManifest,
+} from './manifests.js';
 
 let _outputDir: string | undefined;
 function resolveOutputDir(): string {
@@ -45,7 +51,7 @@ function truncate(text: string, max: number): string {
 function buildPreview(head: string): string {
   const body = extractBody(head);
   const lines = body.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 4);
-  return truncate(lines.join('\n'), 240);
+  return redactSensitiveText(truncate(lines.join('\n'), 240));
 }
 
 async function readHead(path: string, maxBytes = 8192): Promise<string> {
@@ -80,21 +86,70 @@ async function readScheduledTaskRuns(scheduledTaskId: string, limit?: number): P
       const path = join(dir, name);
       let head = '';
       try { head = await readHead(path); } catch {}
-      return { id: stem, scheduledTaskId, ranAt: parseTimestamp(stem), path, status: detectStatus(head), preview: buildPreview(head) };
+      return {
+        id: stem,
+        scheduledTaskId,
+        ranAt: parseTimestamp(stem),
+        path,
+        status: detectStatus(head),
+        preview: buildPreview(head),
+        dispatchToken: null,
+        correlation: 'untracked' as const,
+      };
     }),
   );
 }
 
 export async function listScheduledTaskRuns(scheduledTaskId: string, limit = 50): Promise<ScheduledTaskRun[]> {
-  return await readScheduledTaskRuns(scheduledTaskId, limit);
+  const manifests = (await listScheduledTaskOccurrenceManifests())
+    .filter((manifest) => manifest.scheduledTaskId === scheduledTaskId)
+    .map((manifest): ScheduledTaskRun => ({
+      id: manifest.hermesRunId,
+      scheduledTaskId,
+      ranAt: manifest.startedAt,
+      path: manifest.manifestPath,
+      status: manifest.status === 'completed' ? 'ok' : 'error',
+      preview: redactSensitiveText(manifest.error ?? (manifest.status === 'completed' ? 'Exécution Hermes terminée.' : 'Échec Hermes.')),
+      dispatchToken: manifest.dispatchToken,
+      correlation: 'manifest',
+    }));
+  manifests.sort((left, right) => (right.ranAt ?? '').localeCompare(left.ranAt ?? ''));
+  const raw = await readScheduledTaskRuns(scheduledTaskId, limit);
+  const ids = new Set(manifests.map((run) => run.id));
+  return [...manifests, ...raw.filter((run) => !ids.has(run.id))]
+    .slice(0, Math.max(1, Math.min(limit, 50)));
 }
 
 export async function listAllScheduledTaskRuns(scheduledTaskId: string): Promise<ScheduledTaskRun[]> {
   return await readScheduledTaskRuns(scheduledTaskId);
 }
 
+async function readManifestOutput(manifest: ScheduledTaskOccurrenceManifest): Promise<string | null> {
+  try {
+    const [root, candidate] = await Promise.all([
+      realpath(resolveScheduledTaskManifestDir()),
+      realpath(manifest.outputRef),
+    ]);
+    const fromRoot = relative(root, candidate);
+    if (fromRoot.startsWith('..') || isAbsolute(fromRoot) || !candidate.endsWith('.output.json')) return null;
+    const stored = JSON.parse(await readFile(candidate, 'utf8')) as { body?: unknown };
+    return typeof stored.body === 'string' ? redactSensitiveText(stored.body) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getScheduledTaskRunContent(scheduledTaskId: string, runId: string): Promise<ScheduledTaskRunContent | null> {
   if (!isValidSegment(scheduledTaskId) || !isValidSegment(runId)) return null;
+  const manifest = (await listScheduledTaskOccurrenceManifests()).find((candidate) => (
+    candidate.scheduledTaskId === scheduledTaskId && candidate.hermesRunId === runId
+  ));
+  if (manifest) {
+    return {
+      body: await readManifestOutput(manifest) ?? redactSensitiveText(manifest.error ?? ''),
+      status: manifest.status === 'completed' ? 'ok' : 'error',
+    };
+  }
   const path = join(resolveOutputDir(), scheduledTaskId, `${runId}.md`);
   let content: string;
   try {
@@ -102,5 +157,5 @@ export async function getScheduledTaskRunContent(scheduledTaskId: string, runId:
   } catch {
     return null;
   }
-  return { body: extractBody(content), status: detectStatus(content) };
+  return { body: redactSensitiveText(extractBody(content)), status: detectStatus(content) };
 }

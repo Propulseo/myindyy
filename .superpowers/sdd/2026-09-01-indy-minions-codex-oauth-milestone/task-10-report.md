@@ -42,6 +42,32 @@
 ## Auto-revue et préoccupations
 
 - La readiness affichée n’est jamais reconstruite côté client : en son absence le bouton est désactivé. Create/update/pause/resume reprojettent aussi la tâche avant réponse afin de ne pas réintroduire un objet UI sans acknowledgement serveur.
-- L’importeur démarre avant l’écoute HTTP puis rescane toutes les 60 secondes, sans chevauchement. Il observe les crons actifs ou désactivés et tous leurs fichiers d’output; une erreur de scan est journalisée et le prochain scan peut reprendre.
+- L’importeur démarre avant l’écoute HTTP puis rescane toutes les 60 secondes, sans chevauchement. Il observe les manifests terminaux indépendamment de la liste de jobs vivants; une erreur de scan est journalisée et le prochain scan peut reprendre.
 - Les anciens crons non conformes ne sont ni migrés ni réécrits. Ils restent visibles avec leur état/historique, mais reprise et run-now sont bloqués avec un motif précis jusqu’à correction explicite.
 - Le warning Vite historique sur le chunk global d’environ 673 kB gzip demeure hors Task 10. Aucune préoccupation critique ou importante restante.
+
+## Fix review round 1/5
+
+- Admission déplacée dans un hook contrôlé de `cron.scheduler.run_job`, donc commune aux ticks périodiques, ticks immédiats et exécutions directes. Le runtime/catalogue est relu pour chaque job; profil, provider, modèle, effort et workdir sont revérifiés juste avant l’effet. Les refus produisent une occurrence Hermes échouée sans appel agent. Le fallback provider/modèle est neutralisé par `ContextVar` uniquement pendant l’exécution cron admise.
+- Le déclenchement manuel est désormais une outbox durable. Le claim précède tout lookup/policy; replay terminé et conflit de payload ne dépendent plus de l’existence actuelle du job ou du runtime. Un propriétaire non résolu renvoie `202 pending`. La reprise startup revalide la policy puis renvoie le même token.
+- Le receipt Hermes ne repose plus sur une heuristique de timestamp/fingerprint. Sous le verrou cross-process `cron.jobs._jobs_lock`, `indy_dispatch_token` est persisté dans la même mutation `jobs.json` que `manual_run_at/next_run_at`. Crash-before reprend; crash-after constate le marqueur exact et ne redéclenche pas; une mutation concurrente sans ce token ne peut simuler l’effet.
+- Chaque occurrence écrit d'abord un pending et un output redacted. Le manifeste terminal immuable et atomique n'est finalisé qu'après preuve durable `completed` ou `failed` dans le ledger `cron.executions`; les états running, inconnus ou partiels restent différés. La projection ne consulte plus la liste de jobs vivants en production, ignore raw/partial/temp/unclassified, conserve les timestamps exacts et le snapshot historique, et reste idempotente par clé `(task, HermesRunId)` après disparition du job/fichier.
+- Toutes les mutations publiques task et commandes mission filtrent `mission_kind='interactive'`, y compris viewed/move/delete et cascade. Les projections cron ne sont contrôlables que par les routes planifiées.
+- Une redaction centrale protège previews, contenu complet, erreurs HTTP et payloads d’événements. Les output refs de manifest ne sont lus que si leur `realpath` reste sous le répertoire de manifests et se termine par `.output.json`.
+- Le cockpit corrèle un run manuel uniquement par le dispatch token du manifest, marque l’historique brut comme non corrélé et bascule immédiatement la readiness en refus fail-closed après une erreur policy autoritative, puis rafraîchit le serveur.
+
+### TDD du fix
+
+- RED/GREEN Python: bypass automatique, fraîcheur par job, fallback contextuel, crash-before/crash-after, mutation concurrente et ID d’exécution Hermes stable.
+- RED/GREEN API: isolation directe de toutes les routes génériques, claim avant lookup, refus stocké, duplicate concurrent pending, payload conflict et reprise outbox.
+- RED/GREEN projection: manifests de jobs supprimés, config historique, timestamps exacts, mêmes run IDs sur deux tâches, concurrence/restart, tombstone et boucle passive.
+- RED/GREEN sécurité/UI: secrets bearer/token/password/credential absents des previews et contenus complets; corrélation stricte par token; readiness immédiatement fail-closed.
+
+### Vérifications du fix
+
+- Ciblé TypeScript: 8 fichiers, 85 tests, 0 échec.
+- Python worker: 25 tests, 0 échec.
+- `pnpm typecheck`: serveur et client, exit 0.
+- `pnpm test`: 25 fichiers, 207 tests, 0 échec.
+- `pnpm build`: serveur, client et assets, exit 0; 2 602 modules transformés. Le warning Vite historique sur le chunk principal reste inchangé.
+- `git diff --check`: exit 0.

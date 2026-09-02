@@ -5,6 +5,14 @@ export interface ScheduledTaskRunReadiness {
   readonly reason: string | null;
 }
 
+export function applyAuthoritativeReadinessRefusal(
+  task: ScheduledTask,
+  code: string,
+  reason: string,
+): ScheduledTask {
+  return { ...task, readiness: { ready: false, code, reason } };
+}
+
 export function scheduledTaskRunReadiness(task: ScheduledTask): ScheduledTaskRunReadiness {
   if (!task.readiness) {
     return {

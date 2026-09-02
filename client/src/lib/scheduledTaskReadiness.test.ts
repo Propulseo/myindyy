@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ScheduledTask } from '@shared/types';
-import { scheduledTaskRunReadiness } from './scheduledTaskReadiness';
+import { applyAuthoritativeReadinessRefusal, scheduledTaskRunReadiness } from './scheduledTaskReadiness';
 
 function task(readiness: ScheduledTask['readiness']): ScheduledTask {
   return {
@@ -53,6 +53,18 @@ describe('scheduled task run readiness', () => {
     expect(scheduledTaskRunReadiness(task({ ready: false, code, reason }))).toEqual({
       ready: false,
       reason,
+    });
+  });
+
+  it('immediately flips a task fail-closed after an authoritative run refusal', () => {
+    const refused = applyAuthoritativeReadinessRefusal(
+      task({ ready: true, code: null, reason: null }),
+      'SCHEDULED_OAUTH_EXPIRED',
+      'La connexion Codex OAuth a expiré.',
+    );
+    expect(scheduledTaskRunReadiness(refused)).toEqual({
+      ready: false,
+      reason: 'La connexion Codex OAuth a expiré.',
     });
   });
 });

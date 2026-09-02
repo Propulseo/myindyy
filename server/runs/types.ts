@@ -85,7 +85,8 @@ export interface CronOccurrenceInput {
   readonly model: string;
   readonly reasoningEffort: ReasoningEffort | null;
   readonly workdir: string | null;
-  readonly occurredAt: number;
+  readonly startedAt: number;
+  readonly finishedAt: number;
   readonly status: Extract<MissionRunStatus, 'completed' | 'failed'>;
   readonly finishReason: string;
   readonly error: string | null;
@@ -110,6 +111,7 @@ export interface RunRepository {
   findActiveRuns(missionId?: string): MissionRun[];
   claimCommand(input: ClaimCommandInput): CommandClaimResult;
   completeCommand(input: CompleteCommandInput): OperatorCommand;
+  listPendingCommands(commandType?: string): OperatorCommand[];
   upsertCronOccurrence(input: CronOccurrenceInput): CronOccurrenceUpsertResult;
 }
 

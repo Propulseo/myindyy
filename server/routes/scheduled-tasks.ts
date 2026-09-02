@@ -16,6 +16,7 @@ import {
   type ScheduledWorkdirRegistry,
 } from '../scheduled-tasks/policy.js';
 import type { RunRepository } from '../runs/repository.js';
+import { redactSensitiveText } from '../security/redaction.js';
 
 const SCHEDULED_TASKS_LIMIT = 100;
 const SCHEDULED_TASK_RUNS_LIMIT = 50;
@@ -74,6 +75,21 @@ function commandHash(value: unknown): string {
   return createHash('sha256').update(canonicalJson(value)).digest('hex');
 }
 
+function cronDispatchToken(actorId: string, idempotencyKey: string, scheduledTaskId: string): string {
+  return commandHash({ actorId, idempotencyKey, scheduledTaskId }).slice(0, 40);
+}
+
+function pendingCronAcknowledgement(actorId: string, idempotencyKey: string, scheduledTaskId: string) {
+  return {
+    accepted: false as const,
+    pending: true as const,
+    durableRun: null,
+    dispatchToken: cronDispatchToken(actorId, idempotencyKey, scheduledTaskId),
+    idempotencyKey,
+    scheduledTaskId,
+  };
+}
+
 function storedCommandResult(value: unknown): StoredCommandResult | null {
   if (!isRecord(value) || typeof value.statusCode !== 'number' || !('body' in value)) return null;
   return { statusCode: value.statusCode, body: value.body };
@@ -117,10 +133,58 @@ function sendWorkerError(res: Response, error: unknown): void {
 }
 
 function redactErrorText(value: string | null): string | null {
-  if (!value) return value;
-  return value
-    .replace(/(bearer\s+)[^\s,;]+/gi, '$1[REDACTED]')
-    .replace(/((?:access[_-]?)?token|api[_-]?key|secret|credential|authorization)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]');
+  return value ? redactSensitiveText(value) : value;
+}
+
+export async function recoverPendingCronDispatches(
+  adapter: ScheduledTasksAdapter,
+  runRepository: RunRepository,
+  workdirRegistry: ScheduledWorkdirRegistry = resolveScheduledWorkdirRegistry(),
+): Promise<{ recovered: number; deferred: number }> {
+  let recovered = 0;
+  let deferred = 0;
+  for (const command of runRepository.listPendingCommands('cron.run')) {
+    const prefix = 'cron:';
+    if (!command.missionId.startsWith(prefix)) continue;
+    const scheduledTaskId = command.missionId.slice(prefix.length);
+    const acknowledgement = pendingCronAcknowledgement(command.actorId, command.idempotencyKey, scheduledTaskId);
+    try {
+      const scheduledTask = await adapter.getScheduledTask(scheduledTaskId);
+      if (!scheduledTask) {
+        runRepository.completeCommand({
+          idempotencyKey: command.idempotencyKey,
+          result: { statusCode: 404, body: { error: 'Scheduled task not found' } },
+        });
+        recovered += 1;
+        continue;
+      }
+      const validation = validateScheduledTask(scheduledTask, await adapter.getRuntimeStatus(), workdirRegistry);
+      if (!validation.ok) {
+        runRepository.completeCommand({
+          idempotencyKey: command.idempotencyKey,
+          result: {
+            statusCode: validation.error.status,
+            body: { error: validation.error.message, code: validation.error.code, field: validation.error.field },
+          },
+        });
+        recovered += 1;
+        continue;
+      }
+      const result = await adapter.runScheduledTask(scheduledTaskId, acknowledgement.dispatchToken);
+      if (result.dispatchReceipt?.state !== 'accepted') {
+        deferred += 1;
+        continue;
+      }
+      runRepository.completeCommand({
+        idempotencyKey: command.idempotencyKey,
+        result: { statusCode: 202, body: { ...acknowledgement, dispatchAccepted: true } },
+      });
+      recovered += 1;
+    } catch {
+      deferred += 1;
+    }
+  }
+  return { recovered, deferred };
 }
 
 export function createScheduledTasksRouter(
@@ -333,25 +397,17 @@ export function createScheduledTasksRouter(
         code: 'IDEMPOTENCY_KEY_REQUIRED',
       });
     }
-    try {
-      const scheduledTask = await adapter.getScheduledTask(req.params.id);
-      if (!scheduledTask) return res.status(404).json({ error: 'Scheduled task not found' });
-      const runtime = await resolveRuntimePolicy(scheduledTask, res);
-      if (!runtime) return;
-      if (!runRepository) {
-        return res.status(503).json({
-          error: 'Le journal d’idempotence des crons est indisponible.',
-          code: 'IDEMPOTENCY_STORE_UNAVAILABLE',
-        });
-      }
-      if (!req.actor) return res.status(401).json({ error: 'Authentication required' });
+    if (!runRepository) {
+      return res.status(503).json({
+        error: 'Le journal d’idempotence des crons est indisponible.',
+        code: 'IDEMPOTENCY_STORE_UNAVAILABLE',
+      });
+    }
+    if (!req.actor) return res.status(401).json({ error: 'Authentication required' });
 
-      const acknowledgement = {
-        accepted: true,
-        durableRun: null,
-        idempotencyKey,
-        scheduledTaskId: req.params.id,
-      } as const;
+    try {
+      const pendingAcknowledgement = pendingCronAcknowledgement(req.actor.id, idempotencyKey, req.params.id);
+      const dispatchToken = pendingAcknowledgement.dispatchToken;
       const claim = runRepository.claimCommand({
         idempotencyKey,
         actorId: req.actor.id,
@@ -373,29 +429,50 @@ export function createScheduledTasksRouter(
         const stored = storedCommandResult(claim.command.result);
         return stored
           ? res.status(stored.statusCode).json(stored.body)
-          : res.status(202).json(acknowledgement);
+          : res.status(202).json(pendingAcknowledgement);
       }
 
-      let commandResult: StoredCommandResult;
+      const finish = (commandResult: StoredCommandResult) => {
+        runRepository.completeCommand({ idempotencyKey, result: commandResult });
+        return res.status(commandResult.statusCode).json(commandResult.body);
+      };
+
+      const scheduledTask = await adapter.getScheduledTask(req.params.id);
+      if (!scheduledTask) return finish({ statusCode: 404, body: { error: 'Scheduled task not found' } });
+      let freshRuntime: RuntimeStatus;
       try {
-        const triggered = await adapter.runScheduledTask(req.params.id);
-        commandResult = triggered
-          ? { statusCode: 202, body: acknowledgement }
-          : { statusCode: 404, body: { error: 'Scheduled task not found' } };
+        freshRuntime = await adapter.getRuntimeStatus();
       } catch {
-        commandResult = {
+        return finish({
           statusCode: 503,
-          body: {
-            error: 'Hermes n’a pas pu accepter cette exécution manuelle.',
-            code: 'HERMES_CRON_TRIGGER_UNAVAILABLE',
-          },
-        };
+          body: { error: 'Le catalogue Codex OAuth frais est indisponible.', code: 'SCHEDULED_RUNTIME_UNAVAILABLE', field: 'runtime' },
+        });
       }
-      runRepository.completeCommand({
-        idempotencyKey,
-        result: commandResult,
-      });
-      return res.status(commandResult.statusCode).json(commandResult.body);
+      const validation = validateScheduledTask(scheduledTask, freshRuntime, workdirRegistry);
+      if (!validation.ok) {
+        return finish({
+          statusCode: validation.error.status,
+          body: { error: validation.error.message, code: validation.error.code, field: validation.error.field },
+        });
+      }
+
+      try {
+        const dispatch = await adapter.runScheduledTask(req.params.id, dispatchToken);
+        if (!dispatch.scheduledTask || dispatch.dispatchReceipt?.state === 'missing') {
+          return finish({ statusCode: 404, body: { error: 'Scheduled task not found' } });
+        }
+        if (dispatch.dispatchReceipt?.state !== 'accepted') {
+          return res.status(202).json(pendingAcknowledgement);
+        }
+        return finish({
+          statusCode: 202,
+          body: { ...pendingAcknowledgement, dispatchAccepted: true },
+        });
+      } catch {
+        // The durable operator command remains claimed. A retry/restart can
+        // safely resume it with the same Hermes dispatch token/receipt.
+        return res.status(202).json(pendingAcknowledgement);
+      }
     } catch {
       res.status(503).json({
         error: 'Le déclenchement manuel Hermes est indisponible.',

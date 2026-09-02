@@ -42,6 +42,7 @@ import {
   resumeScheduledTask,
   runScheduledTask,
   updateScheduledTask,
+  ApiError,
 } from '../lib/api';
 import { formatDate, toErrorMessage } from '../lib/format';
 import {
@@ -55,7 +56,8 @@ import {
   type SchedulePreset,
 } from '../lib/schedule';
 import { buildScheduledTaskEditDraft, buildScheduledTaskFixDraft, scheduledTaskDeliveryIssueText } from '../lib/scheduledTaskFix';
-import { scheduledTaskRunReadiness } from '../lib/scheduledTaskReadiness';
+import { applyAuthoritativeReadinessRefusal, scheduledTaskRunReadiness } from '../lib/scheduledTaskReadiness';
+import { findCorrelatedScheduledTaskRun } from '../lib/scheduledTaskRuns';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
 import { usePageHeader, type PageHeaderConfig } from './Header';
 import { MarkdownContent } from './MarkdownContent';
@@ -87,7 +89,7 @@ type PendingAction = {
 
 type RunPollState = {
   scheduledTaskId: string;
-  previousLatestRunId: string | null;
+  dispatchToken: string;
   startedAt: number;
 };
 
@@ -227,17 +229,7 @@ function promptDescription(prompt: string | null): string {
 }
 
 function findNewScheduledTaskRun(runs: ScheduledTaskRun[], poll: RunPollState): ScheduledTaskRun | null {
-  if (!runs.length) return null;
-
-  if (poll.previousLatestRunId) {
-    return runs[0].id !== poll.previousLatestRunId ? runs[0] : null;
-  }
-
-  const cutoff = poll.startedAt - 5000;
-  return runs.find((run) => {
-    const ranAt = run.ranAt ? new Date(run.ranAt).getTime() : NaN;
-    return Number.isFinite(ranAt) && ranAt >= cutoff;
-  }) ?? null;
+  return findCorrelatedScheduledTaskRun(runs, poll.dispatchToken);
 }
 
 function DeliveryIssueBanner({
@@ -1516,6 +1508,9 @@ function ScheduledTaskRunsView({
                         <RunStatusPill status={run.status} />
                       </div>
                       {run.preview && <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-500 dark:text-zinc-400">{run.preview}</p>}
+                      {run.correlation === 'untracked' && (
+                        <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">Historique Hermes non corrélé</p>
+                      )}
                     </button>
                   );
                 })}
@@ -1591,10 +1586,6 @@ export function ScheduledTasksPage() {
   const [templateDraft, setTemplateDraft] = useState<ScheduledTaskTemplate | undefined>(undefined);
   const [runPoll, setRunPoll] = useState<RunPollState | null>(null);
 
-  const runsRef = useRef<ScheduledTaskRun[]>([]);
-  useEffect(() => {
-    runsRef.current = runs;
-  }, [runs]);
 
   const isCreateRoute = location.pathname === ROUTES.new;
   const isEditRoute = Boolean(selectedScheduledTaskId && location.pathname.endsWith('/edit'));
@@ -1766,27 +1757,13 @@ export function ScheduledTasksPage() {
     }
     setPendingAction({ action, scheduledTaskId: scheduledTask.id });
 
-    let previousLatestRunId: string | null = null;
-    if (action === 'run') {
-      if (selectedScheduledTaskId === scheduledTask.id && runsRef.current.length > 0) {
-        previousLatestRunId = runsRef.current[0]?.id ?? null;
-      } else {
-        try {
-          const { runs: baselineRuns } = await fetchScheduledTaskRuns(scheduledTask.id, 1);
-          previousLatestRunId = baselineRuns[0]?.id ?? null;
-        } catch {
-          // If we can't get a baseline, fall back to the wall-clock heuristic.
-        }
-      }
-    }
-
     try {
       if (action === 'run') {
-        await runScheduledTask(scheduledTask.id, crypto.randomUUID());
+        const acknowledgement = await runScheduledTask(scheduledTask.id, crypto.randomUUID());
         setError(null);
         setRunPoll({
           scheduledTaskId: scheduledTask.id,
-          previousLatestRunId,
+          dispatchToken: acknowledgement.dispatchToken,
           startedAt: Date.now(),
         });
       } else {
@@ -1798,11 +1775,15 @@ export function ScheduledTasksPage() {
         setError(null);
       }
     } catch (err) {
+      if (action === 'run' && err instanceof ApiError && err.code?.startsWith('SCHEDULED_')) {
+        replaceScheduledTask(applyAuthoritativeReadinessRefusal(scheduledTask, err.code, err.message));
+        void loadScheduledTasks();
+      }
       setError(toErrorMessage(err, `Failed to ${action} recurring task`));
     } finally {
       setPendingAction(null);
     }
-  }, [replaceScheduledTask, selectedScheduledTaskId]);
+  }, [loadScheduledTasks, replaceScheduledTask]);
 
   const submitEditor = useCallback(async (form: ScheduledTaskFormState) => {
     setSaving(true);

@@ -96,7 +96,10 @@ export interface AgentAdapter {
 
   resumeScheduledTask(scheduledTaskId: string): Promise<ScheduledTask | null>;
 
-  runScheduledTask(scheduledTaskId: string): Promise<ScheduledTask | null>;
+  runScheduledTask(scheduledTaskId: string, dispatchToken?: string): Promise<{
+    scheduledTask: ScheduledTask | null;
+    dispatchReceipt: { token: string; state: 'accepted' | 'missing' } | null;
+  }>;
 
   removeScheduledTask(scheduledTaskId: string): Promise<boolean>;
 

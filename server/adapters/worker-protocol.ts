@@ -39,7 +39,7 @@ export type WorkerRequest =
   | { id: string; type: 'scheduledTasks.update'; scheduledTaskId: string } & Partial<ScheduledTaskInput>
   | { id: string; type: 'scheduledTasks.pause'; scheduledTaskId: string; reason?: string }
   | { id: string; type: 'scheduledTasks.resume'; scheduledTaskId: string }
-  | { id: string; type: 'scheduledTasks.run'; scheduledTaskId: string }
+  | { id: string; type: 'scheduledTasks.run'; scheduledTaskId: string; dispatchToken?: string }
   | { id: string; type: 'scheduledTasks.remove'; scheduledTaskId: string }
   | { id: string; type: 'scheduledTasks.tick' }
   | { id: string; type: 'session.messages.get'; sessionId: string; taskId?: string }

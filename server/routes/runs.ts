@@ -99,9 +99,9 @@ export function createRunsRouter(dependencies: RunsRouterDependencies): ExpressR
   const router = Router();
   const repository = createRunRepository(dependencies.database);
   const runService = dependencies.runService ?? createRunService(repository);
-  const getMission = dependencies.database.prepare('SELECT * FROM tasks WHERE id = ?');
+  const getMission = dependencies.database.prepare("SELECT * FROM tasks WHERE id = ? AND mission_kind = 'interactive'");
   const setMissionStatus = dependencies.database.prepare(`
-    UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?
+    UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND mission_kind = 'interactive'
   `);
 
   router.post('/:missionId/commands', async (req, res) => {

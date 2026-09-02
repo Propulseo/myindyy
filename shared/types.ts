@@ -315,6 +315,8 @@ export interface ScheduledTaskRun {
   path: string;
   status: ScheduledTaskStatus;
   preview: string;
+  dispatchToken?: string | null;
+  correlation?: 'manifest' | 'untracked';
 }
 
 export interface ScheduledTaskRunContent {
