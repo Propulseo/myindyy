@@ -31,16 +31,48 @@ import type {
 } from './worker-protocol.js';
 import { expandHomePrefix, resolveHermesHome, resolveMinionsWorkspaceDir } from '../paths.js';
 import { sanitizeWorkerEnv } from '../runtime/policy.js';
+import { validateHermesRuntimeExecution } from '../hermes-runtime-manifest.js';
 
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const WORKER_INTERRUPT_TIMEOUT_MS = 10_000;
 
 export function createWorkerEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return {
+  assertWorkerRuntimeIntegrity(source);
+  const environment: NodeJS.ProcessEnv = {
     ...sanitizeWorkerEnv(source),
     HERMES_QUIET: '1',
     HERMES_YOLO_MODE: '1',
   };
+  delete environment.HERMES_SOURCE_DIR;
+  delete environment.HERMES_SOURCE_PYTHON;
+  delete environment.PYTHONHOME;
+  delete environment.PYTHONPATH;
+  delete environment.PYTHONUSERBASE;
+  return environment;
+}
+
+export function assertWorkerRuntimeIntegrity(environment: NodeJS.ProcessEnv = process.env): void {
+  if (environment.INDY_HERMES_RUNTIME_GUARD !== '1') return;
+  const runtimeRoot = environment.HERMES_AGENT_DIR?.trim();
+  const manifestFile = environment.HERMES_RUNTIME_MANIFEST_FILE?.trim();
+  const python = environment.HERMES_PYTHON?.trim();
+  if (!runtimeRoot || !manifestFile || !python) {
+    throw new Error('Guarded Hermes worker runtime paths are incomplete');
+  }
+  validateHermesRuntimeExecution(runtimeRoot, manifestFile, python);
+}
+
+export function createWorkerArguments(
+  script: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): string[] {
+  if (environment.INDY_HERMES_RUNTIME_GUARD !== '1') return [script];
+  const bootstrap = [
+    'import runpy,sys',
+    'sys.path.insert(0,sys.argv[1])',
+    'runpy.run_path(sys.argv[2],run_name="__main__")',
+  ].join(';');
+  return ['-I', '-c', bootstrap, dirname(script), script];
 }
 
 type WorkerRequestInput = WorkerRequest extends infer Request
@@ -346,7 +378,7 @@ class HermesWorkerClient {
     const script = resolveWorkerScript();
     const workspace = resolveMinionsWorkspaceDir();
     mkdirSync(workspace, { recursive: true });
-    const child = spawn(python, [script], {
+    const child = spawn(python, createWorkerArguments(script), {
       cwd: workspace,
       env: createWorkerEnvironment(),
       shell: false,
@@ -514,6 +546,7 @@ export class HermesWorkerAdapter implements AgentAdapter {
 
   async healthCheck(): Promise<boolean> {
     try {
+      assertWorkerRuntimeIntegrity();
       await this.client.start();
       return true;
     } catch {

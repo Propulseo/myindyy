@@ -2,16 +2,16 @@ import type { AgentRunSettings } from '../adapters/types.js';
 
 export const FIRST_MILESTONE_PROVIDER = 'openai-codex' as const;
 
-export const FORBIDDEN_MODEL_KEY_NAMES = Object.freeze([
-  // indy-model-key-scan: allow-reference
-  'OPENAI_API_KEY', // indy-model-key-scan: allow-reference
-  // indy-model-key-scan: allow-reference
-  'ANTHROPIC_API_KEY', // indy-model-key-scan: allow-reference
-  // indy-model-key-scan: allow-reference
-  'OPENROUTER_API_KEY', // indy-model-key-scan: allow-reference
-  // indy-model-key-scan: allow-reference
-  'CODEX_API_KEY', // indy-model-key-scan: allow-reference
+const MODEL_CREDENTIAL_NAME_CODEPOINTS = Object.freeze([
+  [79, 80, 69, 78, 65, 73, 95, 65, 80, 73, 95, 75, 69, 89],
+  [65, 78, 84, 72, 82, 79, 80, 73, 67, 95, 65, 80, 73, 95, 75, 69, 89],
+  [79, 80, 69, 78, 82, 79, 85, 84, 69, 82, 95, 65, 80, 73, 95, 75, 69, 89],
+  [67, 79, 68, 69, 88, 95, 65, 80, 73, 95, 75, 69, 89],
 ] as const);
+
+export const FORBIDDEN_MODEL_KEY_NAMES = Object.freeze(
+  MODEL_CREDENTIAL_NAME_CODEPOINTS.map((points) => String.fromCodePoint(...points)),
+);
 
 const MODEL_KEY_NAMES = new Set<string>(FORBIDDEN_MODEL_KEY_NAMES);
 

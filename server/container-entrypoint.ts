@@ -1,17 +1,24 @@
 import { execFileSync, spawn } from 'node:child_process';
 import {
+  chmodSync,
   cpSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
 } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { validateHermesRuntimeManifest } from './hermes-runtime-manifest.js';
+import {
+  hardenHermesRuntimeCopy,
+  validateHermesRuntimeExecution,
+  validateHermesRuntimeManifest,
+} from './hermes-runtime-manifest.js';
 
 const HASH_ASSIGNMENT = /_SUPPORTED_SCHEDULER_SHA256\s*=\s*["']([a-f0-9]{64})["']/;
 
@@ -76,7 +83,7 @@ function inspectImportedScheduler(
   delete probeEnvironment.PYTHONHOME;
   delete probeEnvironment.PYTHONPATH;
   Object.assign(probeEnvironment, { PYTHONNOUSERSITE: '1', PYTHONSAFEPATH: '1' });
-  const output = execFileSync(python, ['-c', probe], {
+  const output = execFileSync(python, ['-I', '-c', probe], {
     cwd: runtimeRoot,
     encoding: 'utf8',
     env: probeEnvironment,
@@ -93,6 +100,18 @@ function inspectImportedScheduler(
 function pathIsWithin(root: string, candidate: string): boolean {
   const within = relative(root, candidate);
   return within === '' || (within !== '..' && !within.startsWith(`..${sep}`) && !isAbsolute(within));
+}
+
+function removePrivateScratch(scratchRoot: string): void {
+  if (!existsSync(scratchRoot)) return;
+  const makeDirectoriesWritable = (directory: string) => {
+    chmodSync(directory, 0o700);
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) makeDirectoriesWritable(join(directory, entry.name));
+    }
+  };
+  makeDirectoriesWritable(scratchRoot);
+  rmSync(scratchRoot, { force: true, recursive: true });
 }
 
 export function materializeHermesRuntime(
@@ -147,13 +166,20 @@ export function materializeHermesRuntime(
     if (!pathIsWithin(realpathSync(runtimeRoot), resolvedPrivatePython)) {
       throw new Error('Private Hermes Python resolves outside the reviewed runtime copy');
     }
+    hardenHermesRuntimeCopy(runtimeRoot, privatePython);
+    chmodSync(manifestSnapshot, 0o440);
+    validateHermesRuntimeExecution(runtimeRoot, manifestSnapshot, privatePython);
     const preparedEnvironment: NodeJS.ProcessEnv = {
       ...environment,
       HERMES_AGENT_DIR: runtimeRoot,
       HERMES_PYTHON: privatePython,
+      HERMES_RUNTIME_MANIFEST_FILE: manifestSnapshot,
+      INDY_HERMES_RUNTIME_GUARD: '1',
       PYTHONNOUSERSITE: '1',
       PYTHONSAFEPATH: '1',
     };
+    delete preparedEnvironment.HERMES_SOURCE_DIR;
+    delete preparedEnvironment.HERMES_SOURCE_PYTHON;
     delete preparedEnvironment.PYTHONHOME;
     delete preparedEnvironment.PYTHONPATH;
     delete preparedEnvironment.PYTHONUSERBASE;
@@ -163,7 +189,7 @@ export function materializeHermesRuntime(
       scratchRoot,
     };
   } catch (error) {
-    rmSync(scratchRoot, { force: true, recursive: true });
+    removePrivateScratch(scratchRoot);
     throw error;
   }
 }
@@ -182,7 +208,7 @@ export function validateMountedHermesRuntime(
     });
     return prepared;
   } catch (error) {
-    rmSync(prepared.scratchRoot, { force: true, recursive: true });
+    removePrivateScratch(prepared.scratchRoot);
     throw error;
   }
 }
@@ -205,13 +231,13 @@ async function runServer(): Promise<number> {
 
   return await new Promise<number>((resolveExit, reject) => {
     child.once('error', (error) => {
-      rmSync(prepared.scratchRoot, { force: true, recursive: true });
+      removePrivateScratch(prepared.scratchRoot);
       reject(error);
     });
     child.once('exit', (code, signal) => {
       process.off('SIGTERM', forward);
       process.off('SIGINT', forward);
-      rmSync(prepared.scratchRoot, { force: true, recursive: true });
+      removePrivateScratch(prepared.scratchRoot);
       resolveExit(code ?? (signal ? 1 : 0));
     });
   });

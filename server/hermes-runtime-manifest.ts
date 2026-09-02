@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   lstatSync,
   readFileSync,
   readdirSync,
@@ -62,6 +63,69 @@ function inventory(root: string): HermesRuntimeManifestEntry[] {
 
   visit(rootPath, []);
   return entries.sort((left, right) => compareText(left.path, right.path));
+}
+
+function assertNoPythonPathConfiguration(entries: readonly HermesRuntimeManifestEntry[]): void {
+  const pathConfiguration = entries.find((entry) => entry.path.toLowerCase().endsWith('.pth'));
+  if (pathConfiguration) {
+    throw new Error(`Hermes runtime contains forbidden Python path configuration: ${pathConfiguration.path}`);
+  }
+}
+
+function visitRuntimeEntries(
+  root: string,
+  visit: (path: string, kind: 'directory' | 'file' | 'symlink') => void,
+): void {
+  const walk = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(path);
+        visit(path, 'directory');
+      } else if (entry.isFile()) {
+        visit(path, 'file');
+      } else if (entry.isSymbolicLink()) {
+        visit(path, 'symlink');
+      } else {
+        throw new Error(`Unsupported Hermes runtime entry while enforcing modes: ${path}`);
+      }
+    }
+  };
+  walk(root);
+  visit(root, 'directory');
+}
+
+export function hardenHermesRuntimeCopy(runtimeRoot: string, pythonExecutable: string): void {
+  const root = realpathSync(runtimeRoot);
+  const executable = realpathSync(pythonExecutable);
+  if (!pathIsWithin(root, executable) || !lstatSync(executable).isFile()) {
+    throw new Error('Private Hermes Python must be a regular file inside the runtime copy');
+  }
+  visitRuntimeEntries(root, (path, kind) => {
+    if (kind === 'symlink') return;
+    chmodSync(path, kind === 'directory' ? 0o550 : 0o440);
+  });
+  chmodSync(executable, 0o550);
+}
+
+export function validateHermesRuntimeExecution(
+  runtimeRoot: string,
+  manifestFile: string,
+  pythonExecutable: string,
+): void {
+  validateHermesRuntimeManifest(runtimeRoot, manifestFile);
+  const root = realpathSync(runtimeRoot);
+  const executable = realpathSync(pythonExecutable);
+  assertNoPythonPathConfiguration(inventory(root));
+  if (process.platform === 'win32') return;
+  visitRuntimeEntries(root, (path, kind) => {
+    if (kind === 'symlink') return;
+    const mode = lstatSync(path).mode & 0o777;
+    const expected = kind === 'directory' || realpathSync(path) === executable ? 0o550 : 0o440;
+    if (mode !== expected) {
+      throw new Error(`Hermes runtime mode mismatch: ${relative(root, path) || '.'}`);
+    }
+  });
 }
 
 export function createHermesRuntimeManifest(runtimeRoot: string): HermesRuntimeManifest {

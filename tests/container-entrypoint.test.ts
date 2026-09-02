@@ -1,7 +1,16 @@
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { createWorkerEnvironment } from '../server/adapters/hermes-worker.js';
 import {
   assertSchedulerArtifact,
   extractSupportedSchedulerHash,
@@ -107,6 +116,10 @@ describe('container Hermes artifact gate', () => {
     expect(prepared.runtimeRoot).not.toBe(sourceRoot);
     expect(prepared.environment.HERMES_AGENT_DIR).toBe(prepared.runtimeRoot);
     expect(prepared.environment.HERMES_PYTHON).toBe(join(prepared.runtimeRoot, 'venv', 'bin', 'python'));
+    expect(prepared.environment.HERMES_SOURCE_DIR).toBeUndefined();
+    expect(prepared.environment.HERMES_SOURCE_PYTHON).toBeUndefined();
+    expect(prepared.environment.INDY_HERMES_RUNTIME_GUARD).toBe('1');
+    expect(prepared.environment.HERMES_RUNTIME_MANIFEST_FILE).toBe(join(prepared.scratchRoot, 'reviewed-manifest.json'));
     expect(prepared.environment.HERMES_HOME).toBe(join(parent, 'oauth-home'));
     expect(prepared.environment.PYTHONHOME).toBeUndefined();
     expect(prepared.environment.PYTHONPATH).toBeUndefined();
@@ -126,6 +139,62 @@ describe('container Hermes artifact gate', () => {
       runtimeRoot: prepared.runtimeRoot,
       supportedHash: SUPPORTED_HASH,
     })).not.toThrow();
+
+    chmodSync(privateRunner, 0o660);
+    writeFileSync(privateRunner, '# private runtime tampered before worker restart\n');
+    expect(() => createWorkerEnvironment(prepared.environment)).toThrow('hash mismatch: run_agent.py');
+  });
+
+  it('rejects a copied Python path configuration file even when it is reviewed', async () => {
+    const entrypoint = await import('../server/container-entrypoint.js');
+    const parent = mkdtempSync(join(tmpdir(), 'indy-hermes-pth-'));
+    const sourceRoot = join(parent, 'bind-source');
+    const sourcePython = join(sourceRoot, 'venv', 'bin', 'python');
+    const pathConfiguration = join(sourceRoot, 'venv', 'lib', 'python3.11', 'site-packages', 'escape.pth');
+    mkdirSync(join(sourcePython, '..'), { recursive: true });
+    mkdirSync(join(pathConfiguration, '..'), { recursive: true });
+    writeFileSync(sourcePython, '# reviewed python fixture\n');
+    writeFileSync(join(sourceRoot, 'run_agent.py'), '# reviewed runner\n');
+    writeFileSync(pathConfiguration, `${sourceRoot}\n`);
+    const manifestFile = join(parent, 'reviewed-manifest.json');
+    writeFileSync(manifestFile, JSON.stringify(createHermesRuntimeManifest(sourceRoot)));
+
+    expect(() => entrypoint.materializeHermesRuntime({
+      HERMES_SOURCE_DIR: sourceRoot,
+      HERMES_SOURCE_PYTHON: sourcePython,
+      HERMES_PRIVATE_RUNTIME_PARENT: join(parent, 'private'),
+      HERMES_RUNTIME_MANIFEST_FILE: manifestFile,
+    })).toThrow(/\.pth/i);
+  });
+
+  it.runIf(process.platform !== 'win32')('removes permissive source modes and makes copied code directly unwritable', async () => {
+    const entrypoint = await import('../server/container-entrypoint.js');
+    const parent = mkdtempSync(join(tmpdir(), 'indy-hermes-modes-'));
+    const sourceRoot = join(parent, 'bind-source');
+    const sourcePython = join(sourceRoot, 'venv', 'bin', 'python');
+    const sourceRunner = join(sourceRoot, 'run_agent.py');
+    mkdirSync(join(sourcePython, '..'), { recursive: true });
+    writeFileSync(sourcePython, '# reviewed python fixture\n');
+    writeFileSync(sourceRunner, '# reviewed runner\n');
+    chmodSync(sourceRoot, 0o777);
+    chmodSync(sourcePython, 0o777);
+    chmodSync(sourceRunner, 0o777);
+    const manifestFile = join(parent, 'reviewed-manifest.json');
+    writeFileSync(manifestFile, JSON.stringify(createHermesRuntimeManifest(sourceRoot)));
+
+    const prepared = entrypoint.materializeHermesRuntime({
+      HERMES_SOURCE_DIR: sourceRoot,
+      HERMES_SOURCE_PYTHON: sourcePython,
+      HERMES_PRIVATE_RUNTIME_PARENT: join(parent, 'private'),
+      HERMES_RUNTIME_MANIFEST_FILE: manifestFile,
+    });
+    const privateRunner = join(prepared.runtimeRoot, 'run_agent.py');
+    const privatePython = join(prepared.runtimeRoot, 'venv', 'bin', 'python');
+
+    expect(statSync(prepared.runtimeRoot).mode & 0o777).toBe(0o550);
+    expect(statSync(privateRunner).mode & 0o777).toBe(0o440);
+    expect(statSync(privatePython).mode & 0o777).toBe(0o550);
+    expect(() => writeFileSync(privateRunner, '# mutation\n')).toThrow();
   });
 
   it('fails revalidation and removes the private scratch if the source changes after review', async () => {

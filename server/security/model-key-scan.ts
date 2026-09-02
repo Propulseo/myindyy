@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { basename, extname, resolve } from 'node:path';
+import { extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TextDecoder } from 'node:util';
 import { FORBIDDEN_MODEL_KEY_NAMES } from '../runtime/policy.js';
@@ -16,24 +16,17 @@ export interface ForbiddenModelKeyAssignment {
   readonly name: string;
 }
 
-const REFERENCE_SUPPRESSION = 'indy-model-key-scan: allow-reference';
-const SLASH_COMMENT_EXTENSIONS = new Set(['.cjs', '.css', '.js', '.jsx', '.mjs', '.scss', '.ts', '.tsx']);
-const HASH_COMMENT_EXTENSIONS = new Set([
-  '.bash', '.conf', '.env', '.ini', '.ps1', '.py', '.sh', '.toml', '.yaml', '.yml', '.zsh',
-]);
-const REVIEWED_BINARY_ASSET_EXTENSIONS = new Set(['.ico', '.mp3', '.png']);
-
-function isSuppressionDirective(path: string, line: string): boolean {
-  const trimmed = line.trim().toLowerCase();
+function isRecognizedBinaryAsset(path: string, content: Buffer): boolean {
   const extension = extname(path).toLowerCase();
-  if (SLASH_COMMENT_EXTENSIONS.has(extension)) {
-    return trimmed === `// ${REFERENCE_SUPPRESSION}`;
+  if (extension === '.png') {
+    return content.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
   }
-  if (HASH_COMMENT_EXTENSIONS.has(extension) || basename(path).toLowerCase().startsWith('dockerfile')) {
-    return trimmed === `# ${REFERENCE_SUPPRESSION}`;
+  if (extension === '.ico') {
+    return content.length >= 4 && content[0] === 0 && content[1] === 0 && content[2] === 1 && content[3] === 0;
   }
-  if (extension === '.md' || extension === '.mdx') {
-    return trimmed === `<!-- ${REFERENCE_SUPPRESSION} -->` || trimmed === `# ${REFERENCE_SUPPRESSION}`;
+  if (extension === '.mp3') {
+    return content.subarray(0, 3).toString('ascii') === 'ID3'
+      || (content.length >= 2 && content[0] === 0xff && (content[1]! & 0xe0) === 0xe0);
   }
   return false;
 }
@@ -79,6 +72,7 @@ function decodeTrackedContent(file: TrackedTextFile): string {
 }
 
 interface SourceCharacter {
+  readonly character: string;
   readonly line: number;
   readonly sourceIndex: number;
 }
@@ -89,28 +83,86 @@ function sourceBoundary(source: string, index: number, direction: -1 | 1): boole
   return cursor < 0 || cursor >= source.length || !/[A-Z0-9_]/i.test(source[cursor]!);
 }
 
-function addFragmentedFindings(
-  path: string,
-  source: string,
-  addFinding: (finding: ForbiddenModelKeyAssignment) => void,
-): void {
-  let normalized = '';
-  const mapping: SourceCharacter[] = [];
+function sourceCharacters(source: string): SourceCharacter[] {
+  const characters: SourceCharacter[] = [];
   let line = 1;
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index]!;
-    if (character === '\\' && (source[index + 1] === '\n' || (source[index + 1] === '\r' && source[index + 2] === '\n'))) {
-      if (source[index + 1] === '\r') index += 1;
-      index += 1;
-      line += 1;
+  for (let sourceIndex = 0; sourceIndex < source.length; sourceIndex += 1) {
+    const character = source[sourceIndex]!;
+    characters.push({ character, line, sourceIndex });
+    if (character === '\n') line += 1;
+  }
+  return characters;
+}
+
+function withoutComments(characters: readonly SourceCharacter[]): SourceCharacter[] {
+  const result: SourceCharacter[] = [];
+  let quote: '"' | "'" | '`' | null = null;
+  let escaped = false;
+  for (let index = 0; index < characters.length; index += 1) {
+    const current = characters[index]!;
+    const next = characters[index + 1];
+    if (quote) {
+      result.push(current);
+      if (escaped) escaped = false;
+      else if (current.character === '\\') escaped = true;
+      else if (current.character === quote) quote = null;
       continue;
     }
-    if (character === '\n') line += 1;
-    if (/\s|["'`+]/.test(character)) continue;
-    normalized += character;
-    mapping.push({ line, sourceIndex: index });
+    if (current.character === '"' || current.character === "'" || current.character === '`') {
+      quote = current.character;
+      result.push(current);
+      continue;
+    }
+    if (current.character === '<'
+      && next?.character === '!'
+      && characters[index + 2]?.character === '-'
+      && characters[index + 3]?.character === '-') {
+      index += 4;
+      while (index < characters.length
+        && !(characters[index]?.character === '-'
+          && characters[index + 1]?.character === '-'
+          && characters[index + 2]?.character === '>')) {
+        index += 1;
+      }
+      if (index < characters.length) index += 2;
+      continue;
+    }
+    if (current.character === '/' && next?.character === '*') {
+      index += 2;
+      while (index < characters.length
+        && !(characters[index]?.character === '*' && characters[index + 1]?.character === '/')) {
+        index += 1;
+      }
+      if (index < characters.length) index += 1;
+      continue;
+    }
+    if ((current.character === '/' && next?.character === '/') || current.character === '#') {
+      while (index + 1 < characters.length && characters[index + 1]?.character !== '\n') index += 1;
+      continue;
+    }
+    result.push(current);
   }
+  return result;
+}
 
+function normalizedIdentifierView(characters: readonly SourceCharacter[]): {
+  readonly normalized: string;
+  readonly mapping: readonly SourceCharacter[];
+} {
+  const mapping = characters.filter(({ character }) => /[A-Z0-9_]/i.test(character));
+  return {
+    normalized: mapping.map(({ character }) => character).join(''),
+    mapping,
+  };
+}
+
+function addNormalizedFindings(
+  path: string,
+  source: string,
+  characters: readonly SourceCharacter[],
+  addFinding: (finding: ForbiddenModelKeyAssignment) => void,
+): void {
+  const { normalized, mapping } = normalizedIdentifierView(characters);
   const lowerNormalized = normalized.toLowerCase();
   for (const name of FORBIDDEN_MODEL_KEY_NAMES) {
     const lowerName = name.toLowerCase();
@@ -122,8 +174,6 @@ function addFragmentedFindings(
       const first = mapping[matchIndex];
       const last = mapping[matchIndex + name.length - 1];
       if (!first || !last) continue;
-      const sourceSpan = source.slice(first.sourceIndex, last.sourceIndex + 1);
-      if (!/\+|\\\r?\n/.test(sourceSpan)) continue;
       if (!sourceBoundary(source, first.sourceIndex, -1) || !sourceBoundary(source, last.sourceIndex, 1)) continue;
       addFinding({ path, line: first.line, name });
     }
@@ -145,20 +195,7 @@ export function findForbiddenModelKeyAssignments(
   for (const file of files) {
     const content = decodeTrackedContent(file);
     const lines = content.split(/\r?\n/);
-    const fragmentSourceLines: string[] = [];
-    let suppressNextLine = false;
     for (const [index, line] of lines.entries()) {
-      if (isSuppressionDirective(file.path, line)) {
-        suppressNextLine = true;
-        fragmentSourceLines.push('');
-        continue;
-      }
-      if (suppressNextLine) {
-        suppressNextLine = false;
-        fragmentSourceLines.push('');
-        continue;
-      }
-      fragmentSourceLines.push(line);
       if (!line.trim()) continue;
       for (const name of FORBIDDEN_MODEL_KEY_NAMES) {
         if (mentionsForbiddenName(line, name)) {
@@ -166,22 +203,40 @@ export function findForbiddenModelKeyAssignments(
         }
       }
     }
-    addFragmentedFindings(file.path, fragmentSourceLines.join('\n'), addFinding);
+    const characters = sourceCharacters(content);
+    addNormalizedFindings(file.path, content, characters, addFinding);
+    addNormalizedFindings(file.path, content, withoutComments(characters), addFinding);
   }
   return findings;
+}
+
+export function forbiddenModelCredentialEnvironmentEntries(
+  environment: NodeJS.ProcessEnv,
+): string[] {
+  const forbidden = new Set(FORBIDDEN_MODEL_KEY_NAMES);
+  return Object.keys(environment).filter((name) => forbidden.has(name.toUpperCase()));
 }
 
 function trackedFiles(root: string): TrackedTextFile[] {
   const output = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' });
   return output.split('\0')
-    .filter((path) => path && !REVIEWED_BINARY_ASSET_EXTENSIONS.has(extname(path).toLowerCase()))
-    .map((path) => ({
-      path,
-      content: readFileSync(resolve(root, path)),
-    }));
+    .filter(Boolean)
+    .flatMap((path) => {
+      const content = readFileSync(resolve(root, path));
+      return isRecognizedBinaryAsset(path, content) ? [] : [{ path, content }];
+    });
 }
 
 function main(): void {
+  if (process.argv.includes('--environment')) {
+    if (forbiddenModelCredentialEnvironmentEntries(process.env).length > 0) {
+      process.stderr.write('Forbidden model credential exists in the environment.\n');
+      process.exitCode = 1;
+      return;
+    }
+    process.stdout.write('Model credential environment check passed.\n');
+    return;
+  }
   const findings = findForbiddenModelKeyAssignments(trackedFiles(process.cwd()));
   if (findings.length === 0) {
     process.stdout.write('Model API key reference scan passed.\n');

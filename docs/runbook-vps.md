@@ -8,7 +8,7 @@ The supported scheduler bytes are immutable for this release:
 cron/scheduler.py SHA-256 = 5b4326fffe1b783fd2016a0c5c0bde21c3c8af613cc665897b9f48565d74e3c5
 ```
 
-The repository cannot reconstruct those exact reviewed Hermes bytes from a stable package coordinate. Do not install `latest`, infer compatibility from a version label, or let the container download Hermes. Prepare the runtime separately and mount it read-only. A complete reviewed manifest inventories every regular file by SHA-256 and every symlink by its exact target. Startup additionally requires each symlink to resolve to an inventoried regular file inside the runtime root; external, broken, cyclic, and directory symlinks fail closed. Create Python virtual environments with `python3 -m venv --copies`, not host-interpreter symlinks. The manifest is anchored outside the runtime mount at `/etc/indy/hermes-runtime-manifest.json`. Before any Python import, startup validates the bind source, copies it into a freshly created private `/run/indy-runtime/hermes-*` tree, and validates that copy again against the external manifest. It executes the copied interpreter only, then independently verifies the copied module actually imported as `cron.scheduler`. A bind mutation during materialization therefore either fails the second validation or produces the exact reviewed private bytes; later host mutation cannot affect the running copy. The scratch tree is removed on startup failure or graceful process exit. Record the upstream revision, retrieval URL, review date, and scheduler digest in `/opt/indy/hermes-runtime/REVIEWED-MANIFEST`; that provenance file is itself covered by the external manifest.
+The repository cannot reconstruct those exact reviewed Hermes bytes from a stable package coordinate. Do not install `latest`, infer compatibility from a version label, or let the container download Hermes. Prepare the runtime separately and mount it read-only. A complete reviewed manifest inventories every regular file by SHA-256 and every symlink by its exact target. Startup additionally requires each symlink to resolve to an inventoried regular file inside the runtime root; external, broken, cyclic, and directory links fail closed. Create a non-editable Python virtual environment with `python3 -m venv --copies`, install dependencies physically inside it without editable installs, and remove every `.pth` file before review; startup refuses a copied runtime containing any `.pth`. The manifest is anchored outside the runtime mount at `/etc/indy/hermes-runtime-manifest.json`. Before any Python import, startup validates the bind source, copies it into a freshly created private `/run/indy-runtime/hermes-*` tree, and validates that copy again against the external manifest. It executes the copied interpreter with isolated Python mode only, then independently verifies the copied module actually imported as `cron.scheduler`. A bind mutation during materialization therefore either fails the second validation or produces the exact reviewed private bytes; later host mutation cannot affect the running copy. The scratch tree is removed on startup failure or graceful process exit. Record the upstream revision, retrieval URL, review date, and scheduler digest in `/opt/indy/hermes-runtime/REVIEWED-MANIFEST`; that provenance file is itself covered by the external manifest.
 
 ## Host and directory provisioning
 
@@ -139,9 +139,9 @@ HEARTBEAT_CONCURRENCY=2
 MINIONS_MODEL_LIST_CACHE_TTL_SECONDS=60
 ```
 
-The allowlisted application environment is: `NODE_ENV`, `PORT`, `MINIONS_HOME`, `DB_PATH`, `HERMES_HOME`, `HERMES_SOURCE_DIR`, `HERMES_SOURCE_PYTHON`, `HERMES_PRIVATE_RUNTIME_PARENT`, `HERMES_RUNTIME_MANIFEST_FILE`, `HERMES_AGENT_RUN_LIMIT`, `HEARTBEAT_CONCURRENCY`, `MINIONS_MODEL_LIST_CACHE_TTL_SECONDS`, `INDY_PUBLIC_ORIGIN`, `INDY_PROXY_SECRET_FILE`, `INDY_TRUSTED_PROXY_CIDRS`, and `INDY_SCHEDULED_WORKDIRS`. The entrypoint sets `HERMES_AGENT_DIR` and `HERMES_PYTHON` for the server child to the validated private copy, removes `PYTHONHOME`, `PYTHONPATH` and `PYTHONUSERBASE`, and disables user/unsafe import paths; operators must not override those execution controls. Deployment substitutions beginning `INDY_` above are consumed by Compose. Do not set `HERMES_WORKER_SCRIPT` in production. Model API keys are forbidden; CI derives their exact names from `server/runtime/policy.ts` and rejects nonempty references in tracked application, deployment, and E2E files.
+The allowlisted application environment is: `NODE_ENV`, `PORT`, `MINIONS_HOME`, `DB_PATH`, `HERMES_HOME`, `HERMES_SOURCE_DIR`, `HERMES_SOURCE_PYTHON`, `HERMES_PRIVATE_RUNTIME_PARENT`, `HERMES_RUNTIME_MANIFEST_FILE`, `HERMES_AGENT_RUN_LIMIT`, `HEARTBEAT_CONCURRENCY`, `MINIONS_MODEL_LIST_CACHE_TTL_SECONDS`, `INDY_PUBLIC_ORIGIN`, `INDY_PROXY_SECRET_FILE`, `INDY_TRUSTED_PROXY_CIDRS`, and `INDY_SCHEDULED_WORKDIRS`. The two source variables are entrypoint inputs only: the server child receives only `HERMES_AGENT_DIR` and `HERMES_PYTHON` rewritten to the validated private copy. Startup removes the source variables plus `PYTHONHOME`, `PYTHONPATH` and `PYTHONUSERBASE`; the scheduler probe and worker use Python isolated mode, so an external user site or `sitecustomize` cannot enter the import path. Operators must not override those controls. Deployment substitutions beginning `INDY_` above are consumed by Compose. Do not set `HERMES_WORKER_SCRIPT` in production. Model API credentials are forbidden; CI derives their exact environment names from the central runtime policy and scans every tracked text file without a per-file or per-line exception.
 
-The private runtime is an executable tmpfs because the copied venv interpreter must run; it is isolated at mode `0700`, has `nosuid,nodev`, is absent from image layers and backups, and is capped at 1 GiB in the Compose example. Size that cap above the reviewed runtime inventory while keeping it inside the container memory budget. Do not mount `/run/indy-runtime` from the host and do not persist or restore it.
+The private runtime is an executable tmpfs because the copied venv interpreter must run; it has `nosuid,nodev`, is absent from image layers and backups, and is capped at 1 GiB in the Compose example. After copying, Indy changes directories to `0550`, ordinary files to `0440`, and only the copied Python executable to `0550`, then revalidates manifest, path policy and modes. The same non-root UID technically owns the copy and could call `chmod`; these modes are defense in depth, not an immutable sandbox. Indy therefore repeats the manifest/mode gate before every worker spawn and on readiness health checks, while the worker remains one long-lived isolated process. Size the tmpfs cap above the reviewed runtime inventory while keeping it inside the container memory budget. Do not mount `/run/indy-runtime` from the host and do not persist or restore it.
 
 The default bridge gateway is `172.30.44.1`, which is the expected socket peer when host Nginx connects to the loopback-published container port. Compose constructs the runtime trust list as exact container loopbacks (`127.0.0.1/32,::1/128`) plus `INDY_PRIVATE_PROXY_CIDRS`. The loopback entries are required only for the authenticated in-container probes; a host or proxy connection reaches Indy from its bridge peer, never from container loopback. Keep `INDY_PRIVATE_PROXY_CIDRS` to the exact real proxy peer, not the full bridge, so enabling internal health does not widen external proxy trust. Before starting, verify the subnet does not collide with a host/VPN route:
 
@@ -152,20 +152,14 @@ docker network inspect indy-cockpit_indy_private --format '{{(index .IPAM.Config
 docker compose -f docker-compose.example.yml ps
 ```
 
-VPS validation — inspect the created container configuration and the environment of a real process inside it. Either match is a release blocker; `grep -q` prevents an accidental value from being printed:
+VPS validation — run the repository-owned credential policy against both the immutable image defaults and a real process inside the deployed container. Either non-zero exit is a release blocker, and the checker never prints credential values or embeds the forbidden names in the command:
 
 ```bash
 container_id="$(docker compose -f docker-compose.example.yml ps -q indy)"
-# indy-model-key-scan: allow-reference
-if docker inspect "$container_id" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then # indy-model-key-scan: allow-reference
-  echo 'forbidden model API key exists in container configuration' >&2
-  exit 1
-fi
-# indy-model-key-scan: allow-reference
-if docker compose -f docker-compose.example.yml exec -T indy env | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then # indy-model-key-scan: allow-reference
-  echo 'forbidden model API key exists in the running container environment' >&2
-  exit 1
-fi
+image_id="$(docker inspect "$container_id" --format '{{.Image}}')"
+docker run --rm --entrypoint node "$image_id" dist/server/server/security/model-key-scan.js --environment
+docker compose -f docker-compose.example.yml exec -T indy \
+  node dist/server/server/security/model-key-scan.js --environment
 ```
 
 The production base is pinned to the immutable Node image digest recorded in the Dockerfile. Runtime apt resolution uses Debian snapshot `20260801T000000Z` and exact direct versions for `ca-certificates`, `python3`, and `tini`; transitive packages resolve only from that immutable snapshot. GitHub Actions are referenced by commit SHA. These controls pin supply inputs for one target platform, but this runbook does **not** claim bit-for-bit image reproducibility across BuildKit versions, CPU architectures, or native toolchains. Build once in the controlled CI builder, record the resulting registry digest and provenance, scan it, and deploy that same digest. Verify the embedded inputs:
@@ -352,10 +346,9 @@ docker compose -f docker-compose.example.yml up -d
 docker compose -f docker-compose.example.yml exec -T indy node dist/server/server/healthcheck.js
 docker compose -f docker-compose.example.yml exec -T indy node dist/server/server/readinesscheck.js
 container_id="$(docker compose -f docker-compose.example.yml ps -q indy)"
-# indy-model-key-scan: allow-reference
-if docker inspect "$container_id" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then exit 1; fi # indy-model-key-scan: allow-reference
-# indy-model-key-scan: allow-reference
-if docker compose -f docker-compose.example.yml exec -T indy env | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then exit 1; fi # indy-model-key-scan: allow-reference
+image_id="$(docker inspect "$container_id" --format '{{.Image}}')"
+docker run --rm --entrypoint node "$image_id" dist/server/server/security/model-key-scan.js --environment
+docker compose -f docker-compose.example.yml exec -T indy node dist/server/server/security/model-key-scan.js --environment
 curl -fsS https://indy.example.com/api/runtime | jq -e \
   '.provider == "openai-codex" and .profileId == "etienne-openai" and .authState == "connected" and (.models | length > 0)'
 sudo sqlite3 /srv/indy/state/data/indy.db 'PRAGMA integrity_check;'

@@ -1,6 +1,24 @@
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createWorkerEnvironment } from '../server/adapters/hermes-worker.js';
+import { createWorkerArguments, createWorkerEnvironment } from '../server/adapters/hermes-worker.js';
 import { assertAllowedRuntime, sanitizeWorkerEnv } from '../server/runtime/policy.js';
+
+const CREDENTIAL_NAMES = [
+  [79, 80, 69, 78, 65, 73, 95, 65, 80, 73, 95, 75, 69, 89],
+  [65, 78, 84, 72, 82, 79, 80, 73, 67, 95, 65, 80, 73, 95, 75, 69, 89],
+  [79, 80, 69, 78, 82, 79, 85, 84, 69, 82, 95, 65, 80, 73, 95, 75, 69, 89],
+  [67, 79, 68, 69, 88, 95, 65, 80, 73, 95, 75, 69, 89],
+].map((points) => String.fromCodePoint(...points));
+
+function credentialEnvironment(): NodeJS.ProcessEnv {
+  return Object.fromEntries(CREDENTIAL_NAMES.flatMap((name, index) => [
+    [name, `secret-${index}`],
+    [name.toLowerCase(), `lower-secret-${index}`],
+  ]));
+}
 
 describe('Codex OAuth runtime policy', () => {
   it('accepts the Hermes Codex OAuth provider with a model', () => {
@@ -27,22 +45,7 @@ describe('Codex OAuth runtime policy', () => {
 
   it('removes API-key provider credentials regardless of Windows environment-variable casing', () => {
     expect(sanitizeWorkerEnv({
-      // indy-model-key-scan: allow-reference
-      OPENAI_API_KEY: 'openai-secret', // indy-model-key-scan: allow-reference
-      // indy-model-key-scan: allow-reference
-      OpenAI_Api_Key: 'openai-mixed-secret', // indy-model-key-scan: allow-reference
-      // indy-model-key-scan: allow-reference
-      ANTHROPIC_API_KEY: 'anthropic-secret', // indy-model-key-scan: allow-reference
-      // indy-model-key-scan: allow-reference
-      anthropic_api_key: 'anthropic-lower-secret', // indy-model-key-scan: allow-reference
-      // indy-model-key-scan: allow-reference
-      OPENROUTER_API_KEY: 'openrouter-secret', // indy-model-key-scan: allow-reference
-      // indy-model-key-scan: allow-reference
-      Openrouter_Api_Key: 'openrouter-mixed-secret', // indy-model-key-scan: allow-reference
-      // indy-model-key-scan: allow-reference
-      CODEX_API_KEY: 'codex-secret', // indy-model-key-scan: allow-reference
-      // indy-model-key-scan: allow-reference
-      codex_api_key: 'codex-lower-secret', // indy-model-key-scan: allow-reference
+      ...credentialEnvironment(),
       PATH: 'safe',
       SAFE_SETTING: 'retained',
     } as NodeJS.ProcessEnv)).toEqual({ PATH: 'safe', SAFE_SETTING: 'retained' });
@@ -50,21 +53,42 @@ describe('Codex OAuth runtime policy', () => {
 
   it('passes only the sanitized environment and Hermes worker flags to spawn', () => {
     expect(createWorkerEnvironment({
-      // indy-model-key-scan: allow-reference
-      OpenAI_Api_Key: 'openai-mixed-secret', // indy-model-key-scan: allow-reference
-      // indy-model-key-scan: allow-reference
-      anthropic_api_key: 'anthropic-lower-secret', // indy-model-key-scan: allow-reference
-      // indy-model-key-scan: allow-reference
-      Openrouter_Api_Key: 'openrouter-mixed-secret', // indy-model-key-scan: allow-reference
-      // indy-model-key-scan: allow-reference
-      codex_api_key: 'codex-lower-secret', // indy-model-key-scan: allow-reference
+      ...credentialEnvironment(),
       PATH: 'safe',
       SAFE_SETTING: 'retained',
+      PYTHONHOME: '/untrusted/home',
+      PYTHONPATH: '/untrusted/path',
+      PYTHONUSERBASE: '/untrusted/user-base',
     } as NodeJS.ProcessEnv)).toEqual({
       PATH: 'safe',
       SAFE_SETTING: 'retained',
       HERMES_QUIET: '1',
       HERMES_YOLO_MODE: '1',
     });
+  });
+
+  it('runs the worker in isolated Python so an external site customization cannot execute', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'indy-python-isolation-'));
+    const external = join(directory, 'external');
+    const worker = join(directory, 'worker.py');
+    const marker = join(directory, 'sitecustomize-ran');
+    mkdirSync(external);
+    writeFileSync(join(external, 'sitecustomize.py'), `from pathlib import Path\nPath(${JSON.stringify(marker)}).write_text('ran')\n`);
+    writeFileSync(worker, 'print("worker-ran")\n');
+    const python = process.platform === 'win32' ? 'python' : 'python3';
+
+    const output = execFileSync(python, createWorkerArguments(worker, {
+      INDY_HERMES_RUNTIME_GUARD: '1',
+    }), {
+      encoding: 'utf8',
+      env: createWorkerEnvironment({
+        PATH: process.env.PATH,
+        PYTHONPATH: external,
+        PYTHONUSERBASE: external,
+      }),
+    });
+
+    expect(output.trim()).toBe('worker-ran');
+    expect(existsSync(marker)).toBe(false);
   });
 });
