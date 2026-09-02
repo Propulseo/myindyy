@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createRunRepository, type RunRepository } from '../server/runs/repository.js';
+import { initializeDatabase } from '../server/db/index.js';
 
 const schema = readFileSync(new URL('../server/db/schema.sql', import.meta.url), 'utf8');
 
@@ -283,9 +284,67 @@ describe('run repository', () => {
       createdAt: 50,
     };
 
-    expect(repository.claimCommand(command).status).toBe('claimed');
+    const claimed = repository.claimCommand({ ...command, payload: { type: 'retry', reason: 'safe' } });
+    expect(claimed.status).toBe('claimed');
+    expect(claimed.command).toMatchObject({
+      phase: 'claimed',
+      payload: { type: 'retry', reason: 'safe' },
+      effectReceipt: null,
+    });
     expect(repository.claimCommand({ ...command, createdAt: 60 }).status).toBe('duplicate');
     expect(repository.claimCommand({ ...command, payloadHash: 'hash-b' }).status).toBe('conflict');
+  });
+
+  it('fences durable effect progress and completion to the current lease owner', () => {
+    repository.claimCommand({
+      idempotencyKey: 'interactive-1', actorId: 'etienne', missionId: 'mission-1',
+      runId: null, commandType: 'retry', payloadHash: 'hash', payload: { type: 'retry' },
+    });
+    expect(repository.leasePendingCommands({ owner: 'owner-a', now: 10, leaseMs: 5 })).toHaveLength(1);
+    expect(repository.leasePendingCommands({ owner: 'owner-b', now: 16, leaseMs: 5 })).toHaveLength(1);
+
+    expect(repository.updateCommandProgress({
+      idempotencyKey: 'interactive-1', owner: 'owner-a', phase: 'attempt_created',
+      effectReceipt: { runId: 'stale-run' },
+    })).toBe(false);
+    expect(() => repository.completeCommand({
+      idempotencyKey: 'interactive-1', owner: 'owner-a', result: { stale: true },
+    })).toThrow(/not claimable/);
+
+    expect(repository.updateCommandProgress({
+      idempotencyKey: 'interactive-1', owner: 'owner-b', phase: 'attempt_created',
+      effectReceipt: { runId: 'successor-1' },
+    })).toBe(true);
+    expect(repository.completeCommand({
+      idempotencyKey: 'interactive-1', owner: 'owner-b', result: { accepted: true },
+    })).toMatchObject({
+      status: 'completed', phase: 'completed', effectReceipt: { runId: 'successor-1' },
+    });
+  });
+
+  it('migrates legacy operator command rows without inventing an effect receipt', () => {
+    const legacy = new Database(':memory:');
+    try {
+      legacy.exec(`
+        CREATE TABLE operator_commands (
+          idempotency_key TEXT PRIMARY KEY, actor_id TEXT NOT NULL, mission_id TEXT NOT NULL,
+          run_id TEXT, command_type TEXT NOT NULL, payload_hash TEXT NOT NULL,
+          status TEXT NOT NULL, result_json TEXT, created_at INTEGER NOT NULL, completed_at INTEGER
+        );
+        INSERT INTO operator_commands VALUES (
+          'legacy-claimed', 'etienne', 'mission-1', 'run-1', 'retry', 'hash',
+          'claimed', NULL, 1, NULL
+        );
+      `);
+      initializeDatabase(legacy);
+      const migrated = createRunRepository(legacy).getCommand('legacy-claimed');
+      expect(migrated).toMatchObject({
+        status: 'claimed', phase: 'claimed', payload: null, effectReceipt: null,
+        leaseOwner: null, attemptCount: 0,
+      });
+    } finally {
+      legacy.close();
+    }
   });
 
   it('redacts terminal reasons and command results at their final SQLite writes', () => {

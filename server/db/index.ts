@@ -26,6 +26,9 @@ export function initializeDatabase(database: import('better-sqlite3').Database):
   ensureColumn(database, 'operator_commands', 'lease_expires_at', 'INTEGER');
   ensureColumn(database, 'operator_commands', 'attempt_count', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(database, 'operator_commands', 'next_attempt_at', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(database, 'operator_commands', 'payload_json', 'TEXT');
+  ensureColumn(database, 'operator_commands', 'phase', "TEXT NOT NULL DEFAULT 'claimed'");
+  ensureColumn(database, 'operator_commands', 'effect_receipt_json', 'TEXT');
   database.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_mission_runs_occurrence_key
     ON mission_runs(occurrence_key)

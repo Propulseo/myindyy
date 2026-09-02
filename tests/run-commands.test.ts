@@ -5,8 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentAdapter } from '../server/adapters/types.js';
 import { createRunsRouter, type LaunchCommandRun } from '../server/routes/runs.js';
+import {
+  InjectedCommandCrashError,
+  recoverPendingInteractiveCommands,
+  type CommandCrashSeams,
+} from '../server/runs/operator-command-outbox.js';
 import { createRunRepository, type RunRepository } from '../server/runs/repository.js';
 import { createRunService, type RunService } from '../server/runs/service.js';
 import type { MissionRun, SessionMetadata, Task } from '../shared/types.js';
@@ -65,6 +69,7 @@ class FakeHermesBoundary {
   readonly interruptions: Array<{ sessionId: string; reason?: string }> = [];
   readonly sessions = new Map<string, SessionMetadata>();
   interruptResult = true;
+  runtimeStatusError: Error | null = null;
 
   async interruptChat(sessionId: string, reason?: string): Promise<boolean> {
     this.interruptions.push({ sessionId, reason });
@@ -73,6 +78,23 @@ class FakeHermesBoundary {
 
   async getSessionMetadata(sessionId: string): Promise<SessionMetadata | null> {
     return this.sessions.get(sessionId) ?? null;
+  }
+
+  async getRuntimeStatus() {
+    if (this.runtimeStatusError) throw this.runtimeStatusError;
+    return {
+      provider: 'openai-codex' as const,
+      profileId: 'etienne-openai',
+      authState: 'connected' as const,
+      checkedAt: new Date().toISOString(),
+      models: [
+        'gpt-source', 'gpt-original', 'gpt-mutated', 'task-current-model', 'gpt-race',
+      ].map((id) => ({
+        id,
+        label: id,
+        reasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const,
+      })),
+    };
   }
 }
 
@@ -84,6 +106,27 @@ describe('operator run commands', () => {
   let app: Express;
   let launched: Parameters<LaunchCommandRun>[];
   let nextId: number;
+
+  function mountCommandApp(options: {
+    crashSeams?: CommandCrashSeams;
+    leaseOwner?: () => string;
+    leaseMs?: number;
+    now?: () => number;
+  } = {}): void {
+    app = express();
+    app.use((req, _res, next) => {
+      req.actor = { id: 'etienne' };
+      next();
+    });
+    app.use(express.json());
+    app.use('/api/missions', createRunsRouter({
+      database,
+      adapter: hermes,
+      runService: service,
+      launchCommandRun: (...args) => launched.push(args),
+      ...options,
+    }));
+  }
 
   beforeEach(() => {
     database = new Database(':memory:');
@@ -103,18 +146,7 @@ describe('operator run commands', () => {
     });
     hermes = new FakeHermesBoundary();
     launched = [];
-    app = express();
-    app.use((req, _res, next) => {
-      req.actor = { id: 'etienne' };
-      next();
-    });
-    app.use(express.json());
-    app.use('/api/missions', createRunsRouter({
-      database,
-      adapter: hermes as Pick<AgentAdapter, 'interruptChat' | 'getSessionMetadata'>,
-      runService: service,
-      launchCommandRun: (...args) => launched.push(args),
-    }));
+    mountCommandApp();
   });
 
   afterEach(() => {
@@ -222,10 +254,10 @@ describe('operator run commands', () => {
     const interruptSpy = vi.spyOn(adapter, 'interruptChat').mockResolvedValue(true);
     const runtimeStatusSpy = vi.spyOn(adapter, 'getRuntimeStatus').mockResolvedValue({
       provider: 'openai-codex',
-      profileId: 'test-profile',
+      profileId: 'etienne-openai',
       authState: 'connected',
-      checkedAt: '2026-09-01T08:00:00.000Z',
-      models: [{ id: 'gpt-race', label: 'gpt-race', reasoningEfforts: null }],
+      checkedAt: new Date().toISOString(),
+      models: [{ id: 'gpt-race', label: 'gpt-race', reasoningEfforts: ['high'] }],
     });
     const writes: string[] = [];
     let closeSubscriber = () => {};
@@ -327,6 +359,34 @@ describe('operator run commands', () => {
       result_json: JSON.stringify({ httpStatus: 202, body: first.body }),
       completed_at: expect.any(Number),
     });
+  });
+
+  it('serializes different command keys for the same mission before any second effect', async () => {
+    const current = startRun();
+    let releaseInterrupt!: () => void;
+    const interruptGate = new Promise<void>((resolve) => { releaseInterrupt = resolve; });
+    vi.spyOn(hermes, 'interruptChat').mockImplementation(async (sessionId, reason) => {
+      hermes.interruptions.push({ sessionId, reason });
+      await interruptGate;
+      return true;
+    });
+
+    const firstPromise = command('mission-lock-a', {
+      type: 'interrupt', runId: current.runId, reason: 'first',
+    });
+    await vi.waitFor(() => {
+      expect(repository.getCommand('mission-lock-a')?.phase).toBe('interrupting');
+    });
+    const second = await command('mission-lock-b', {
+      type: 'interrupt', runId: current.runId, reason: 'second',
+    });
+    expect(second.status).toBe(409);
+    expect(second.body.code).toBe('MISSION_COMMAND_BUSY');
+    expect(repository.getCommand('mission-lock-b')).toBeUndefined();
+    expect(hermes.interruptions).toHaveLength(1);
+
+    releaseInterrupt();
+    expect((await firstPromise).status).toBe(202);
   });
 
   it('rejects missing keys, client actors, stale runs, empty corrections, and incompatible states', async () => {
@@ -496,6 +556,97 @@ describe('operator run commands', () => {
     });
   });
 
+  it('keeps the targeted current runtime while reusing an older confirmed session', async () => {
+    const confirmedRun = startRun({ model: 'gpt-source', reasoningEffort: 'high' });
+    confirm(confirmedRun.runId, 'native-old-session');
+    service.complete(confirmedRun.runId);
+    const current = startRun({ model: 'task-current-model', reasoningEffort: 'low' });
+
+    const response = await command('correct-runtime-source', {
+      type: 'correct', runId: current.runId, reason: 'use current selection',
+    });
+
+    expect(response.status).toBe(202);
+    expect(repository.getRunRecord(response.body.runId)).toMatchObject({
+      sessionId: 'native-old-session',
+      model: 'task-current-model',
+      reasoningEffort: 'low',
+    });
+    expect(launched[0]?.[3]).toEqual({
+      provider: 'openai-codex', model: 'task-current-model', reasoningEffort: 'low',
+    });
+  });
+
+  it.each(['correct', 'resume', 'retry'] as const)(
+    'rejects %s admission before claiming, interrupting, cancelling, or creating a run',
+    async (type) => {
+      const current = startRun();
+      if (type === 'correct' || type === 'resume') confirm(current.runId, 'native-admission');
+      if (type === 'resume' || type === 'retry') service.fail(current.runId, 'retryable');
+      hermes.runtimeStatusError = new Error('Authorization: Bearer should-not-escape');
+      const beforeRuns = repository.listMissionRuns('mission-1');
+
+      const response = await command(`admission-${type}`, {
+        type, runId: current.runId, reason: 'continue',
+      });
+
+      expect(response.status).toBe(503);
+      expect(response.body).toEqual({
+        error: 'Codex runtime status is unavailable', code: 'RUNTIME_UNAVAILABLE',
+      });
+      expect(repository.getCommand(`admission-${type}`)).toBeUndefined();
+      expect(repository.listMissionRuns('mission-1')).toEqual(beforeRuns);
+      expect(hermes.interruptions).toEqual([]);
+      expect(launched).toEqual([]);
+    },
+  );
+
+  it.each(['interrupt', 'stop'] as const)(
+    'allows %s while runtime admission is unavailable',
+    async (type) => {
+      const current = startRun();
+      hermes.runtimeStatusError = new Error('runtime unavailable');
+      const response = await command(`runtime-down-${type}`, { type, runId: current.runId });
+      expect(response.status).toBe(202);
+      expect(hermes.interruptions).toHaveLength(1);
+    },
+  );
+
+  it('admits a correction before its first interrupt side effect', async () => {
+    const current = startRun();
+    confirm(current.runId, 'native-order');
+    const admission = vi.spyOn(hermes, 'getRuntimeStatus');
+    const interrupt = vi.spyOn(hermes, 'interruptChat');
+
+    expect((await command('admit-before-interrupt', {
+      type: 'correct', runId: current.runId, reason: 'correct',
+    })).status).toBe(202);
+    expect(admission.mock.invocationCallOrder[0]).toBeLessThan(interrupt.mock.invocationCallOrder[0]!);
+  });
+
+  it('startup recovery terminalizes a legacy claimed command without repeating an effect', () => {
+    const current = startRun();
+    repository.claimCommand({
+      idempotencyKey: 'legacy-interactive', actorId: 'etienne', missionId: 'mission-1',
+      runId: current.runId, commandType: 'interrupt', payloadHash: 'legacy-hash', createdAt: 1,
+    });
+
+    expect(recoverPendingInteractiveCommands({
+      database,
+      runService: service,
+      now: () => 100,
+      leaseOwner: () => 'startup-owner',
+    })).toBe(1);
+    expect(repository.getCommand('legacy-interactive')).toMatchObject({
+      status: 'needs_reconciliation', phase: 'needs_reconciliation',
+      result: {
+        httpStatus: 409,
+        body: { code: 'COMMAND_OUTCOME_UNKNOWN', status: 'unknown' },
+      },
+    });
+    expect(hermes.interruptions).toEqual([]);
+  });
+
   it('stops the mission without deleting durable events or session references', async () => {
     const current = startRun();
     repository.appendRunEvent({
@@ -544,4 +695,165 @@ describe('operator run commands', () => {
     });
     expect(hermes.interruptions).toEqual([]);
   });
+
+  it('recovers a proved interrupt without repeating it after a crash', async () => {
+    const current = startRun();
+    let clock = 100;
+    mountCommandApp({
+      now: () => clock,
+      leaseMs: 5,
+      leaseOwner: () => 'owner-a',
+      crashSeams: {
+        afterInterrupt: () => { throw new InjectedCommandCrashError('afterInterrupt'); },
+      },
+    });
+
+    const first = await command('crash-after-interrupt', {
+      type: 'interrupt', runId: current.runId, reason: 'pause',
+    });
+    expect(first.status).toBe(503);
+    expect(repository.getCommand('crash-after-interrupt')).toMatchObject({
+      status: 'claimed', phase: 'interrupted', effectReceipt: { interrupted: true },
+    });
+
+    clock = 106;
+    mountCommandApp({ now: () => clock, leaseMs: 5, leaseOwner: () => 'owner-b' });
+    const replay = await command('crash-after-interrupt', {
+      type: 'interrupt', runId: current.runId, reason: 'pause',
+    });
+    expect(replay.status).toBe(202);
+    expect(repository.getCommand('crash-after-interrupt')).toMatchObject({
+      status: 'completed', phase: 'completed',
+    });
+    expect(hermes.interruptions).toHaveLength(1);
+  });
+
+  it('terminalizes an ambiguous post-interrupt crash as unknown without a duplicate effect', async () => {
+    const current = startRun();
+    let clock = 100;
+    mountCommandApp({
+      now: () => clock,
+      leaseMs: 5,
+      leaseOwner: () => 'owner-a',
+      crashSeams: {
+        afterInterruptBeforeReceipt: () => {
+          throw new InjectedCommandCrashError('afterInterruptBeforeReceipt');
+        },
+      },
+    });
+
+    expect((await command('ambiguous-interrupt', {
+      type: 'interrupt', runId: current.runId,
+    })).status).toBe(503);
+    expect(repository.getCommand('ambiguous-interrupt')?.phase).toBe('interrupting');
+
+    clock = 106;
+    mountCommandApp({ now: () => clock, leaseMs: 5, leaseOwner: () => 'owner-b' });
+    const replay = await command('ambiguous-interrupt', {
+      type: 'interrupt', runId: current.runId,
+    });
+    expect(replay.status).toBe(409);
+    expect(replay.body).toMatchObject({ code: 'COMMAND_OUTCOME_UNKNOWN', status: 'unknown' });
+    expect(repository.getCommand('ambiguous-interrupt')).toMatchObject({
+      status: 'needs_reconciliation', phase: 'needs_reconciliation',
+    });
+    expect(hermes.interruptions).toHaveLength(1);
+  });
+
+  it.each([
+    ['afterAttemptCreated', 'attempt_created', 0, 'unknown'],
+    ['afterLaunchBeforeReceipt', 'launching', 1, 'unknown'],
+    ['afterLaunch', 'launched', 1, 'accepted'],
+  ] as const)(
+    'converges from %s without creating or launching a second retry',
+    async (boundary, expectedPhase, expectedLaunches, expectedOutcome) => {
+      const current = startRun();
+      service.fail(current.runId, 'retryable failure');
+      let clock = 100;
+      mountCommandApp({
+        now: () => clock,
+        leaseMs: 5,
+        leaseOwner: () => 'owner-a',
+        crashSeams: {
+          [boundary]: () => { throw new InjectedCommandCrashError(boundary); },
+        },
+      });
+
+      const payload = { type: 'retry', runId: current.runId, reason: 'again' };
+      expect((await command(`crash-${boundary}`, payload)).status).toBe(503);
+      expect(repository.getCommand(`crash-${boundary}`)?.phase).toBe(expectedPhase);
+      expect(repository.listMissionRuns('mission-1')).toHaveLength(2);
+      expect(launched).toHaveLength(expectedLaunches);
+
+      clock = 106;
+      mountCommandApp({ now: () => clock, leaseMs: 5, leaseOwner: () => 'owner-b' });
+      const replay = await command(`crash-${boundary}`, payload);
+      expect(replay.status).toBe(expectedOutcome === 'accepted' ? 202 : 409);
+      expect(replay.body.status).toBe(expectedOutcome);
+      expect(repository.listMissionRuns('mission-1')).toHaveLength(2);
+      expect(launched).toHaveLength(expectedLaunches);
+      expect(repository.getCommand(`crash-${boundary}`)?.status).toBe(
+        expectedOutcome === 'accepted' ? 'completed' : 'needs_reconciliation',
+      );
+    },
+  );
+
+  it('recovers a durable stop mutation without interrupting or stopping twice', async () => {
+    const current = startRun();
+    let clock = 100;
+    mountCommandApp({
+      now: () => clock,
+      leaseMs: 5,
+      leaseOwner: () => 'owner-a',
+      crashSeams: {
+        afterStopMutation: () => { throw new InjectedCommandCrashError('afterStopMutation'); },
+      },
+    });
+    const payload = { type: 'stop', runId: current.runId, reason: 'done' };
+    expect((await command('crash-stop', payload)).status).toBe(503);
+    expect(repository.getCommand('crash-stop')?.phase).toBe('stopped');
+
+    clock = 106;
+    mountCommandApp({ now: () => clock, leaseMs: 5, leaseOwner: () => 'owner-b' });
+    const replay = await command('crash-stop', payload);
+    expect(replay.status).toBe(202);
+    expect(hermes.interruptions).toHaveLength(1);
+    expect(repository.listRunEvents(current.runId).filter((event) => event.type === 'run.cancelled'))
+      .toHaveLength(1);
+  });
+
+  it.each(['interrupt', 'correct', 'resume', 'retry', 'stop'] as const)(
+    'replays %s from its effect receipt when completion crashes',
+    async (type) => {
+      const current = startRun();
+      if (type === 'correct' || type === 'resume') confirm(current.runId, 'native-session-receipt');
+      if (type === 'resume' || type === 'retry') service.fail(current.runId, 'retryable failure');
+      let clock = 100;
+      mountCommandApp({
+        now: () => clock,
+        leaseMs: 5,
+        leaseOwner: () => 'owner-a',
+        crashSeams: {
+          beforeCompleteCommand: () => {
+            throw new InjectedCommandCrashError('beforeCompleteCommand');
+          },
+        },
+      });
+      const payload = {
+        type,
+        runId: current.runId,
+        ...((type === 'correct' || type === 'resume' || type === 'retry') ? { reason: 'continue' } : {}),
+      };
+
+      expect((await command(`before-complete-${type}`, payload)).status).toBe(503);
+      clock = 106;
+      mountCommandApp({ now: () => clock, leaseMs: 5, leaseOwner: () => 'owner-b' });
+      const replay = await command(`before-complete-${type}`, payload);
+      expect(replay.status).toBe(202);
+      expect(replay.body.status).toBe('accepted');
+      expect(repository.getCommand(`before-complete-${type}`)?.status).toBe('completed');
+      expect(launched).toHaveLength(['correct', 'resume', 'retry'].includes(type) ? 1 : 0);
+      expect(hermes.interruptions).toHaveLength(['interrupt', 'correct', 'stop'].includes(type) ? 1 : 0);
+    },
+  );
 });

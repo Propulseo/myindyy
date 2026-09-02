@@ -1,20 +1,32 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Router, type Router as ExpressRouter } from 'express';
 import type { Database } from 'better-sqlite3';
 import type { AgentAdapter, AgentRunSettings } from '../adapters/types.js';
-import { broadcast } from '../events.js';
 import { isRecord, toErrorMessage } from '../errors.js';
+import {
+  requireInteractiveAdmission,
+  sendInteractiveAdmissionError,
+  type InteractiveRuntimeSource,
+} from '../runtime/interactive-admission.js';
 import { createRunRepository } from '../runs/repository.js';
 import { createRunService, type RunService, type StartedMission } from '../runs/service.js';
+import {
+  executeClaimedInteractiveCommand,
+  InjectedCommandCrashError,
+  isStoredHttpResult,
+  recoverLeasedInteractiveCommand,
+  type CommandCrashSeams,
+  type CommandExecutionContext,
+  type StoredHttpResult,
+} from '../runs/operator-command-outbox.js';
 import {
   RUN_COMMAND_TYPES,
   type MissionRun,
   type RunCommandBody,
-  type RunCommandResult,
   type Task,
 } from '../../shared/types.js';
 
-type CommandAdapter = Pick<AgentAdapter, 'interruptChat' | 'getSessionMetadata'>;
+type CommandAdapter = Pick<AgentAdapter, 'interruptChat' | 'getSessionMetadata'> & InteractiveRuntimeSource;
 
 export type LaunchCommandRun = (
   task: Task,
@@ -28,15 +40,13 @@ export interface RunsRouterDependencies {
   readonly adapter: CommandAdapter;
   readonly launchCommandRun: LaunchCommandRun;
   readonly runService?: RunService;
-}
-
-interface StoredHttpResult {
-  readonly httpStatus: number;
-  readonly body: unknown;
+  readonly crashSeams?: CommandCrashSeams;
+  readonly leaseOwner?: () => string;
+  readonly leaseMs?: number;
+  readonly now?: () => number;
 }
 
 const ACTIVE_STATUSES = new Set<MissionRun['status']>(['queued', 'running', 'waiting_approval']);
-const TERMINAL_STATUSES = new Set<MissionRun['status']>(['completed', 'failed', 'cancelled']);
 const COMMAND_FIELDS = new Set(['type', 'runId', 'reason']);
 
 function canonicalHash(missionId: string, command: RunCommandBody): string {
@@ -74,12 +84,6 @@ function parseCommand(body: unknown): RunCommandBody {
   };
 }
 
-function isStoredHttpResult(value: unknown): value is StoredHttpResult {
-  return isRecord(value)
-    && typeof value.httpStatus === 'number'
-    && Object.prototype.hasOwnProperty.call(value, 'body');
-}
-
 function runtimeSettings(run: MissionRun): AgentRunSettings {
   return {
     provider: run.provider,
@@ -88,21 +92,43 @@ function runtimeSettings(run: MissionRun): AgentRunSettings {
   };
 }
 
-function commandInstruction(command: RunCommandBody, task: Task): string {
-  if (command.reason) return command.reason;
-  if (command.type === 'resume') return 'Continue from the latest confirmed session.';
-  if (command.type === 'retry') return task.description?.trim() || 'Retry the mission.';
-  return command.type;
+function loadCommandContext(
+  database: Database,
+  runService: RunService,
+  missionId: string,
+  command: RunCommandBody,
+): CommandExecutionContext | StoredHttpResult {
+  const task = database.prepare(
+    "SELECT * FROM tasks WHERE id = ? AND mission_kind = 'interactive'",
+  ).get(missionId) as Task | undefined;
+  if (!task) return { httpStatus: 404, body: { error: 'Mission not found' } };
+
+  const current = runService.getLatestRun(missionId);
+  if (!current || current.id !== command.runId || current.missionId !== missionId) {
+    return { httpStatus: 409, body: { error: 'runId must be the current attempt for this mission' } };
+  }
+  const isActive = ACTIVE_STATUSES.has(current.status);
+  if (command.type === 'interrupt' && !isActive) {
+    return { httpStatus: 409, body: { error: 'The current attempt is not interruptible' } };
+  }
+  if ((command.type === 'resume' || command.type === 'retry') && isActive) {
+    return { httpStatus: 409, body: { error: `Cannot ${command.type} an active attempt` } };
+  }
+  if (command.type === 'stop' && task.status === 'done') {
+    return { httpStatus: 409, body: { error: 'Mission is already stopped' } };
+  }
+  const confirmed = runService.getLatestConfirmedRun(missionId);
+  if ((command.type === 'correct' || command.type === 'resume') && !confirmed) {
+    return { httpStatus: 409, body: { error: 'No confirmed Hermes session is available' } };
+  }
+  return { task, current, confirmed, isActive };
 }
 
 export function createRunsRouter(dependencies: RunsRouterDependencies): ExpressRouter {
   const router = Router();
   const repository = createRunRepository(dependencies.database);
   const runService = dependencies.runService ?? createRunService(repository);
-  const getMission = dependencies.database.prepare("SELECT * FROM tasks WHERE id = ? AND mission_kind = 'interactive'");
-  const setMissionStatus = dependencies.database.prepare(`
-    UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND mission_kind = 'interactive'
-  `);
+  const now = dependencies.now ?? Date.now;
 
   router.post('/:missionId/commands', async (req, res) => {
     const idempotencyKey = req.get('Idempotency-Key')?.trim();
@@ -116,116 +142,139 @@ export function createRunsRouter(dependencies: RunsRouterDependencies): ExpressR
     }
 
     const missionId = req.params.missionId;
+    const payloadHash = canonicalHash(missionId, command);
+    const prior = repository.getCommand(idempotencyKey);
+    if (prior) {
+      if (prior.payloadHash !== payloadHash) {
+        return res.status(409).json({ error: 'Idempotency-Key was already used for another command' });
+      }
+      if ((prior.status === 'completed' || prior.status === 'needs_reconciliation')
+        && isStoredHttpResult(prior.result)) {
+        return res.status(prior.result.httpStatus).json(prior.result.body);
+      }
+      repository.nudgeCommandRetry(idempotencyKey, now());
+      const recoveryOwner = dependencies.leaseOwner?.() ?? `interactive-replay:${randomUUID()}`;
+      const leased = repository.leasePendingCommands({
+        owner: recoveryOwner,
+        idempotencyKey,
+        now: now(),
+        leaseMs: dependencies.leaseMs ?? 30_000,
+        limit: 1,
+      })[0];
+      if (leased) {
+        const recovered = recoverLeasedInteractiveCommand(
+          dependencies.database,
+          repository,
+          runService,
+          leased,
+          recoveryOwner,
+          now,
+        );
+        return res.status(recovered.httpStatus).json(recovered.body);
+      }
+      return res.status(202).json({
+        type: command.type, missionId, runId: command.runId, status: 'pending',
+      });
+    }
+
+    const preflight = loadCommandContext(dependencies.database, runService, missionId, command);
+    if (isStoredHttpResult(preflight)) {
+      return res.status(preflight.httpStatus).json(preflight.body);
+    }
+
+    if (command.type === 'correct' || command.type === 'resume' || command.type === 'retry') {
+      try {
+        await requireInteractiveAdmission(dependencies.adapter, runtimeSettings(preflight.current));
+      } catch (error) {
+        return sendInteractiveAdmissionError(res, error);
+      }
+    }
+
+    if (command.type === 'resume') {
+      try {
+        const session = await dependencies.adapter.getSessionMetadata(preflight.confirmed!.sessionId);
+        if (!session) return res.status(409).json({ error: 'Hermes session is no longer available' });
+      } catch {
+        return res.status(503).json({
+          error: 'Hermes session metadata is unavailable',
+          code: 'SESSION_METADATA_UNAVAILABLE',
+        });
+      }
+    }
+
     const claim = repository.claimCommand({
       idempotencyKey,
       actorId: req.actor.id,
       missionId,
       runId: command.runId,
       commandType: command.type,
-      payloadHash: canonicalHash(missionId, command),
+      payloadHash,
+      payload: command,
     });
-
     if (claim.status === 'conflict') {
       return res.status(409).json({ error: 'Idempotency-Key was already used for another command' });
     }
+    if (claim.status === 'busy') {
+      return res.status(409).json({
+        error: 'Another operator command is already in progress for this mission',
+        code: 'MISSION_COMMAND_BUSY',
+      });
+    }
     if (claim.status === 'duplicate') {
-      if (claim.command.status === 'completed' && isStoredHttpResult(claim.command.result)) {
+      if ((claim.command.status === 'completed' || claim.command.status === 'needs_reconciliation')
+        && isStoredHttpResult(claim.command.result)) {
         return res.status(claim.command.result.httpStatus).json(claim.command.result.body);
       }
-      return res.status(409).json({ error: 'Command is already in progress' });
+      return res.status(202).json({
+        type: command.type, missionId, runId: command.runId, status: 'pending',
+      });
     }
 
-    const finish = (httpStatus: number, body: unknown) => {
-      repository.completeCommand({ idempotencyKey, result: { httpStatus, body } });
-      return res.status(httpStatus).json(body);
-    };
-
-    const task = getMission.get(missionId) as Task | undefined;
-    if (!task) return finish(404, { error: 'Mission not found' });
-
-    const current = runService.getLatestRun(missionId);
-    if (!current || current.id !== command.runId || current.missionId !== missionId) {
-      return finish(409, { error: 'runId must be the current attempt for this mission' });
-    }
-
-    const isActive = ACTIVE_STATUSES.has(current.status);
-    if (command.type === 'interrupt' && !isActive) {
-      return finish(409, { error: 'The current attempt is not interruptible' });
-    }
-    if ((command.type === 'resume' || command.type === 'retry') && isActive) {
-      return finish(409, { error: `Cannot ${command.type} an active attempt` });
-    }
-    if (command.type === 'stop' && task.status === 'done') {
-      return finish(409, { error: 'Mission is already stopped' });
+    const owner = dependencies.leaseOwner?.() ?? `interactive-http:${randomUUID()}`;
+    const leased = repository.leasePendingCommands({
+      owner,
+      idempotencyKey,
+      now: now(),
+      leaseMs: dependencies.leaseMs ?? 30_000,
+      limit: 1,
+    })[0];
+    if (!leased) {
+      return res.status(202).json({
+        type: command.type, missionId, runId: command.runId, status: 'pending',
+      });
     }
 
     try {
-      if (command.type === 'interrupt') {
-        const interrupted = await dependencies.adapter.interruptChat(current.sessionId, command.reason);
-        if (!interrupted) return finish(409, { error: 'Hermes had no active run to interrupt' });
-        runService.cancel(current.id, 'operator-interrupt');
-        const body: RunCommandResult = {
-          type: command.type, missionId, runId: current.id, status: 'accepted',
-        };
-        return finish(202, body);
-      }
-
-      if (command.type === 'stop') {
-        if (isActive) await dependencies.adapter.interruptChat(current.sessionId, command.reason);
-        if (!TERMINAL_STATUSES.has(current.status)) runService.cancel(current.id, 'operator-stop');
-        setMissionStatus.run('done', Date.now(), missionId);
-        const updated = getMission.get(missionId) as Task;
-        broadcast({ type: 'task_updated', task: updated });
-        const body: RunCommandResult = {
-          type: command.type, missionId, runId: current.id, status: 'accepted',
-        };
-        return finish(202, body);
-      }
-
-      const confirmed = runService.getLatestConfirmedRun(missionId);
-      if ((command.type === 'correct' || command.type === 'resume') && !confirmed) {
-        return finish(409, { error: 'No confirmed Hermes session is available' });
-      }
-
-      if (command.type === 'resume') {
-        const session = await dependencies.adapter.getSessionMetadata(confirmed!.sessionId);
-        if (!session) return finish(409, { error: 'Hermes session is no longer available' });
-      }
-
-      if (command.type === 'correct' && isActive) {
-        const interrupted = await dependencies.adapter.interruptChat(current.sessionId, command.reason);
-        if (!interrupted) return finish(409, { error: 'Hermes had no active run to interrupt' });
-      }
-      if (!TERMINAL_STATUSES.has(current.status)) {
-        runService.cancel(
-          current.id,
-          command.type === 'correct' ? 'operator-interrupt' : `operator-${command.type}`,
-        );
-      }
-
-      const started = command.type === 'retry'
-        ? runService.startLinkedAttempt(current)
-        : runService.startLinkedAttempt(current, { sessionRun: confirmed! });
-      setMissionStatus.run('in_progress', Date.now(), missionId);
-      const updated = getMission.get(missionId) as Task;
-      broadcast({ type: 'task_updated', task: updated });
-      const startedRecord = runService.getLatestRun(missionId)!;
-      dependencies.launchCommandRun(
-        updated,
-        started,
-        commandInstruction(command, updated),
-        runtimeSettings(startedRecord),
+      const result = await executeClaimedInteractiveCommand(
+        dependencies,
+        repository,
+        runService,
+        leased,
+        owner,
+        command,
+        preflight,
       );
-      const body: RunCommandResult = {
-        type: command.type,
-        missionId,
-        runId: started.runId,
-        previousRunId: current.id,
-        status: 'accepted',
-      };
-      return finish(202, body);
+      return res.status(result.httpStatus).json(result.body);
     } catch (error) {
-      return finish(503, { error: toErrorMessage(error, 'Could not execute operator command') });
+      if (error instanceof InjectedCommandCrashError) {
+        return res.status(503).json({
+          error: 'Operator command processing was interrupted',
+          code: 'COMMAND_PROCESS_INTERRUPTED',
+        });
+      }
+      const result: StoredHttpResult = {
+        httpStatus: 503,
+        body: {
+          error: 'Could not execute operator command',
+          code: 'COMMAND_EXECUTION_FAILED',
+        },
+      };
+      try {
+        repository.completeCommand({ idempotencyKey, owner, result });
+      } catch {
+        // A lost lease is recovered from its durable phase; never overwrite the new owner.
+      }
+      return res.status(result.httpStatus).json(result.body);
     }
   });
 

@@ -50,8 +50,21 @@ export interface ClaimCommandInput {
   readonly runId?: string | null;
   readonly commandType: string;
   readonly payloadHash: string;
+  readonly payload?: unknown;
   readonly createdAt?: number;
 }
+
+export type OperatorCommandPhase =
+  | 'claimed'
+  | 'interrupting'
+  | 'interrupted'
+  | 'attempt_prepared'
+  | 'attempt_created'
+  | 'launching'
+  | 'launched'
+  | 'stopped'
+  | 'completed'
+  | 'needs_reconciliation';
 
 export interface OperatorCommand {
   readonly idempotencyKey: string;
@@ -60,7 +73,10 @@ export interface OperatorCommand {
   readonly runId: string | null;
   readonly commandType: string;
   readonly payloadHash: string;
+  readonly payload: unknown | null;
   readonly status: string;
+  readonly phase: OperatorCommandPhase;
+  readonly effectReceipt: unknown | null;
   readonly result: unknown | null;
   readonly createdAt: number;
   readonly completedAt: number | null;
@@ -71,12 +87,27 @@ export interface OperatorCommand {
 }
 
 export interface CommandClaimResult {
-  readonly status: 'claimed' | 'duplicate' | 'conflict';
+  readonly status: 'claimed' | 'duplicate' | 'conflict' | 'busy';
   readonly command: OperatorCommand;
 }
 
 export interface CompleteCommandInput {
   readonly idempotencyKey: string;
+  readonly owner?: string;
+  readonly result: unknown;
+  readonly completedAt?: number;
+}
+
+export interface UpdateCommandProgressInput {
+  readonly idempotencyKey: string;
+  readonly owner: string;
+  readonly phase: Exclude<OperatorCommandPhase, 'completed' | 'needs_reconciliation'>;
+  readonly effectReceipt?: unknown;
+}
+
+export interface ReconcileCommandInput {
+  readonly idempotencyKey: string;
+  readonly owner: string;
   readonly result: unknown;
   readonly completedAt?: number;
 }
@@ -131,6 +162,8 @@ export interface RunRepository {
   claimCommand(input: ClaimCommandInput): CommandClaimResult;
   getCommand(idempotencyKey: string): OperatorCommand | undefined;
   completeCommand(input: CompleteCommandInput): OperatorCommand;
+  updateCommandProgress(input: UpdateCommandProgressInput): boolean;
+  markCommandNeedsReconciliation(input: ReconcileCommandInput): OperatorCommand;
   listPendingCommands(commandType?: string): OperatorCommand[];
   leasePendingCommands(input: LeasePendingCommandsInput): OperatorCommand[];
   releaseCommandLease(input: ReleaseCommandLeaseInput): boolean;

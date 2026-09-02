@@ -18,6 +18,7 @@ import {
   type CronDispatchRecoveryLoop,
 } from './routes/scheduled-tasks.js';
 import { operationalReadiness } from './health/readiness.js';
+import { recoverPendingInteractiveCommands } from './runs/operator-command-outbox.js';
 
 const PORT = parseInt(process.env.PORT || '6969', 10);
 const PORT_FALLBACK_ATTEMPTS = 20;
@@ -85,6 +86,7 @@ async function main() {
   }
 
   const runRepository = createRunRepository(db);
+  recoverPendingInteractiveCommands({ database: db });
   cronDispatchRecoveryLoop = startCronDispatchRecoveryLoop(adapter, runRepository, undefined, {
     onError: (error) => {
       console.error(

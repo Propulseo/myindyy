@@ -18,6 +18,7 @@ export interface StartedMission {
 
 export interface StartLinkedAttemptOptions {
   readonly sessionRun?: MissionRun;
+  readonly runId?: string;
 }
 
 export interface MissionRunHistory {
@@ -164,8 +165,9 @@ export function createRunService(
     previous: MissionRun | undefined,
     runtime: Pick<MissionRun, 'provider' | 'model' | 'reasoningEffort'>,
     confirmedSessionRun?: MissionRun,
+    requestedRunId?: string,
   ): StartedMission {
-    const runId = generateId();
+    const runId = requestedRunId ?? generateId();
     const sessionId = confirmedSessionRun?.sessionId ?? `indy:${missionId}:${runId}`;
     repository.createRun({
       id: runId,
@@ -197,8 +199,13 @@ export function createRunService(
     },
 
     startLinkedAttempt(previousRun, startOptions = {}): StartedMission {
-      const runtime = startOptions.sessionRun ?? previousRun;
-      return startAttempt(previousRun.missionId, previousRun, runtime, startOptions.sessionRun);
+      return startAttempt(
+        previousRun.missionId,
+        previousRun,
+        previousRun,
+        startOptions.sessionRun,
+        startOptions.runId,
+      );
     },
 
     consumeEvent,

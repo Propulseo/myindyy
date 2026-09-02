@@ -15,7 +15,7 @@ const REQUIRED_COLUMNS = Object.freeze({
   run_events: ['id', 'run_id', 'type', 'occurred_at', 'payload_json'],
   operator_commands: [
     'idempotency_key', 'status', 'lease_owner', 'lease_expires_at',
-    'attempt_count', 'next_attempt_at',
+    'attempt_count', 'next_attempt_at', 'payload_json', 'phase', 'effect_receipt_json',
   ],
 } as const);
 

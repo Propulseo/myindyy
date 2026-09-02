@@ -12,11 +12,13 @@ import type {
   LeasePendingCommandsInput,
   MissionRun,
   OperatorCommand,
+  ReconcileCommandInput,
   RunEvent,
   RunRepository,
   RunRepositoryOptions,
   ReleaseCommandLeaseInput,
   ReconciledMissionRunStatus,
+  UpdateCommandProgressInput,
 } from './types.js';
 import { redactSensitiveText, serializeRedacted } from '../security/redaction.js';
 
@@ -54,7 +56,10 @@ interface OperatorCommandRow {
   run_id: string | null;
   command_type: string;
   payload_hash: string;
+  payload_json: string | null;
   status: string;
+  phase: OperatorCommand['phase'];
+  effect_receipt_json: string | null;
   result_json: string | null;
   created_at: number;
   completed_at: number | null;
@@ -97,6 +102,15 @@ function toEvent(row: RunEventRow): RunEvent {
   };
 }
 
+function parseStoredJson(value: string | null): unknown | null {
+  if (value === null) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 function toCommand(row: OperatorCommandRow): OperatorCommand {
   return {
     idempotencyKey: row.idempotency_key,
@@ -105,8 +119,11 @@ function toCommand(row: OperatorCommandRow): OperatorCommand {
     runId: row.run_id,
     commandType: row.command_type,
     payloadHash: row.payload_hash,
+    payload: parseStoredJson(row.payload_json),
     status: row.status,
-    result: row.result_json === null ? null : JSON.parse(row.result_json),
+    phase: row.phase ?? 'claimed',
+    effectReceipt: parseStoredJson(row.effect_receipt_json),
+    result: parseStoredJson(row.result_json),
     createdAt: row.created_at,
     completedAt: row.completed_at,
     leaseOwner: row.lease_owner,
@@ -194,20 +211,46 @@ export function createRunRepository(
   const insertCommand = database.prepare(`
     INSERT OR IGNORE INTO operator_commands (
       idempotency_key, actor_id, mission_id, run_id, command_type, payload_hash,
-      status, result_json, created_at, completed_at
+      payload_json, status, phase, effect_receipt_json, result_json, created_at, completed_at
     ) VALUES (
       @idempotency_key, @actor_id, @mission_id, @run_id, @command_type, @payload_hash,
-      'claimed', NULL, @created_at, NULL
+      @payload_json, 'claimed', 'claimed', NULL, NULL, @created_at, NULL
     )
   `);
   const getCommand = database.prepare(
     'SELECT * FROM operator_commands WHERE idempotency_key = ?',
   );
+  const getActiveInteractiveMissionCommand = database.prepare(`
+    SELECT * FROM operator_commands
+    WHERE mission_id = @mission_id
+      AND status = 'claimed'
+      AND command_type IN ('interrupt', 'correct', 'resume', 'retry', 'stop')
+    ORDER BY created_at ASC, idempotency_key ASC
+    LIMIT 1
+  `);
   const completeCommand = database.prepare(`
     UPDATE operator_commands
-    SET status = 'completed', result_json = @result_json, completed_at = @completed_at,
+    SET status = 'completed', phase = 'completed', result_json = @result_json, completed_at = @completed_at,
         lease_owner = NULL, lease_expires_at = NULL
     WHERE idempotency_key = @idempotency_key AND status = 'claimed'
+      AND (@owner IS NULL OR lease_owner = @owner)
+  `);
+  const updateCommandProgress = database.prepare(`
+    UPDATE operator_commands
+    SET phase = @phase,
+        effect_receipt_json = COALESCE(@effect_receipt_json, effect_receipt_json)
+    WHERE idempotency_key = @idempotency_key
+      AND status = 'claimed'
+      AND lease_owner = @owner
+  `);
+  const markCommandNeedsReconciliation = database.prepare(`
+    UPDATE operator_commands
+    SET status = 'needs_reconciliation', phase = 'needs_reconciliation',
+        result_json = @result_json, completed_at = @completed_at,
+        lease_owner = NULL, lease_expires_at = NULL
+    WHERE idempotency_key = @idempotency_key
+      AND status = 'claimed'
+      AND lease_owner = @owner
   `);
   const listPendingCommands = database.prepare(`
     SELECT * FROM operator_commands
@@ -345,6 +388,19 @@ export function createRunRepository(
 
   const claimCommandTransaction = database.transaction((input: ClaimCommandInput): CommandClaimResult => {
     const createdAt = input.createdAt ?? now();
+    const existing = getCommand.get(input.idempotencyKey) as OperatorCommandRow | undefined;
+    if (existing) {
+      return {
+        status: existing.payload_hash === input.payloadHash ? 'duplicate' : 'conflict',
+        command: toCommand(existing),
+      };
+    }
+    if (['interrupt', 'correct', 'resume', 'retry', 'stop'].includes(input.commandType)) {
+      const active = getActiveInteractiveMissionCommand.get({
+        mission_id: input.missionId,
+      }) as OperatorCommandRow | undefined;
+      if (active) return { status: 'busy', command: toCommand(active) };
+    }
     const result: RunResult = insertCommand.run({
       idempotency_key: input.idempotencyKey,
       actor_id: input.actorId,
@@ -352,13 +408,12 @@ export function createRunRepository(
       run_id: input.runId ?? null,
       command_type: input.commandType,
       payload_hash: input.payloadHash,
+      payload_json: input.payload === undefined ? null : serializeRedacted(input.payload),
       created_at: createdAt,
     });
     const row = getCommand.get(input.idempotencyKey) as OperatorCommandRow;
     return {
-      status: result.changes > 0
-        ? 'claimed'
-        : row.payload_hash === input.payloadHash ? 'duplicate' : 'conflict',
+      status: result.changes > 0 ? 'claimed' : 'busy',
       command: toCommand(row),
     };
   });
@@ -475,6 +530,31 @@ export function createRunRepository(
     completeCommand(input: CompleteCommandInput): OperatorCommand {
       const result = completeCommand.run({
         idempotency_key: input.idempotencyKey,
+        owner: input.owner ?? null,
+        result_json: serializeRedacted(input.result),
+        completed_at: input.completedAt ?? now(),
+      });
+      if (result.changes === 0) {
+        throw new Error(`Operator command is not claimable: ${input.idempotencyKey}`);
+      }
+      return toCommand(getCommand.get(input.idempotencyKey) as OperatorCommandRow);
+    },
+
+    updateCommandProgress(input: UpdateCommandProgressInput): boolean {
+      return updateCommandProgress.run({
+        idempotency_key: input.idempotencyKey,
+        owner: input.owner,
+        phase: input.phase,
+        effect_receipt_json: input.effectReceipt === undefined
+          ? null
+          : serializeRedacted(input.effectReceipt),
+      }).changes > 0;
+    },
+
+    markCommandNeedsReconciliation(input: ReconcileCommandInput): OperatorCommand {
+      const result = markCommandNeedsReconciliation.run({
+        idempotency_key: input.idempotencyKey,
+        owner: input.owner,
         result_json: serializeRedacted(input.result),
         completed_at: input.completedAt ?? now(),
       });
