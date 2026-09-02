@@ -358,6 +358,65 @@ describe('scheduled task HTTP policy boundary', () => {
     } finally { database.close(); }
   });
 
+  it('keeps returned runtime authState error pending until a connected inventory recovers', async () => {
+    const database = createDatabase(':memory:');
+    const runRepository = createRunRepository(database);
+    const { adapter, app, registry } = routeFixture({ runRepository });
+    adapter.getRuntimeStatus
+      .mockResolvedValueOnce({ ...CONNECTED_RUNTIME, authState: 'error', models: [] })
+      .mockResolvedValue(CONNECTED_RUNTIME);
+    try {
+      const pending = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'runtime-status-error-recovers');
+      expect(pending.status).toBe(202);
+      expect(pending.body).toMatchObject({ accepted: false, pending: true });
+      expect(adapter.runScheduledTask).not.toHaveBeenCalled();
+      expect(runRepository.listPendingCommands('cron.run')).toHaveLength(1);
+
+      expect(await recoverPendingCronDispatches(adapter as never, runRepository, registry)).toEqual({ recovered: 1, deferred: 0 });
+      const replay = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'runtime-status-error-recovers');
+      expect(replay.status).toBe(202);
+      expect(replay.body).toMatchObject({ dispatchAccepted: true });
+      expect(adapter.runScheduledTask).toHaveBeenCalledOnce();
+    } finally { database.close(); }
+  });
+
+  it('keeps a second token pending while Hermes owns the first and dispatches it after the first is cleared', async () => {
+    const database = createDatabase(':memory:');
+    const runRepository = createRunRepository(database);
+    const { adapter, app, task } = routeFixture({ runRepository });
+    let firstAccepted = false;
+    let firstCleared = false;
+    adapter.runScheduledTask.mockImplementation(async (_id: string, token: string) => {
+      if (!firstAccepted) {
+        firstAccepted = true;
+        return { scheduledTask: task, dispatchReceipt: { token, state: 'accepted' as const } };
+      }
+      if (!firstCleared) throw Object.assign(new Error('Hermes job already owns another dispatch token'), { code: 'scheduled_task_busy' });
+      return { scheduledTask: task, dispatchReceipt: { token, state: 'accepted' as const } };
+    });
+    try {
+      const first = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'multi-token-a');
+      const blocked = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'multi-token-b');
+      expect(first.body).toMatchObject({ dispatchAccepted: true });
+      expect(blocked.status).toBe(202);
+      expect(blocked.body).toMatchObject({ accepted: false, pending: true });
+      expect(blocked.body).not.toHaveProperty('dispatchAccepted');
+      expect(first.body.dispatchToken).not.toBe(blocked.body.dispatchToken);
+      expect(runRepository.listPendingCommands('cron.run')).toHaveLength(1);
+
+      firstCleared = true;
+      const accepted = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'multi-token-b');
+      expect(accepted.body).toMatchObject({ dispatchAccepted: true, dispatchToken: blocked.body.dispatchToken });
+      expect(adapter.runScheduledTask).toHaveBeenCalledTimes(3);
+      expect(runRepository.listPendingCommands('cron.run')).toHaveLength(0);
+    } finally { database.close(); }
+  });
+
   it('replays a duplicate manual command without triggering Hermes twice', async () => {
     const database = createDatabase(':memory:');
     const runRepository = createRunRepository(database, { now: () => 100 });
@@ -692,7 +751,7 @@ describe('scheduled task HTTP policy boundary', () => {
     const task = {
       ...scheduledTaskRecord(paths.valid),
       name: 'Authorization: Basic dXNlcjpwYXNz',
-      lastError: 'Authorization: Digest username="Mufasa", realm="indy", nonce="secret-fixture", uri="/cron"\r\nPolicy refused',
+      lastError: '{"authorization":"Digest username=\\"Mufasa\\", realm=\\"indy\\", nonce=\\"secret-fixture\\", response=\\"digest-response-secret\\"","status":"failed"}',
       deliver: 'credential=delivery-provenance-secret',
       origin: {
         chat_name: 'Authorization: Basic origin-provenance-secret',
@@ -709,6 +768,7 @@ describe('scheduled task HTTP policy boundary', () => {
     expect(JSON.stringify(response.body)).not.toContain('dXNlcjpwYXNz');
     expect(JSON.stringify(response.body)).not.toContain('secret-fixture');
     expect(JSON.stringify(response.body)).not.toContain('Mufasa');
+    expect(JSON.stringify(response.body)).not.toContain('digest-response-secret');
     expect(JSON.stringify(response.body)).not.toContain('delivery-provenance-secret');
     expect(JSON.stringify(response.body)).not.toContain('origin-provenance-secret');
     expect(JSON.stringify(response.body)).not.toContain('origin-password-secret');

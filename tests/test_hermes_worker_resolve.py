@@ -404,22 +404,30 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
         self.assertEqual(hermes_scheduled_tasks._installed_hermes_version(), "0.15.1")
         self.assertTrue(hermes_scheduled_tasks._validate_execution_hook_contract(scheduler, jobs))
 
-    def test_execution_hook_contract_fails_closed_on_version_or_source_drift(self):
+    def test_execution_hook_contract_pins_imported_source_bytes_not_distribution_metadata(self):
         hermes_scheduled_tasks._ensure_imports()
         import cron.jobs as jobs
         import cron.scheduler as scheduler
 
         with patch.object(hermes_scheduled_tasks, "_installed_hermes_version", return_value="0.16.0"):
+            self.assertTrue(hermes_scheduled_tasks._validate_execution_hook_contract(scheduler, jobs))
+        source = Path(inspect.getsourcefile(scheduler))
+        with tempfile.TemporaryDirectory() as directory:
+            drift_dir = Path(directory) / "cron"
+            drift_dir.mkdir()
+            drift = drift_dir / "scheduler.py"
+            drift.write_bytes(source.read_bytes() + b"\n# one-byte/dead-code drift\n")
+            with patch.object(hermes_scheduled_tasks.inspect, "getsourcefile", return_value=str(drift)):
+                self.assertFalse(hermes_scheduled_tasks._validate_execution_hook_contract(scheduler, jobs))
+        with patch.object(hermes_scheduled_tasks.inspect, "getsourcefile", return_value="Z:/missing/cron/scheduler.py"):
             self.assertFalse(hermes_scheduled_tasks._validate_execution_hook_contract(scheduler, jobs))
-        real_getsource = inspect.getsource
-        with patch.object(
-            hermes_scheduled_tasks.inspect,
-            "getsource",
-            side_effect=lambda value: "def tick():\n    return 0\n" if value is scheduler.tick else real_getsource(value),
-        ):
-            self.assertFalse(hermes_scheduled_tasks._validate_execution_hook_contract(scheduler, jobs))
-        with patch.object(hermes_scheduled_tasks.inspect, "getsource", side_effect=OSError("source unavailable")):
-            self.assertFalse(hermes_scheduled_tasks._validate_execution_hook_contract(scheduler, jobs))
+        different = types.ModuleType("cron.not_the_scheduler")
+        different.__file__ = str(source)
+        different.tick = scheduler.tick
+        different.run_job = scheduler.run_job
+        different.run_one_job = scheduler.run_one_job
+        different._run_one_job_body = scheduler._run_one_job_body
+        self.assertFalse(hermes_scheduled_tasks._validate_execution_hook_contract(different, jobs))
 
     def test_direct_run_without_exposed_durable_execution_id_is_denied(self):
         cron_module = types.ModuleType("cron")
@@ -457,6 +465,7 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
         jobs_module = types.ModuleType("cron.jobs")
         scheduler_module = types.ModuleType("cron.scheduler")
         executions_module = types.ModuleType("cron.executions")
+        executions_module._TERMINAL_STATES = ("completed", "failed", "unknown")
         executed = []
         def original_run_job(job, *args, **kwargs):
             executed.append(job["id"])
@@ -561,6 +570,7 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
         cron_module = types.ModuleType("cron")
         scheduler_module = types.ModuleType("cron.scheduler")
         executions_module = types.ModuleType("cron.executions")
+        executions_module._TERMINAL_STATES = ("completed", "failed", "unknown")
         observed = []
         scheduler_module.get_fallback_chain = lambda config: [{"provider": "other", "model": "fallback"}]
 
@@ -597,6 +607,7 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
         cron_module = types.ModuleType("cron")
         scheduler_module = types.ModuleType("cron.scheduler")
         executions_module = types.ModuleType("cron.executions")
+        executions_module._TERMINAL_STATES = ("completed", "failed", "unknown")
         record = {"id": "ledger-run", "job_id": "ledger-job", "status": "running", "started_at": "2026-09-02T08:00:00Z", "finished_at": None, "error": None}
         executions_module.list_executions = lambda job_id=None, limit=50: [dict(record)]
         scheduler_module.run_job = lambda job, *args, **kwargs: (
@@ -631,6 +642,41 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
         self.assertNotIn("durable-secret", terminal)
         self.assertNotIn("json-token", terminal)
         self.assertNotIn("json-credential", terminal)
+
+    def test_interrupted_installed_execution_recovers_to_unknown_and_finalizes_pending(self):
+        hermes_scheduled_tasks._ensure_imports()
+        import cron.executions as executions
+
+        with tempfile.TemporaryDirectory() as hermes_home:
+            execution_db = Path(hermes_home) / "executions.db"
+            with patch.object(executions, "EXECUTIONS_FILE", execution_db), \
+                 patch.object(executions, "_owner_is_live", return_value=False), \
+                 patch.dict("os.environ", {"HERMES_HOME": hermes_home}):
+                claimed = executions.create_execution("cron-interrupted", source="builtin")
+                running = executions.create_execution("cron-interrupted", source="builtin")
+                executions.mark_execution_running(running["id"])
+                for occurrence in (claimed, running):
+                    hermes_scheduled_tasks._write_pending_occurrence(
+                        "cron-interrupted",
+                        occurrence["id"],
+                        {"scheduledTaskName": "Interrupted", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoningEffort": "high", "workdir": "C:/work"},
+                        None,
+                    )
+                with patch.object(executions, "_PROCESS_ID", "simulated-restarted-owner"):
+                    self.assertEqual(executions.recover_interrupted_executions(), 2)
+                    recovered = executions.list_executions(job_id="cron-interrupted", limit=10)
+                    self.assertEqual({record["status"] for record in recovered}, {"unknown"})
+                    self.assertEqual(hermes_scheduled_tasks._finalize_pending_manifests_once(), 2)
+                terminals = {
+                    occurrence["id"]: json.loads((Path(hermes_home) / "cron" / "indy-manifests" / "cron-interrupted" / f"{occurrence['id']}.json").read_text(encoding="utf-8"))
+                    for occurrence in (claimed, running)
+                }
+
+        self.assertEqual({terminal["status"] for terminal in terminals.values()}, {"failed"})
+        self.assertEqual({terminal["hermesStatus"] for terminal in terminals.values()}, {"unknown"})
+        self.assertEqual({terminal["provenance"]["originalHermesStatus"] for terminal in terminals.values()}, {"unknown"})
+        self.assertEqual(terminals[claimed["id"]]["provenance"]["startedAtEvidence"], "claimed_at")
+        self.assertEqual(terminals[running["id"]]["provenance"]["startedAtEvidence"], "started_at")
 
     def test_manual_token_is_associated_under_lock_and_never_reaches_later_automatic_run(self):
         cron_module = types.ModuleType("cron")
@@ -767,6 +813,7 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
     def test_bound_receipt_reconstructs_missing_pending_evidence_and_finalizes(self):
         cron_module = types.ModuleType("cron")
         executions_module = types.ModuleType("cron.executions")
+        executions_module._TERMINAL_STATES = ("completed", "failed", "unknown")
         executions_module.list_executions = lambda job_id=None, limit=50: [{
             "id": "lost-pending", "job_id": "cron-recover", "status": "failed",
             "started_at": "2026-09-02T08:00:00Z", "finished_at": "2026-09-02T08:00:01Z", "error": "password=ledger-secret",
@@ -824,11 +871,116 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
             output = Path(directory) / "output.json"
             hermes_scheduled_tasks._write_occurrence_output(output, {
                 "nested": {"password": "hunter2", "passwd": "legacy", "pwd": "short"},
-                "message": 'Authorization: Digest username="Mufasa", nonce="digest-secret", uri="/"',
+                "message": '{"authorization":"Digest username=\\"Mufasa\\", nonce=\\"digest-secret\\", response=\\"digest-response\\"","safe":"ok"}',
             })
             serialized = output.read_text(encoding="utf-8")
-        for secret in ("hunter2", "legacy", "short", "Mufasa", "digest-secret"):
+        for secret in ("hunter2", "legacy", "short", "Mufasa", "digest-secret", "digest-response"):
             self.assertNotIn(secret, serialized)
+
+    def test_two_manual_tokens_never_overwrite_and_each_bind_one_real_occurrence(self):
+        for crash_after_first_marker in (False, True):
+            with self.subTest(crash_after_first_marker=crash_after_first_marker), tempfile.TemporaryDirectory() as hermes_home:
+                cron_module = types.ModuleType("cron")
+                jobs_module = types.ModuleType("cron.jobs")
+                scheduler_module = types.ModuleType("cron.scheduler")
+                stored = {"id": "cron-multi", "name": "Cron", "state": "scheduled", "enabled": True, "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high"}
+                jobs_module._jobs_lock = nullcontext
+                jobs_module.get_job = lambda job_id: dict(stored) if job_id == "cron-multi" else None
+                jobs_module.resolve_job_ref = jobs_module.get_job
+                jobs_module.is_terminal_job = lambda job: False
+                jobs_module.update_job = lambda job_id, updates: (stored.update(updates), dict(stored))[1]
+                scheduler_module.run_job = lambda job, *args, **kwargs: (True, "ok", "", None)
+                scheduler_module.get_fallback_chain = lambda config: []
+                allowed = Path(hermes_home) / "allowed"
+                workdir = allowed / "client"
+                workdir.mkdir(parents=True)
+                stored["workdir"] = str(workdir)
+                with patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+                     patch.object(hermes_scheduled_tasks, "_validate_execution_hook_contract", return_value=True), \
+                     patch.object(hermes_scheduled_tasks, "_kick_immediate_tick"), \
+                     patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", return_value={"provider": "openai-codex", "profileId": "etienne-openai", "authState": "connected", "models": [{"id": "gpt-5.6-sol", "reasoningEfforts": ["high"]}]}), \
+                     patch.object(hermes_scheduled_tasks, "_scheduled_workdir_roots", return_value=[allowed]), \
+                     patch.dict(sys.modules, {"cron": cron_module, "cron.jobs": jobs_module, "cron.scheduler": scheduler_module}), \
+                     patch.dict("os.environ", {"HERMES_HOME": hermes_home}):
+                    if crash_after_first_marker:
+                        with patch.object(hermes_scheduled_tasks, "_after_dispatch_job_update", side_effect=RuntimeError("crash-after-a-marker")):
+                            with self.assertRaisesRegex(RuntimeError, "crash-after-a-marker"):
+                                hermes_scheduled_tasks.trigger_scheduled_task("cron-multi", "token-a")
+                    else:
+                        hermes_scheduled_tasks.trigger_scheduled_task("cron-multi", "token-a")
+                    with self.assertRaises(hermes_scheduled_tasks.WorkerError) as busy:
+                        hermes_scheduled_tasks.trigger_scheduled_task("cron-multi", "token-b")
+                    self.assertEqual(busy.exception.code, "scheduled_task_busy")
+                    self.assertEqual(stored["indy_dispatch_token"], "token-a")
+                    first_receipt_before_tick = hermes_scheduled_tasks._read_dispatch_receipt("token-a")
+                    self.assertEqual(first_receipt_before_tick["state"], "prepared" if crash_after_first_marker else "accepted")
+                    self.assertNotIn("occurrenceId", first_receipt_before_tick)
+                    self.assertIsNone(hermes_scheduled_tasks._read_dispatch_receipt("token-b"))
+
+                    hermes_scheduled_tasks.install_scheduled_task_execution_hook()
+                    scheduler_module.run_job({**stored, "execution_id": "execution-a"})
+                    hermes_scheduled_tasks.trigger_scheduled_task("cron-multi", "token-b")
+                    self.assertEqual(stored["indy_dispatch_token"], "token-b")
+                    scheduler_module.run_job({**stored, "execution_id": "execution-b"})
+                    first = json.loads((Path(hermes_home) / "cron" / "indy-manifests" / "cron-multi" / "execution-a.pending.json").read_text(encoding="utf-8"))
+                    second = json.loads((Path(hermes_home) / "cron" / "indy-manifests" / "cron-multi" / "execution-b.pending.json").read_text(encoding="utf-8"))
+                    first_receipt = hermes_scheduled_tasks._read_dispatch_receipt("token-a")
+                    second_receipt = hermes_scheduled_tasks._read_dispatch_receipt("token-b")
+
+                self.assertEqual(first["dispatchToken"], "token-a")
+                self.assertEqual(second["dispatchToken"], "token-b")
+                self.assertNotEqual(first["hermesRunId"], second["hermesRunId"])
+                self.assertEqual(first_receipt["occurrenceId"], "execution-a")
+                self.assertEqual(second_receipt["occurrenceId"], "execution-b")
+                self.assertIsNone(stored.get("indy_dispatch_token"))
+
+    def test_second_token_does_not_starve_when_first_hook_crashes_after_pending_evidence(self):
+        cron_module = types.ModuleType("cron")
+        jobs_module = types.ModuleType("cron.jobs")
+        scheduler_module = types.ModuleType("cron.scheduler")
+        executions_module = types.ModuleType("cron.executions")
+        executions_module._TERMINAL_STATES = ("completed", "failed", "unknown")
+        stored = {"id": "cron-no-starve", "name": "Cron", "state": "scheduled", "enabled": True, "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high"}
+        jobs_module._jobs_lock = nullcontext
+        jobs_module.get_job = lambda job_id: dict(stored) if job_id == "cron-no-starve" else None
+        jobs_module.resolve_job_ref = jobs_module.get_job
+        jobs_module.is_terminal_job = lambda job: False
+        jobs_module.update_job = lambda job_id, updates: (stored.update(updates), dict(stored))[1]
+        scheduler_module.run_job = lambda job, *args, **kwargs: (True, "ok", "", None)
+        scheduler_module.get_fallback_chain = lambda config: []
+        executions_module.list_executions = lambda job_id=None, limit=50: [{
+            "id": "execution-a-crashed", "job_id": "cron-no-starve", "status": "failed",
+            "claimed_at": "2026-09-02T08:00:00Z", "started_at": None,
+            "finished_at": "2026-09-02T08:00:01Z", "error": "hook crash",
+        }]
+        with tempfile.TemporaryDirectory() as hermes_home:
+            allowed = Path(hermes_home) / "allowed"
+            workdir = allowed / "client"
+            workdir.mkdir(parents=True)
+            stored["workdir"] = str(workdir)
+            with patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+                 patch.object(hermes_scheduled_tasks, "_validate_execution_hook_contract", return_value=True), \
+                 patch.object(hermes_scheduled_tasks, "_kick_immediate_tick"), \
+                 patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", return_value={"provider": "openai-codex", "profileId": "etienne-openai", "authState": "connected", "models": [{"id": "gpt-5.6-sol", "reasoningEfforts": ["high"]}]}), \
+                 patch.object(hermes_scheduled_tasks, "_scheduled_workdir_roots", return_value=[allowed]), \
+                 patch.dict(sys.modules, {"cron": cron_module, "cron.jobs": jobs_module, "cron.scheduler": scheduler_module, "cron.executions": executions_module}), \
+                 patch.dict("os.environ", {"HERMES_HOME": hermes_home}):
+                hermes_scheduled_tasks.trigger_scheduled_task("cron-no-starve", "token-a")
+                with self.assertRaises(hermes_scheduled_tasks.WorkerError):
+                    hermes_scheduled_tasks.trigger_scheduled_task("cron-no-starve", "token-b")
+                hermes_scheduled_tasks.install_scheduled_task_execution_hook()
+                with patch.object(hermes_scheduled_tasks, "_after_occurrence_pending_write", side_effect=RuntimeError("crash-after-pending")):
+                    with self.assertRaisesRegex(RuntimeError, "crash-after-pending"):
+                        scheduler_module.run_job({**stored, "execution_id": "execution-a-crashed"})
+                self.assertEqual(hermes_scheduled_tasks._finalize_pending_manifests_once(), 1)
+                first_receipt = hermes_scheduled_tasks._read_dispatch_receipt("token-a")
+                self.assertEqual(first_receipt.get("occurrenceId"), "execution-a-crashed")
+                self.assertIsNone(stored.get("indy_dispatch_token"))
+                hermes_scheduled_tasks.trigger_scheduled_task("cron-no-starve", "token-b")
+                scheduler_module.run_job({**stored, "execution_id": "execution-b-after-crash"})
+                second = json.loads((Path(hermes_home) / "cron" / "indy-manifests" / "cron-no-starve" / "execution-b-after-crash.pending.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(second["dispatchToken"], "token-b")
 
     def test_dispatch_crash_boundaries_recover_the_same_occurrence_before_later_auto_run(self):
         seams = (
@@ -843,6 +995,7 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
                 jobs_module = types.ModuleType("cron.jobs")
                 scheduler_module = types.ModuleType("cron.scheduler")
                 executions_module = types.ModuleType("cron.executions")
+                executions_module._TERMINAL_STATES = ("completed", "failed", "unknown")
                 allowed = Path(hermes_home) / "allowed"
                 workdir = allowed / "client"
                 workdir.mkdir(parents=True)

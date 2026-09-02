@@ -22,6 +22,7 @@ function manifest(overrides: Partial<ScheduledTaskOccurrenceManifest> = {}): Sch
     startedAt: '2026-09-02T08:00:00.125Z',
     finishedAt: '2026-09-02T08:00:02.875Z',
     status: 'completed',
+    hermesStatus: 'completed',
     error: null,
     outputRef: 'C:/hermes/cron/indy-manifests/deleted-task/run-shared.output.json',
     provider: 'openai-codex',
@@ -85,6 +86,26 @@ describe('terminal Hermes manifest projection', () => {
     } finally { database.close(); }
   });
 
+  it('projects recovered Hermes unknown evidence as failed while preserving the original terminal status', async () => {
+    const database = createDatabase(':memory:');
+    const interrupted = manifest({
+      status: 'failed',
+      error: 'Scheduler restarted before a durable terminal result.',
+      hermesStatus: 'unknown',
+    } as Partial<ScheduledTaskOccurrenceManifest>);
+    try {
+      await reconcileScheduledTaskOccurrences(database, { listScheduledTasks: vi.fn() }, {
+        listManifests: vi.fn().mockResolvedValue([interrupted]),
+      });
+      const row = database.prepare('SELECT status, provenance_json FROM mission_runs').get() as {
+        status: string; provenance_json: string;
+      };
+      expect(row.status).toBe('failed');
+      expect(JSON.stringify(database.prepare('SELECT payload_json FROM run_events').all())).toContain('Scheduler restarted');
+      expect(JSON.parse(row.provenance_json)).toMatchObject({ originalHermesStatus: 'unknown' });
+    } finally { database.close(); }
+  });
+
   it('keys same Hermes run id independently per task and remains restart/concurrency idempotent', async () => {
     const database = createDatabase(':memory:');
     const manifests = [manifest(), manifest({ scheduledTaskId: 'other-task', scheduledTaskName: 'Autre tâche' })];
@@ -112,7 +133,7 @@ describe('terminal Hermes manifest projection', () => {
       model: 'credential=model-secret',
       workdir: 'api_key=workdir-secret',
       status: 'failed',
-      error: 'Bearer oauth-secret token=hidden password=nested-password passwd=nested-passwd pwd=nested-pwd',
+      error: '{"authorization":"Digest username=\\"EscapedCron\\", nonce=\\"escaped-manifest-nonce\\", response=\\"escaped-manifest-response\\"","password":"nested-password","passwd":"nested-passwd","pwd":"nested-pwd"}',
     })];
     const source = { listScheduledTasks: vi.fn() };
     const listManifests = vi.fn().mockImplementation(async () => manifests);
@@ -134,6 +155,9 @@ describe('terminal Hermes manifest projection', () => {
       expect(persisted).not.toContain('nested-password');
       expect(persisted).not.toContain('nested-passwd');
       expect(persisted).not.toContain('nested-pwd');
+      expect(persisted).not.toContain('EscapedCron');
+      expect(persisted).not.toContain('escaped-manifest-nonce');
+      expect(persisted).not.toContain('escaped-manifest-response');
       expect(database.prepare('SELECT COUNT(*) AS count FROM mission_runs').get()).toEqual({ count: 1 });
     } finally { database.close(); }
   });

@@ -11,6 +11,7 @@ export interface ScheduledTaskOccurrenceManifest {
   readonly startedAt: string;
   readonly finishedAt: string;
   readonly status: 'completed' | 'failed';
+  readonly hermesStatus: 'completed' | 'failed' | 'unknown';
   readonly error: string | null;
   readonly outputRef: string;
   readonly provider: string;
@@ -39,11 +40,13 @@ function parseManifest(value: unknown, manifestPath: string): ScheduledTaskOccur
   const model = text(raw.model);
   const workdir = text(raw.workdir);
   const effort = text(raw.reasoningEffort);
+  const hermesStatus = text(raw.hermesStatus) ?? text(raw.status);
   const started = startedAt ? Date.parse(startedAt) : NaN;
   const finished = finishedAt ? Date.parse(finishedAt) : NaN;
   if (!hermesRunId || !scheduledTaskId || !scheduledTaskName || !startedAt || !finishedAt
     || !outputRef || !provider || !model || !Number.isFinite(started) || !Number.isFinite(finished)
-    || finished < started || (raw.status !== 'completed' && raw.status !== 'failed')) return null;
+    || finished < started || (raw.status !== 'completed' && raw.status !== 'failed')
+    || !hermesStatus || !['completed', 'failed', 'unknown'].includes(hermesStatus)) return null;
   if (effort !== null && !REASONING_EFFORTS.includes(effort as ReasoningEffort)) return null;
   return {
     schemaVersion: 1,
@@ -53,6 +56,7 @@ function parseManifest(value: unknown, manifestPath: string): ScheduledTaskOccur
     startedAt,
     finishedAt,
     status: raw.status,
+    hermesStatus: hermesStatus as ScheduledTaskOccurrenceManifest['hermesStatus'],
     error: text(raw.error),
     outputRef,
     provider,

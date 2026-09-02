@@ -104,6 +104,7 @@ export async function reconcileScheduledTaskOccurrences(
           outputRef: manifest.outputRef ? redactSensitiveText(manifest.outputRef) : null,
           manifestPath: manifest.manifestPath ? redactSensitiveText(manifest.manifestPath) : null,
           dispatchToken: manifest.dispatchToken ? redactSensitiveText(manifest.dispatchToken) : null,
+          originalHermesStatus: manifest.hermesStatus,
         },
       });
       if (result.created) imported += 1;

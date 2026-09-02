@@ -270,6 +270,19 @@ export async function recoverPendingCronDispatches(
       }
       const validation = validateScheduledTask(scheduledTask, runtime, workdirRegistry);
       if (!validation.ok) {
+        if (validation.error.code === 'SCHEDULED_RUNTIME_UNAVAILABLE') {
+          const at = options.now ?? Date.now();
+          const retryDelay = command.attemptCount <= 1
+            ? 0
+            : Math.min(30_000, 250 * (2 ** Math.min(command.attemptCount - 2, 7)));
+          runRepository.releaseCommandLease({
+            idempotencyKey: command.idempotencyKey,
+            owner,
+            nextAttemptAt: at + retryDelay,
+          });
+          deferred += 1;
+          continue;
+        }
         runRepository.completeCommand({
           idempotencyKey: command.idempotencyKey,
           result: {

@@ -121,3 +121,26 @@
 - Typecheck serveur et client : exit 0.
 - `pnpm build` : serveur, client et assets, exit 0; 2 602 modules transformés. Le warning Vite historique sur le chunk principal reste inchangé.
 - `git diff --check` : exit 0.
+
+## Fix review round 4/5
+
+- Le projecteur de manifests suit maintenant les états terminaux publiés par `cron.executions._TERMINAL_STATES`. Après redémarrage réel simulé, les tentatives `claimed` et `running` dont le propriétaire est mort passent par `recover_interrupted_executions()` à `unknown`, puis quittent toujours le pending. Elles sont projetées conservativement en `failed`, avec `hermesStatus=unknown`, l’erreur Hermes exacte et `originalHermesStatus`/`startedAtEvidence` dans la provenance. Une tentative jamais démarrée emploie l’horodatage durable `claimed_at`, sans timestamp fabriqué.
+- Une réponse runtime chargée avec `authState=error` est classée transitoire comme une exception de catalogue : lease libéré, backoff et réponse `202 pending`. Les états explicites `missing`/`expired`, le mauvais profil et les refus modèle/effort/workdir issus d’un inventaire réussi restent des résultats terminaux rejouables.
+- Le marqueur `indy_dispatch_token` est mono-propriétaire. Une commande B ne peut plus écraser le token A : Python renvoie `scheduled_task_busy`, que l’outbox Node traite comme transitoire. Après claim/clear de A, B est reprise sans starvation. Si le hook crashe après le pending mais avant le bind/clear, le finalizer passif lie et retire A uniquement lorsque receipt, marqueur job courant et token du manifest durable concordent; il ne planifie rien. Les tests couvrent A accepted sans occurrence, les crashs après marqueur et après pending, B pending, puis deux IDs/manifests/receipts distincts.
+- Les scrubbers TS/Python utilisent en premier un motif de chaîne JSON escape-aware pour la valeur `authorization`, avant le motif header jusqu’à fin de ligne. Les fixtures Digest avec guillemets échappés ne laissent plus username, nonce ou response dans output, manifest, SQLite ou HTTP.
+- La confiance metadata+AST a été remplacée par l’identité cryptographique du fichier réellement importé. `cron/scheduler.py` est épinglé au SHA-256 `5b4326fffe1b783fd2016a0c5c0bde21c3c8af613cc665897b9f48565d74e3c5`; son chemin source, son module et les signatures critiques sont vérifiés avant démarrage. Une différence d’un octet/dead-code, un chemin illisible ou un autre module échoue fermé. La metadata `hermes-agent` n’est plus qu’un diagnostic et un faux mismatch metadata avec source exacte reste accepté.
+
+### TDD du fix round 4
+
+- RED/GREEN Python : ledger installé create/claimed/running/recover→unknown, pending finalisé; A/B concurrent avec crash; JSON Authorization échappé; hash source exact contre drift/unreadable/autre module et metadata divergente.
+- RED/GREEN API/outbox : runtime retourné `error` reste pending puis connected déclenche exactement une fois; busy B reste pending et rejoue accepted après clear A.
+- RED/GREEN projection/sécurité : statut Hermes original conservé dans `mission_runs.provenance_json`; username/nonce/response Digest absents des manifests, événements SQLite, previews et contenu HTTP complet.
+
+### Vérifications du fix round 4
+
+- Ciblé TypeScript : 4 fichiers, 73 tests, 0 échec.
+- Python worker : 41 tests, 0 échec.
+- `pnpm test` (binaire Vitest installé) : 25 fichiers, 216 tests, 0 échec.
+- Typecheck serveur et client : exit 0.
+- `pnpm build` : serveur, client et assets, exit 0; 2 602 modules transformés. Le warning Vite historique sur le chunk principal reste inchangé.
+- `git diff --check` : exit 0.

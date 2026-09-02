@@ -6,14 +6,13 @@ shape normalization, and a background ticker thread.
 
 from __future__ import annotations
 
-import ast
+import hashlib
 import importlib.metadata
 import json
 import inspect
 import os
 import re
 import sys
-import textwrap
 import threading
 import time
 import uuid
@@ -40,14 +39,14 @@ _OCCURRENCE_DISPATCH_TOKEN: ContextVar[str | None] = ContextVar("indy_cron_dispa
 
 _OAUTH_PROVIDER = "openai-codex"
 _OAUTH_PROFILE = "etienne-openai"
-_SUPPORTED_HERMES_AGENT_VERSIONS = frozenset({"0.15.1"})
+_SUPPORTED_SCHEDULER_SHA256 = "5b4326fffe1b783fd2016a0c5c0bde21c3c8af613cc665897b9f48565d74e3c5"
 _KNOWN_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 _SENSITIVE_KEY_PARTS = (
     "token", "key", "secret", "credential", "authorization", "cookie",
     "password", "passwd", "pwd", "passphrase",
 )
 _QUOTED_AUTHORIZATION = re.compile(
-    r'''(?i)((?:"|')(?:proxy[_-]?)?authorization(?:"|')\s*:\s*)(?:"[^"]*"|'[^']*')'''
+    r'''(?i)((?:"(?:proxy[_-]?)?authorization"|'(?:proxy[_-]?)?authorization')\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')'''
 )
 _PLAIN_AUTHORIZATION = re.compile(
     r'''(?i)(\b(?:proxy[_-]?)?authorization\s*[:=]\s*)[^\r\n]*'''
@@ -381,8 +380,58 @@ def _recover_bound_receipt_pending_manifests() -> None:
             continue
 
 
+def _recover_dispatch_receipts_from_evidence_once() -> int:
+    """Bind/consume a stranded manual token from exact durable occurrence evidence.
+
+    This is passive crash recovery: it never creates an execution or changes a
+    schedule. The receipt, Hermes job marker and manifest token must all agree
+    under Hermes's job lock before the one-shot marker can be cleared.
+    """
+    try:
+        import cron.jobs as jobs
+    except Exception:
+        return 0
+    directory = _manifest_root() / "dispatch-receipts"
+    try:
+        receipt_paths = list(directory.glob("*.json"))
+    except OSError:
+        return 0
+    recovered = 0
+    for path in receipt_paths:
+        try:
+            initial = json.loads(path.read_text(encoding="utf-8"))
+            token = string_or_none(initial.get("token")) if isinstance(initial, dict) else None
+            job_id = string_or_none(initial.get("scheduledTaskId")) if isinstance(initial, dict) else None
+            if not token or not job_id or initial.get("state") not in {"prepared", "accepted"}:
+                continue
+            with jobs._jobs_lock():
+                receipt = _read_dispatch_receipt(token)
+                if not isinstance(receipt, dict) or receipt.get("scheduledTaskId") != job_id:
+                    continue
+                current = jobs.get_job(job_id)
+                if not isinstance(current, dict) or current.get("indy_dispatch_token") != token:
+                    continue
+                occurrence_id = string_or_none(receipt.get("occurrenceId")) or _find_dispatch_evidence(job_id, token)
+                if not occurrence_id:
+                    continue
+                accepted = {
+                    **receipt,
+                    "state": "accepted",
+                    "acceptedAt": receipt.get("acceptedAt") or _utc_now(),
+                    "occurrenceId": occurrence_id,
+                    "consumedAt": receipt.get("consumedAt") or _utc_now(),
+                }
+                _atomic_replace_json(_dispatch_receipt_path(token), accepted)
+                jobs.update_job(job_id, {"indy_dispatch_token": None})
+                recovered += 1
+        except (OSError, ValueError, TypeError, RuntimeError):
+            continue
+    return recovered
+
+
 def _finalize_pending_manifests_once() -> int:
     _recover_bound_receipt_pending_manifests()
+    _recover_dispatch_receipts_from_evidence_once()
     root = _manifest_root()
     try:
         pending_paths = list(root.glob("*/*.pending.json"))
@@ -391,9 +440,10 @@ def _finalize_pending_manifests_once() -> int:
     if not pending_paths:
         return 0
     try:
-        from cron.executions import list_executions
+        from cron.executions import _TERMINAL_STATES, list_executions
     except Exception:
         return 0
+    terminal_states = {str(state) for state in _TERMINAL_STATES}
     finalized = 0
     for pending_path in pending_paths:
         try:
@@ -403,9 +453,10 @@ def _finalize_pending_manifests_once() -> int:
             if not execution_id or not job_id:
                 continue
             record = next((row for row in list_executions(job_id=job_id, limit=500) if row.get("id") == execution_id), None)
-            if not isinstance(record, dict) or record.get("status") not in {"completed", "failed"}:
+            hermes_status = string_or_none(record.get("status")) if isinstance(record, dict) else None
+            if not isinstance(record, dict) or hermes_status not in terminal_states:
                 continue
-            started_at = string_or_none(record.get("started_at"))
+            started_at = string_or_none(record.get("started_at")) or string_or_none(record.get("claimed_at"))
             finished_at = string_or_none(record.get("finished_at"))
             if not started_at or not finished_at:
                 continue
@@ -413,9 +464,15 @@ def _finalize_pending_manifests_once() -> int:
                 **pending,
                 "startedAt": started_at,
                 "finishedAt": finished_at,
-                "status": record["status"],
+                "status": "completed" if hermes_status == "completed" else "failed",
+                "hermesStatus": hermes_status,
                 "error": _redact_text(record.get("error")) or None,
-                "provenance": {"source": "indy-hermes-run-job-hook", "evidence": "cron.executions"},
+                "provenance": {
+                    "source": "indy-hermes-run-job-hook",
+                    "evidence": "cron.executions",
+                    "originalHermesStatus": hermes_status,
+                    "startedAtEvidence": "started_at" if string_or_none(record.get("started_at")) else "claimed_at",
+                },
             }
             if pending.get("refusal") is None:
                 manifest.pop("refusal", None)
@@ -521,66 +578,52 @@ def _installed_hermes_version() -> str | None:
         return None
 
 
-def _call_first_argument_is(tree: ast.AST, function_name: str, argument_name: str) -> bool:
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        called = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else None
-        if called == function_name and node.args and isinstance(node.args[0], ast.Name) and node.args[0].id == argument_name:
-            return True
-    return False
-
-
-def _tick_execution_id_contract(tree: ast.AST) -> bool:
-    creates_execution = any(
-        isinstance(node, ast.Call)
-        and ((isinstance(node.func, ast.Name) and node.func.id == "create_execution")
-             or (isinstance(node.func, ast.Attribute) and node.func.attr == "create_execution"))
-        for node in ast.walk(tree)
-    )
-    dispatch_injection = any(
-        isinstance(node, ast.keyword)
-        and node.arg == "execution_id"
-        and isinstance(node.value, ast.Subscript)
-        and isinstance(node.value.value, ast.Name)
-        and node.value.value.id == "execution"
-        and isinstance(node.value.slice, ast.Constant)
-        and node.value.slice.value == "id"
-        for node in ast.walk(tree)
-    )
-    claim_copy = any(
-        isinstance(node, (ast.Assign, ast.AnnAssign))
-        and isinstance(node.targets[0] if isinstance(node, ast.Assign) else node.target, ast.Subscript)
-        and ast.unparse(node.targets[0] if isinstance(node, ast.Assign) else node.target) == "claimed_job['execution_id']"
-        and ast.unparse(node.value) == "job['execution_id']"
-        for node in ast.walk(tree)
-        if getattr(node, "value", None) is not None
-    )
-    return creates_execution and dispatch_injection and claim_copy and _call_first_argument_is(tree, "run_one_job", "claimed_job")
+def _execution_hook_diagnostics(scheduler: Any) -> str:
+    version = _installed_hermes_version() or "unknown"
+    try:
+        source_name = inspect.getsourcefile(scheduler)
+        source_path = Path(source_name).resolve(strict=True) if source_name else None
+        digest = hashlib.sha256(source_path.read_bytes()).hexdigest() if source_path else "unavailable"
+    except (OSError, RuntimeError, TypeError, ValueError):
+        source_path = None
+        digest = "unavailable"
+    return f"hermes-agent={version}, scheduler_source={source_path or 'unavailable'}, scheduler_sha256={digest}"
 
 
 def _validate_execution_hook_contract(scheduler: Any, _jobs: Any = None) -> bool:
-    if _installed_hermes_version() not in _SUPPORTED_HERMES_AGENT_VERSIONS:
+    if getattr(scheduler, "__name__", None) != "cron.scheduler":
         return False
-    runner = getattr(scheduler, "run_job", None)
-    tick = getattr(scheduler, "tick", None)
-    run_one_job = getattr(scheduler, "run_one_job", None)
-    run_one_body = getattr(scheduler, "_run_one_job_body", None)
-    if not all(callable(value) for value in (runner, tick, run_one_job, run_one_body)):
-        return False
+    functions = {
+        "tick": (("verbose", "POSITIONAL_OR_KEYWORD"), ("adapters", "POSITIONAL_OR_KEYWORD"), ("loop", "POSITIONAL_OR_KEYWORD"), ("sync", "POSITIONAL_OR_KEYWORD"), ("can_dispatch", "KEYWORD_ONLY")),
+        "run_job": (("job", "POSITIONAL_OR_KEYWORD"), ("defer_agent_teardown", "KEYWORD_ONLY"), ("extra_prompt", "KEYWORD_ONLY"), ("cancel_event", "KEYWORD_ONLY")),
+        "run_one_job": (("job", "POSITIONAL_OR_KEYWORD"), ("adapters", "KEYWORD_ONLY"), ("loop", "KEYWORD_ONLY"), ("verbose", "KEYWORD_ONLY"), ("extra_prompt", "KEYWORD_ONLY"), ("cancel_event", "KEYWORD_ONLY")),
+        "_run_one_job_body": (("job", "POSITIONAL_OR_KEYWORD"), ("adapters", "KEYWORD_ONLY"), ("loop", "KEYWORD_ONLY"), ("verbose", "KEYWORD_ONLY"), ("extra_prompt", "KEYWORD_ONLY"), ("fire_claim_lost", "KEYWORD_ONLY"), ("execution_token", "KEYWORD_ONLY")),
+    }
     try:
-        parameters = inspect.signature(runner).parameters
-        tick_tree = ast.parse(textwrap.dedent(inspect.getsource(tick)))
-        one_tree = ast.parse(textwrap.dedent(inspect.getsource(run_one_job)))
-        body_tree = ast.parse(textwrap.dedent(inspect.getsource(run_one_body)))
-    except (TypeError, ValueError, OSError, SyntaxError, IndentationError):
+        source_name = inspect.getsourcefile(scheduler)
+        if not source_name:
+            return False
+        source_path = Path(source_name).resolve(strict=True)
+        if source_path.name != "scheduler.py" or source_path.parent.name != "cron":
+            return False
+        if hashlib.sha256(source_path.read_bytes()).hexdigest() != _SUPPORTED_SCHEDULER_SHA256:
+            return False
+        for function_name, expected_parameters in functions.items():
+            function = getattr(scheduler, function_name, None)
+            if not callable(function):
+                return False
+            function_source = inspect.getsourcefile(function)
+            if not function_source or Path(function_source).resolve(strict=True) != source_path:
+                return False
+            actual_parameters = tuple(
+                (parameter.name, parameter.kind.name)
+                for parameter in inspect.signature(function).parameters.values()
+            )
+            if actual_parameters != expected_parameters:
+                return False
+    except (TypeError, ValueError, OSError, RuntimeError):
         return False
-    return (
-        "job" in parameters
-        and _tick_execution_id_contract(tick_tree)
-        and _call_first_argument_is(one_tree, "_run_one_job_body", "job")
-        and _call_first_argument_is(body_tree, "run_job", "job")
-    )
+    return True
 
 
 def install_scheduled_task_execution_hook() -> None:
@@ -592,7 +635,10 @@ def install_scheduled_task_execution_hook() -> None:
         if _HOOKED_SCHEDULER is scheduler and scheduler.run_job is _controlled_run_job:
             return
         if not _validate_execution_hook_contract(scheduler):
-            raise RuntimeError("Unsupported Hermes cron scheduler contract; scheduled execution is disabled")
+            raise RuntimeError(
+                "Unsupported Hermes cron scheduler contract; scheduled execution is disabled "
+                f"({_execution_hook_diagnostics(scheduler)})"
+            )
         _ORIGINAL_RUN_JOB = scheduler.run_job
         scheduler.run_job = _controlled_run_job
         original_fallback = getattr(scheduler, "get_fallback_chain", None)
@@ -824,6 +870,12 @@ def trigger_scheduled_task(job_id: Any, dispatch_token: Any = None) -> dict[str,
             failed = _failed_dispatch_receipt(token, scheduled_task_id, "not_found", "Scheduled task not found.", 404)
             _atomic_replace_json(receipt_path, failed)
             return {"scheduledTask": None, "dispatchReceipt": failed}
+        current_token = string_or_none(current.get("indy_dispatch_token"))
+        if current_token and current_token != token:
+            raise WorkerError(
+                "Another manual scheduled-task dispatch is still pending for this Hermes job.",
+                code="scheduled_task_busy",
+            )
         if current.get("indy_dispatch_token") == token:
             accepted = {
                 **(receipt or {}),

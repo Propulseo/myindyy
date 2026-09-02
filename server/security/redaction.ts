@@ -7,8 +7,12 @@ const SENSITIVE_KEY_PARTS = [
 export function redactSensitiveText(value: string): string {
   return value
     .replace(
-      /((?:"|')?(?:(?:proxy[_-]?)?authorization)(?:"|')?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gi,
+      /("(?:proxy[_-]?)?authorization"\s*:\s*)"(?:\\.|[^"\\])*"/gi,
       '$1"[REDACTED]"',
+    )
+    .replace(
+      /('(?:proxy[_-]?)?authorization'\s*:\s*)'(?:\\.|[^'\\])*'/gi,
+      "$1'[REDACTED]'",
     )
     .replace(
       /(\b(?:(?:proxy[_-]?)?authorization)\s*[:=]\s*)[^\r\n]*/gi,

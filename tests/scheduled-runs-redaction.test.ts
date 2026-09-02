@@ -22,6 +22,7 @@ describe('scheduled run HTTP projection redaction', () => {
         'Bearer output-secret',
         'Authorization: Basic dXNlcjpwYXNz',
         'Authorization: Digest username="Mufasa", realm="testrealm", nonce="digest-secret", uri="/dir"',
+        '{"authorization":"Digest username=\\"EscapedUser\\", nonce=\\"escaped-nonce\\", response=\\"escaped-response\\"","safe":"ok"}',
         'password=hunter2 credential=fixture-secret',
         JSON.stringify({ access_token: 'json-token', credential: 'json-credential', password: 'nested-password', passwd: 'nested-passwd', pwd: 'nested-pwd' }),
       ].join('\r\n'),
@@ -50,6 +51,9 @@ describe('scheduled run HTTP projection redaction', () => {
     expect(serialized).not.toContain('nested-password');
     expect(serialized).not.toContain('nested-passwd');
     expect(serialized).not.toContain('nested-pwd');
+    expect(serialized).not.toContain('EscapedUser');
+    expect(serialized).not.toContain('escaped-nonce');
+    expect(serialized).not.toContain('escaped-response');
     expect(serialized).toContain('[REDACTED]');
   });
 });
