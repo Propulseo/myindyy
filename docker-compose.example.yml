@@ -7,7 +7,6 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    init: true
     stop_grace_period: 30s
     read_only: true
     cap_drop:

@@ -18,6 +18,9 @@ WRITE_LOCK = threading.Lock()
 STATE_LOCK = threading.Lock()
 ACTIVE: dict[str, threading.Event] = {}
 
+if hasattr(sys.__stdout__, "reconfigure"):
+    sys.__stdout__.reconfigure(encoding="utf-8")
+
 
 def _read_json(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
     try:

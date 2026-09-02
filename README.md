@@ -35,6 +35,12 @@ npm view minionsai version
 
 The Settings page also shows the version of the running Minions server.
 
+## Production deployment
+
+The production image is a multi-stage Node 22/Python 3 image that runs as the dedicated non-root `indy` user. It expects the reviewed Hermes runtime to be mounted read-only and refuses to start unless the imported `cron/scheduler.py` has the exact supported SHA-256. The Compose/Coolify example binds the application port to host loopback, persists Indy and Hermes state outside the image, mounts only explicitly allowed workspaces, and reads the proxy transport secret from a Docker secret file. No model API key belongs in the environment or image.
+
+Use [docker-compose.example.yml](docker-compose.example.yml) as the deployment template and follow [docs/runbook-vps.md](docs/runbook-vps.md) for provisioning, OAuth device login, reverse-proxy hardening, backup/restore, rollout, rollback, and incident recovery. `/api/health/live` is process liveness; `/api/health/ready` is protected and fails closed unless SQLite is writable/current, the control loops and worker are running, and exact profile `etienne-openai` has a fresh authenticated Codex catalog.
+
 ## Private proxy authentication
 
 The first milestone is mono-user: every `/api/**` request must resolve to the server-owned actor `{ id: "etienne" }`. This includes task and mission reads/writes, files, agent settings, scheduled tasks, skills, runtime diagnostics, both SSE families, `/api/health`, and `/api/version`. Static client assets remain public so the proxy can serve the application shell. Health and version are deliberately protected because they reveal internal service and Hermes state; later routes under `/api/health/*` inherit the same boundary.
