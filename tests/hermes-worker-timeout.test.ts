@@ -2,7 +2,10 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { HermesWorkerAdapter } from '../server/adapters/hermes-worker.js';
+import {
+  captureWorkerLaunchContract,
+  HermesWorkerAdapter,
+} from '../server/adapters/hermes-worker.js';
 
 const originalEnvironment = { ...process.env };
 const adapters: HermesWorkerAdapter[] = [];
@@ -10,10 +13,12 @@ const adapters: HermesWorkerAdapter[] = [];
 function workerFixture(mode: 'frozen' | 'late-then-ready' | 'secret-boundary'): string {
   const directory = mkdtempSync(join(tmpdir(), 'indy-worker-timeout-'));
   const script = join(directory, 'worker.mjs');
+  const runtimeCounter = join(directory, 'runtime-counter');
   writeFileSync(script, `
 import { createInterface } from 'node:readline';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 const mode = ${JSON.stringify(mode)};
-let runtimeRequests = 0;
+const runtimeCounter = ${JSON.stringify(runtimeCounter)};
 const lines = createInterface({ input: process.stdin });
 const send = (id, data) => process.stdout.write(JSON.stringify({ id, type: 'result', data }) + '\\n');
 lines.on('line', (line) => {
@@ -36,7 +41,8 @@ lines.on('line', (line) => {
     return;
   }
   if (request.type !== 'runtime.status' || mode === 'frozen') return;
-  runtimeRequests += 1;
+  const runtimeRequests = existsSync(runtimeCounter) ? Number(readFileSync(runtimeCounter, 'utf8')) + 1 : 1;
+  writeFileSync(runtimeCounter, String(runtimeRequests));
   const first = runtimeRequests === 1;
   setTimeout(() => send(request.id, {
     provider: 'openai-codex',
@@ -55,9 +61,14 @@ lines.on('line', (line) => {
 }
 
 function adapterFor(mode: 'frozen' | 'late-then-ready' | 'secret-boundary'): HermesWorkerAdapter {
-  process.env.HERMES_PYTHON = process.execPath;
-  process.env.HERMES_WORKER_SCRIPT = workerFixture(mode);
-  const adapter = new HermesWorkerAdapter();
+  const adapter = new HermesWorkerAdapter({
+    launchContract: captureWorkerLaunchContract({
+      ...process.env,
+      HERMES_PYTHON: process.execPath,
+      HERMES_WORKER_SCRIPT: workerFixture(mode),
+      INDY_HERMES_RUNTIME_GUARD: undefined,
+    }),
+  });
   adapters.push(adapter);
   return adapter;
 }

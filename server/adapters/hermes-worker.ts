@@ -1,5 +1,6 @@
 import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -29,7 +30,7 @@ import type {
   WorkerErrorPayload,
   WorkerRuntimeStatus,
 } from './worker-protocol.js';
-import { expandHomePrefix, resolveHermesHome, resolveMinionsWorkspaceDir } from '../paths.js';
+import { expandHomePrefix } from '../paths.js';
 import { sanitizeWorkerEnv } from '../runtime/policy.js';
 import { validateHermesRuntimeExecution } from '../hermes-runtime-manifest.js';
 import { PublicError, publicError } from '../errors.js';
@@ -37,6 +38,8 @@ import { redactSensitiveText } from '../security/redaction.js';
 
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const WORKER_INTERRUPT_TIMEOUT_MS = 10_000;
+const WORKER_TERMINATION_GRACE_MS = 500;
+const PROCESS_ENVIRONMENT: Readonly<NodeJS.ProcessEnv> = Object.freeze({ ...process.env });
 
 export interface WorkerRuntimeContract {
   readonly runtimeRoot: string;
@@ -57,21 +60,21 @@ export function captureWorkerRuntimeContract(
   return Object.freeze({ runtimeRoot, manifestAnchor, python });
 }
 
-const PROCESS_WORKER_RUNTIME_CONTRACT = captureWorkerRuntimeContract(process.env);
+const PROCESS_WORKER_RUNTIME_CONTRACT = captureWorkerRuntimeContract(PROCESS_ENVIRONMENT);
 
 function selectWorkerRuntimeContract(
   environment: NodeJS.ProcessEnv,
   contract?: WorkerRuntimeContract,
 ): WorkerRuntimeContract | undefined {
   if (contract) return contract;
-  if (environment === process.env && PROCESS_WORKER_RUNTIME_CONTRACT) {
+  if (environment === PROCESS_ENVIRONMENT) {
     return PROCESS_WORKER_RUNTIME_CONTRACT;
   }
   return captureWorkerRuntimeContract(environment);
 }
 
 export function createWorkerEnvironment(
-  source: NodeJS.ProcessEnv = process.env,
+  source: NodeJS.ProcessEnv = PROCESS_ENVIRONMENT,
   contract?: WorkerRuntimeContract,
 ): NodeJS.ProcessEnv {
   const selectedContract = selectWorkerRuntimeContract(source, contract);
@@ -98,7 +101,7 @@ export function createWorkerEnvironment(
 }
 
 export function assertWorkerRuntimeIntegrity(
-  environment: NodeJS.ProcessEnv = process.env,
+  environment: NodeJS.ProcessEnv = PROCESS_ENVIRONMENT,
   contract?: WorkerRuntimeContract,
 ): void {
   const selectedContract = selectWorkerRuntimeContract(environment, contract);
@@ -112,7 +115,7 @@ export function assertWorkerRuntimeIntegrity(
 
 export function createWorkerArguments(
   script: string,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment: NodeJS.ProcessEnv = PROCESS_ENVIRONMENT,
 ): string[] {
   if (environment.INDY_HERMES_RUNTIME_GUARD !== '1') return [script];
   const bootstrap = [
@@ -144,9 +147,12 @@ type PendingStream = {
 
 type Pending = PendingRequest | PendingStream;
 
-function resolveAgentDirFromHermesCli(): string | undefined {
+function resolveAgentDirFromHermesCli(environment: NodeJS.ProcessEnv): string | undefined {
   try {
-    const hermesBin = execFileSync('which', ['hermes'], { encoding: 'utf8' }).trim();
+    const hermesBin = execFileSync('which', ['hermes'], {
+      encoding: 'utf8',
+      env: environment,
+    }).trim();
     const real = realpathSync(hermesBin);
     // Typical layout: <agent-dir>/venv/bin/hermes → agent dir is 3 levels up
     const candidate = resolve(dirname(real), '..', '..');
@@ -157,19 +163,20 @@ function resolveAgentDirFromHermesCli(): string | undefined {
   return undefined;
 }
 
-function resolvePython(): string {
-  if (process.env.HERMES_PYTHON) return expandHomePrefix(process.env.HERMES_PYTHON);
+function resolvePython(environment: NodeJS.ProcessEnv = PROCESS_ENVIRONMENT): string {
+  if (environment.HERMES_PYTHON) return expandHomePrefix(environment.HERMES_PYTHON);
 
   const candidates: string[] = [];
-  if (process.env.HERMES_AGENT_DIR) {
-    candidates.push(join(expandHomePrefix(process.env.HERMES_AGENT_DIR), 'venv/bin/python'));
+  if (environment.HERMES_AGENT_DIR) {
+    candidates.push(join(expandHomePrefix(environment.HERMES_AGENT_DIR), 'venv/bin/python'));
   }
-  candidates.push(join(resolveHermesHome(), 'hermes-agent/venv/bin/python'));
+  const hermesHome = resolve(expandHomePrefix(environment.HERMES_HOME?.trim() || join(homedir(), '.hermes')));
+  candidates.push(join(hermesHome, 'hermes-agent/venv/bin/python'));
 
   const found = candidates.find((candidate) => existsSync(candidate));
   if (found) return found;
 
-  const cliAgentDir = resolveAgentDirFromHermesCli();
+  const cliAgentDir = resolveAgentDirFromHermesCli(environment);
   if (cliAgentDir) {
     const venvPython = join(cliAgentDir, 'venv/bin/python');
     if (existsSync(venvPython)) return venvPython;
@@ -178,7 +185,7 @@ function resolvePython(): string {
   return 'python3';
 }
 
-export function resolveWorkerScript(environment: NodeJS.ProcessEnv = process.env): string {
+export function resolveWorkerScript(environment: NodeJS.ProcessEnv = PROCESS_ENVIRONMENT): string {
   const explicit = environment.HERMES_WORKER_SCRIPT?.trim();
   if (explicit) {
     if (!isAbsolute(explicit)) throw new Error('HERMES_WORKER_SCRIPT must be absolute');
@@ -195,6 +202,41 @@ export function resolveWorkerScript(environment: NodeJS.ProcessEnv = process.env
   if (!found) throw new Error(`Hermes worker script not found. Tried: ${candidates.join(', ')}`);
   return found;
 }
+
+function resolveWorkerWorkspace(environment: NodeJS.ProcessEnv): string {
+  const minionsHome = resolve(expandHomePrefix(environment.MINIONS_HOME?.trim() || join(homedir(), '.minions')));
+  return join(minionsHome, 'workspace');
+}
+
+export interface WorkerLaunchContract {
+  readonly python: string;
+  readonly script: string;
+  readonly arguments: readonly string[];
+  readonly environment: Readonly<NodeJS.ProcessEnv>;
+  readonly workspace: string;
+  readonly runtimeContract?: WorkerRuntimeContract;
+}
+
+export function captureWorkerLaunchContract(
+  source: NodeJS.ProcessEnv,
+): WorkerLaunchContract {
+  const snapshot = Object.freeze({ ...source });
+  const runtimeContract = captureWorkerRuntimeContract(snapshot);
+  const script = resolveWorkerScript(snapshot);
+  const python = resolvePython(snapshot);
+  const environment = Object.freeze({ ...createWorkerEnvironment(snapshot, runtimeContract) });
+  const arguments_ = Object.freeze([...createWorkerArguments(script, snapshot)]);
+  return Object.freeze({
+    python,
+    script,
+    arguments: arguments_,
+    environment,
+    workspace: resolveWorkerWorkspace(snapshot),
+    runtimeContract,
+  });
+}
+
+const PROCESS_WORKER_LAUNCH_CONTRACT = captureWorkerLaunchContract({ ...PROCESS_ENVIRONMENT });
 
 function workerErrorDiagnostic(error: string | WorkerErrorPayload | undefined): string {
   if (!error) return '';
@@ -263,127 +305,155 @@ function createAsyncQueue<T>() {
   };
 }
 
+type WorkerSpawnOptions = {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  shell: false;
+};
+
+export type WorkerSpawner = (
+  executable: string,
+  arguments_: string[],
+  options: WorkerSpawnOptions,
+) => ChildProcessWithoutNullStreams;
+
+export interface HermesWorkerAdapterOptions {
+  launchContract?: WorkerLaunchContract;
+  spawnWorker?: WorkerSpawner;
+  readyTimeoutMs?: number;
+  terminationGraceMs?: number;
+}
+
+type WorkerGeneration = {
+  readonly id: string;
+  readonly child: ChildProcessWithoutNullStreams;
+  readonly stdout: Interface;
+  readonly pending: Map<string, Pending>;
+  readonly terminated: Promise<void>;
+  resolveTerminated: () => void;
+  stderrBuffer: string;
+  stderrFlushed: boolean;
+  terminal: boolean;
+  ready: boolean;
+  readyPromise: Promise<void> | null;
+  retiringPromise: Promise<void> | null;
+};
+
+const spawnWorkerProcess: WorkerSpawner = (executable, arguments_, options) => (
+  spawn(executable, arguments_, options)
+);
+
 class HermesWorkerClient {
-  private child: ChildProcessWithoutNullStreams | null = null;
-  private readline: Interface | null = null;
-  private pending = new Map<string, Pending>();
-  private ready = false;
-  private readyPromise: Promise<void> | null = null;
+  private readonly launchContract: WorkerLaunchContract;
+  private readonly spawnWorker: WorkerSpawner;
+  private readonly readyTimeoutMs: number;
+  private readonly terminationGraceMs: number;
+  private generation: WorkerGeneration | null = null;
+  private retirementBarrier: Promise<void> | null = null;
+
+  constructor(options: HermesWorkerAdapterOptions = {}) {
+    this.launchContract = options.launchContract ?? PROCESS_WORKER_LAUNCH_CONTRACT;
+    this.spawnWorker = options.spawnWorker ?? spawnWorkerProcess;
+    this.readyTimeoutMs = options.readyTimeoutMs ?? WORKER_READY_TIMEOUT_MS;
+    this.terminationGraceMs = options.terminationGraceMs ?? WORKER_TERMINATION_GRACE_MS;
+  }
 
   async start(): Promise<void> {
-    this.ensureStarted();
-    if (this.ready) return;
+    const generation = await this.ensureGeneration();
+    if (generation.ready) return;
 
-    if (!this.readyPromise) {
+    if (!generation.readyPromise) {
       const request = { id: randomUUID(), type: 'health' } as WorkerRequest;
-      this.readyPromise = this.sendRequest<{ ok: boolean }>(request, WORKER_READY_TIMEOUT_MS)
-        .then((result) => {
-          if (!result.ok) throw new Error('Hermes worker healthcheck failed');
-          this.ready = true;
-        })
-        .catch((error) => {
-          this.ready = false;
-          if (this.child && !this.child.killed) this.child.kill();
-          throw error;
-        })
-        .finally(() => {
-          this.readyPromise = null;
-        });
+      generation.readyPromise = this.sendRequestOnGeneration<{ ok: boolean }>(
+        generation,
+        request,
+        this.readyTimeoutMs,
+      ).then((result) => {
+        if (!result.ok) throw new Error('Hermes worker healthcheck failed');
+        if (this.generation !== generation || generation.terminal) {
+          throw new Error('Hermes worker stopped during startup');
+        }
+        generation.ready = true;
+      }).catch(async (error: unknown) => {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        await this.retireGeneration(generation, failure);
+        throw failure;
+      });
     }
 
-    await this.readyPromise;
+    await generation.readyPromise;
   }
 
   async stop(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
-    const child = this.child;
-    this.child = null;
-    this.ready = false;
-    this.readyPromise = null;
-
-    if (this.readline) {
-      this.readline.close();
-      this.readline = null;
+    const generation = this.generation;
+    if (generation) {
+      await this.retireGeneration(generation, new Error('Hermes worker stopped'), signal);
+      return;
     }
-
-    this.failPending(new Error('Hermes worker stopped'));
-
-    if (!child || child.exitCode !== null) return;
-
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      let forceTimer: ReturnType<typeof setTimeout> | null = null;
-
-      const done = () => {
-        if (settled) return;
-        settled = true;
-        if (forceTimer) clearTimeout(forceTimer);
-        resolve();
-      };
-
-      forceTimer = setTimeout(() => {
-        if (child.exitCode === null) child.kill('SIGKILL');
-        done();
-      }, 500);
-      forceTimer.unref();
-
-      child.once('exit', done);
-      child.once('error', done);
-
-      try {
-        if (!child.stdin.destroyed) child.stdin.end();
-      } catch {
-        // The worker may already be exiting because the terminal delivered SIGINT.
-      }
-
-      if (!child.killed) child.kill(signal);
-    });
+    if (this.retirementBarrier) await this.retirementBarrier;
   }
 
-  async request<T extends WorkerResult>(input: WorkerRequest['type'] | WorkerRequestInput, timeoutMs?: number): Promise<T> {
+  async request<T extends WorkerResult>(
+    input: WorkerRequest['type'] | WorkerRequestInput,
+    timeoutMs?: number,
+  ): Promise<T> {
     await this.start();
+    const generation = this.generation;
+    if (!generation || generation.terminal || !generation.ready) {
+      throw new Error('Hermes worker is not running');
+    }
     const id = randomUUID();
     const request = typeof input === 'string'
       ? { id, type: input } as WorkerRequest
       : { ...input, id } as WorkerRequest;
-    return await this.sendRequest<T>(request, timeoutMs);
+    return await this.sendRequestOnGeneration<T>(generation, request, timeoutMs);
   }
 
   async *stream(request: Omit<Extract<WorkerRequest, { type: 'chat' }>, 'id'>): AsyncIterable<WorkerEvent> {
     await this.start();
+    const generation = this.generation;
+    if (!generation || generation.terminal || !generation.ready) {
+      throw new Error('Hermes worker is not running');
+    }
     const id = randomUUID();
     const queue = createAsyncQueue<WorkerEvent>();
 
     try {
-      this.pending.set(id, {
+      generation.pending.set(id, {
         kind: 'stream',
         push: queue.push,
         end: queue.end,
         fail: queue.fail,
       });
+      this.write(generation, { ...request, id });
 
-      this.write({ ...request, id });
-
-      for await (const event of queue) {
-        yield event;
-      }
+      for await (const event of queue) yield event;
     } finally {
-      this.pending.delete(id);
+      generation.pending.delete(id);
     }
   }
 
-  private async sendRequest<T extends WorkerResult>(request: WorkerRequest, timeoutMs?: number): Promise<T> {
-    this.ensureStarted();
+  validateRuntimeIntegrity(): void {
+    if (!this.launchContract.runtimeContract) return;
+    assertWorkerRuntimeIntegrity(
+      this.launchContract.environment as NodeJS.ProcessEnv,
+      this.launchContract.runtimeContract,
+    );
+  }
 
-    return await new Promise<T>((resolveRequest, reject) => {
+  private async sendRequestOnGeneration<T extends WorkerResult>(
+    generation: WorkerGeneration,
+    request: WorkerRequest,
+    timeoutMs?: number,
+  ): Promise<T> {
+    return await new Promise<T>((resolveRequest, rejectRequest) => {
       let timeout: ReturnType<typeof setTimeout> | null = null;
       const clearRequestTimeout = () => {
-        if (timeout) {
-          clearTimeout(timeout);
-          timeout = null;
-        }
+        if (!timeout) return;
+        clearTimeout(timeout);
+        timeout = null;
       };
-
-      this.pending.set(request.id, {
+      const pending: PendingRequest = {
         kind: 'request',
         resolve: (value) => {
           clearRequestTimeout();
@@ -391,54 +461,88 @@ class HermesWorkerClient {
         },
         reject: (error) => {
           clearRequestTimeout();
-          reject(error);
+          rejectRequest(error);
         },
-      });
+      };
+      generation.pending.set(request.id, pending);
 
       if (timeoutMs) {
         timeout = setTimeout(() => {
-          this.pending.delete(request.id);
           timeout = null;
-          reject(new Error(`Hermes worker did not respond within ${timeoutMs}ms`));
+          const error = new Error(`Hermes worker did not respond within ${timeoutMs}ms`);
+          void this.retireGeneration(generation, error).catch(() => undefined);
         }, timeoutMs);
         timeout.unref();
       }
 
       try {
-        this.write(request);
+        this.write(generation, request);
       } catch (error) {
-        clearRequestTimeout();
-        this.pending.delete(request.id);
-        reject(error instanceof Error ? error : new Error(String(error)));
+        const failure = error instanceof Error ? error : new Error(String(error));
+        generation.pending.delete(request.id);
+        pending.reject(failure);
+        void this.retireGeneration(generation, failure).catch(() => undefined);
       }
     });
   }
 
-  private ensureStarted(): void {
-    if (this.child && !this.child.killed && this.child.exitCode === null) return;
+  private async ensureGeneration(): Promise<WorkerGeneration> {
+    if (this.retirementBarrier) await this.retirementBarrier;
+    const current = this.generation;
+    if (current && !current.terminal && current.child.exitCode === null && !current.child.killed) {
+      return current;
+    }
 
-    const python = resolvePython();
-    const script = resolveWorkerScript();
-    const workspace = resolveMinionsWorkspaceDir();
-    mkdirSync(workspace, { recursive: true });
-    const child = spawn(python, createWorkerArguments(script), {
-      cwd: workspace,
-      env: createWorkerEnvironment(),
-      shell: false,
+    this.validateRuntimeIntegrity();
+    mkdirSync(this.launchContract.workspace, { recursive: true });
+    const child = this.spawnWorker(
+      this.launchContract.python,
+      [...this.launchContract.arguments],
+      {
+        cwd: this.launchContract.workspace,
+        env: { ...this.launchContract.environment },
+        shell: false,
+      },
+    );
+    let resolveTerminated: () => void = () => {};
+    const terminated = new Promise<void>((resolveTermination) => {
+      resolveTerminated = resolveTermination;
     });
-
-    this.child = child;
-    this.ready = false;
-    this.readline = createInterface({ input: child.stdout });
-    this.readline.on('line', (line) => this.handleLine(line));
-    child.stderr.on('data', (chunk) => process.stderr.write(redactSensitiveText(String(chunk))));
-    child.on('error', (error) => this.handleExit(error));
-    child.on('exit', (code, signal) => {
-      this.handleExit(new Error(`Hermes worker exited (${signal ?? code ?? 'unknown'})`));
-    });
+    const generation: WorkerGeneration = {
+      id: randomUUID(),
+      child,
+      stdout: createInterface({ input: child.stdout }),
+      pending: new Map(),
+      terminated,
+      resolveTerminated,
+      stderrBuffer: '',
+      stderrFlushed: false,
+      terminal: false,
+      ready: false,
+      readyPromise: null,
+      retiringPromise: null,
+    };
+    this.generation = generation;
+    generation.stdout.on('line', (line) => this.handleLine(generation, line));
+    child.stderr.on('data', (chunk) => this.handleStderrChunk(generation, String(chunk)));
+    child.stderr.on('end', () => this.flushStderr(generation));
+    child.on('error', () => this.handleProcessError(generation));
+    child.on('exit', () => this.handleExit(generation));
+    return generation;
   }
 
-  private handleLine(line: string): void {
+  private handleProcessError(generation: WorkerGeneration): void {
+    if (generation.terminal) return;
+    if (generation.child.pid === undefined) {
+      this.handleExit(generation);
+      return;
+    }
+    const error = new Error('Hermes worker crashed');
+    this.failPending(generation, error);
+    void this.retireGeneration(generation, error).catch(() => undefined);
+  }
+
+  private handleLine(generation: WorkerGeneration, line: string): void {
     let event: WorkerEvent;
     try {
       event = JSON.parse(line) as WorkerEvent;
@@ -447,58 +551,136 @@ class HermesWorkerClient {
       return;
     }
 
-    const pending = this.pending.get(event.id);
+    const pending = generation.pending.get(event.id);
     if (!pending) return;
 
     if (pending.kind === 'request') {
       if (event.type === 'result') {
-        this.pending.delete(event.id);
+        generation.pending.delete(event.id);
         pending.resolve(event.data);
       } else if (event.type === 'error') {
-        this.pending.delete(event.id);
+        generation.pending.delete(event.id);
         pending.reject(new HermesWorkerError(event.error));
       }
       return;
     }
 
-    if (pending.kind !== 'stream') return;
-
     pending.push(event);
     if (event.type === 'done') {
-      this.pending.delete(event.id);
+      generation.pending.delete(event.id);
       pending.end();
     }
   }
 
-  private handleExit(error: Error): void {
-    if (this.readline) {
-      this.readline.close();
-      this.readline = null;
+  private handleStderrChunk(generation: WorkerGeneration, chunk: string): void {
+    if (generation.stderrFlushed) return;
+    generation.stderrBuffer += chunk;
+    let newline = generation.stderrBuffer.indexOf('\n');
+    while (newline >= 0) {
+      const line = generation.stderrBuffer.slice(0, newline + 1);
+      generation.stderrBuffer = generation.stderrBuffer.slice(newline + 1);
+      process.stderr.write(redactSensitiveText(line));
+      newline = generation.stderrBuffer.indexOf('\n');
     }
-    this.child = null;
-    this.ready = false;
-
-    this.failPending(new Error(`Hermes worker crashed: ${error.message}`));
   }
 
-  private write(request: WorkerRequest): void {
-    if (!this.child || !this.child.stdin.writable) {
+  private flushStderr(generation: WorkerGeneration): void {
+    if (generation.stderrFlushed) return;
+    generation.stderrFlushed = true;
+    if (generation.stderrBuffer) {
+      process.stderr.write(redactSensitiveText(generation.stderrBuffer));
+      generation.stderrBuffer = '';
+    }
+  }
+
+  private handleExit(generation: WorkerGeneration): void {
+    if (generation.terminal) return;
+    generation.terminal = true;
+    generation.ready = false;
+    generation.stdout.close();
+    this.flushStderr(generation);
+    if (this.generation === generation) this.generation = null;
+    this.failPending(generation, new Error('Hermes worker crashed'));
+    generation.resolveTerminated();
+  }
+
+  private async retireGeneration(
+    generation: WorkerGeneration,
+    error: Error,
+    signal: NodeJS.Signals = 'SIGTERM',
+  ): Promise<void> {
+    if (generation.retiringPromise) return await generation.retiringPromise;
+    let resolveRetirement: () => void = () => {};
+    let rejectRetirement: (error: unknown) => void = () => {};
+    const retirement = new Promise<void>((resolve, reject) => {
+      resolveRetirement = resolve;
+      rejectRetirement = reject;
+    });
+    generation.retiringPromise = retirement;
+    this.retirementBarrier = retirement;
+    void this.performRetirement(generation, error, signal).then(
+      resolveRetirement,
+      rejectRetirement,
+    );
+    try {
+      await retirement;
+    } finally {
+      if (this.retirementBarrier === retirement) this.retirementBarrier = null;
+    }
+  }
+
+  private async performRetirement(
+    generation: WorkerGeneration,
+    error: Error,
+    signal: NodeJS.Signals,
+  ): Promise<void> {
+    if (this.generation === generation) this.generation = null;
+    generation.ready = false;
+    this.failPending(generation, error);
+    if (generation.terminal || generation.child.exitCode !== null) {
+      this.handleExit(generation);
+      await generation.terminated;
+      return;
+    }
+
+    try {
+      if (!generation.child.stdin.destroyed) generation.child.stdin.end();
+    } catch {
+      // The worker may already be exiting because the terminal delivered SIGINT.
+    }
+    generation.child.kill(signal);
+
+    const graceElapsed = new Promise<void>((resolveGrace) => {
+      const timer = setTimeout(resolveGrace, this.terminationGraceMs);
+      timer.unref();
+    });
+    await Promise.race([generation.terminated, graceElapsed]);
+    if (!generation.terminal) generation.child.kill('SIGKILL');
+    await generation.terminated;
+  }
+
+  private write(generation: WorkerGeneration, request: WorkerRequest): void {
+    if (generation.terminal || !generation.child.stdin.writable) {
       throw new Error('Hermes worker is not running');
     }
-    this.child.stdin.write(`${JSON.stringify(request)}\n`);
+    generation.child.stdin.write(`${JSON.stringify(request)}\n`);
   }
 
-  private failPending(error: Error): void {
-    for (const [id, pending] of this.pending) {
+  private failPending(generation: WorkerGeneration, error: Error): void {
+    for (const [id, pending] of generation.pending) {
       if (pending.kind === 'request') pending.reject(error);
       else pending.fail(error);
-      this.pending.delete(id);
+      generation.pending.delete(id);
     }
   }
 }
 
 export class HermesWorkerAdapter implements AgentAdapter {
-  private client = new HermesWorkerClient();
+  private readonly client: HermesWorkerClient;
+
+  constructor(options: HermesWorkerAdapterOptions = {}) {
+    this.client = new HermesWorkerClient(options);
+  }
 
   async start(): Promise<void> {
     await this.client.start();
@@ -590,7 +772,7 @@ export class HermesWorkerAdapter implements AgentAdapter {
 
   async healthCheck(): Promise<boolean> {
     try {
-      assertWorkerRuntimeIntegrity();
+      this.client.validateRuntimeIntegrity();
       await this.client.start();
       return true;
     } catch {
