@@ -14,12 +14,14 @@ import { getRunStatuses } from './live-chat.js';
 import { getAppVersion } from './version.js';
 import { requireEtienne } from './auth/etienne.js';
 import db from './db/index.js';
+import { createRunRepository } from './runs/repository.js';
 
 const app: Express = express();
 
 app.use('/api', requireEtienne);
 
 const adapter = new HermesOAuthRuntime();
+const runRepository = createRunRepository(db);
 
 app.get('/api/health', async (_req, res) => {
   const hermes = await adapter.healthCheck();
@@ -49,7 +51,7 @@ app.use('/api/missions', createRunsRouter({
   launchCommandRun: launchChatRun,
 }));
 app.use('/api/agent', createAgentRouter(adapter));
-app.use('/api/scheduled-tasks', createScheduledTasksRouter(adapter));
+app.use('/api/scheduled-tasks', createScheduledTasksRouter(adapter, { runRepository }));
 app.use('/api/skills', skillsRouter);
 app.use('/api/runtime', createRuntimeRouter(adapter));
 

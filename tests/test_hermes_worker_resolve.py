@@ -16,6 +16,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server" / "workers"))
 
 import hermes_worker
+import hermes_scheduled_tasks
 
 PROXY_URL = "https://www.agent37.com/api/openclaw/starter-proxy/v1"
 
@@ -289,6 +290,89 @@ class RuntimeStatusTest(unittest.TestCase):
         })
         self.assertEqual(_sensitive_keys(result), [])
         self.assertNotIn("sk-secret-value", repr(result))
+
+
+class ScheduledTaskRuntimeFieldsTest(unittest.TestCase):
+    def test_internal_zero_limit_lists_every_hermes_schedule_for_projection(self):
+        cron_module = types.ModuleType("cron")
+        jobs_module = types.ModuleType("cron.jobs")
+        jobs_module.list_jobs = lambda include_disabled=False: [
+            {"id": f"cron-{index}", "name": f"Cron {index}"}
+            for index in range(125)
+        ]
+
+        with patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+             patch.dict(sys.modules, {"cron": cron_module, "cron.jobs": jobs_module}):
+            result = hermes_scheduled_tasks.list_scheduled_tasks(True, 0)
+
+        self.assertEqual(len(result["scheduledTasks"]), 125)
+
+    def test_normalizes_explicit_reasoning_effort_from_hermes_job(self):
+        result = hermes_scheduled_tasks._normalize_scheduled_task({
+            "id": "cron-1",
+            "name": "Daily brief",
+            "provider": "openai-codex",
+            "model": "gpt-5.6-sol",
+            "reasoning_effort": "high",
+            "workdir": "/srv/indy/client",
+        })
+
+        self.assertEqual(result["provider"], "openai-codex")
+        self.assertEqual(result["model"], "gpt-5.6-sol")
+        self.assertEqual(result["reasoningEffort"], "high")
+        self.assertEqual(result["workdir"], "/srv/indy/client")
+
+    def test_create_forwards_explicit_runtime_fields_without_fallback(self):
+        cron_module = types.ModuleType("cron")
+        jobs_module = types.ModuleType("cron.jobs")
+        captured = {}
+
+        def create_job(**kwargs):
+            captured.update(kwargs)
+            return {"id": "cron-created", **kwargs}
+
+        jobs_module.create_job = create_job
+        with patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+             patch.dict(sys.modules, {"cron": cron_module, "cron.jobs": jobs_module}):
+            result = hermes_scheduled_tasks.create_scheduled_task({
+                "prompt": "Prepare the brief",
+                "schedule": "0 8 * * *",
+                "provider": "openai-codex",
+                "model": "gpt-5.6-sol",
+                "reasoningEffort": "high",
+                "workdir": "/srv/indy/client",
+            })
+
+        self.assertEqual(captured["provider"], "openai-codex")
+        self.assertEqual(captured["model"], "gpt-5.6-sol")
+        self.assertEqual(captured["reasoning_effort"], "high")
+        self.assertEqual(captured["workdir"], "/srv/indy/client")
+        self.assertEqual(result["scheduledTask"]["reasoningEffort"], "high")
+
+    def test_update_forwards_explicit_reasoning_effort(self):
+        cron_module = types.ModuleType("cron")
+        jobs_module = types.ModuleType("cron.jobs")
+        captured = {}
+
+        def update_job(job_id, updates):
+            captured["job_id"] = job_id
+            captured["updates"] = updates
+            return {"id": job_id, **updates}
+
+        jobs_module.update_job = update_job
+        with patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+             patch.dict(sys.modules, {"cron": cron_module, "cron.jobs": jobs_module}):
+            result = hermes_scheduled_tasks.update_scheduled_task({
+                "scheduledTaskId": "cron-1",
+                "provider": "openai-codex",
+                "model": "gpt-5.6-sol",
+                "reasoningEffort": "xhigh",
+                "workdir": "/srv/indy/client",
+            })
+
+        self.assertEqual(captured["job_id"], "cron-1")
+        self.assertEqual(captured["updates"]["reasoning_effort"], "xhigh")
+        self.assertEqual(result["scheduledTask"]["reasoningEffort"], "xhigh")
 
 if __name__ == "__main__":
     unittest.main()

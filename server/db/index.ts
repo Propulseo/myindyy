@@ -17,7 +17,16 @@ export function initializeDatabase(database: import('better-sqlite3').Database):
   database.exec(schema);
 
   ensureColumn(database, 'tasks', 'agent_provider', 'TEXT');
+  ensureColumn(database, 'tasks', 'mission_kind', "TEXT NOT NULL DEFAULT 'interactive'");
   ensureColumn(database, 'mission_runs', 'session_confirmed_at', 'INTEGER');
+  ensureColumn(database, 'mission_runs', 'occurrence_key', 'TEXT');
+  ensureColumn(database, 'mission_runs', 'workdir', 'TEXT');
+  ensureColumn(database, 'mission_runs', 'provenance_json', 'TEXT');
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_mission_runs_occurrence_key
+    ON mission_runs(occurrence_key)
+    WHERE occurrence_key IS NOT NULL
+  `);
 }
 
 function ensureColumn(

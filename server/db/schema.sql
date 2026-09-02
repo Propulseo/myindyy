@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   title             TEXT NOT NULL,
   description       TEXT,
   status            TEXT NOT NULL DEFAULT 'in_progress',
+  mission_kind      TEXT NOT NULL DEFAULT 'interactive',
   agent_model       TEXT,
   agent_provider    TEXT,
   reasoning_effort  TEXT,
@@ -31,6 +32,9 @@ CREATE TABLE IF NOT EXISTS mission_runs (
   finished_at       INTEGER,
   finish_reason     TEXT,
   previous_run_id   TEXT REFERENCES mission_runs(id),
+  occurrence_key    TEXT,
+  workdir           TEXT,
+  provenance_json   TEXT,
   UNIQUE(mission_id, attempt)
 );
 

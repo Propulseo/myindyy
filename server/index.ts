@@ -9,6 +9,10 @@ import db from './db/index.js';
 import { createRunRepository } from './runs/repository.js';
 import { reconcileActiveRuns } from './runs/reconcile.js';
 import { startRunWatchdog } from './runs/watchdog.js';
+import {
+  startScheduledTaskOccurrenceReconciler,
+  type ScheduledTaskOccurrenceReconciler,
+} from './scheduled-tasks/projection.js';
 
 const PORT = parseInt(process.env.PORT || '6969', 10);
 const PORT_FALLBACK_ATTEMPTS = 20;
@@ -16,6 +20,7 @@ const PORT_FALLBACK_ATTEMPTS = 20;
 const httpServer = createServer(app);
 let closeFrontend: FrontendCleanup = () => {};
 let runWatchdog: ReturnType<typeof setInterval> | null = null;
+let scheduledOccurrenceReconciler: ScheduledTaskOccurrenceReconciler | null = null;
 let shuttingDown = false;
 
 type ShutdownReason = NodeJS.Signals | 'startup-error';
@@ -76,6 +81,15 @@ async function main() {
   const runRepository = createRunRepository(db);
   await reconcileActiveRuns(runRepository, adapter);
   runWatchdog = startRunWatchdog(runRepository, adapter);
+  scheduledOccurrenceReconciler = startScheduledTaskOccurrenceReconciler(db, adapter, {
+    onError: (error) => {
+      console.error(
+        'Passive Hermes cron occurrence import failed:',
+        error instanceof Error ? error.message : error,
+      );
+    },
+  });
+  await scheduledOccurrenceReconciler.ready;
 
   closeFrontend = await mountFrontend(app, httpServer);
   const boundPort = await listenWithFallback(httpServer, PORT, PORT_FALLBACK_ATTEMPTS);
@@ -122,6 +136,8 @@ async function shutdown(reason: ShutdownReason, exitCode = 0): Promise<void> {
     clearInterval(runWatchdog);
     runWatchdog = null;
   }
+  scheduledOccurrenceReconciler?.stop();
+  scheduledOccurrenceReconciler = null;
 
   for (const result of results) {
     if (result.status === 'rejected') console.error(result.reason);

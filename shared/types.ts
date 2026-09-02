@@ -270,6 +270,7 @@ export interface ScheduledTask {
   lastDeliveryError: string | null;
   model: string | null;
   provider: string | null;
+  reasoningEffort: ReasoningEffort | null;
   baseUrl: string | null;
   deliver: string | null;
   origin: ScheduledTaskOrigin | null;
@@ -278,6 +279,26 @@ export interface ScheduledTask {
   skills: string[];
   workdir: string | null;
   createdAt: string | null;
+  readiness?: ScheduledTaskReadiness;
+}
+
+export interface ScheduledTaskReadiness {
+  ready: boolean;
+  code: string | null;
+  reason: string | null;
+}
+
+export interface ScheduledTasksPolicyContext {
+  provider: 'openai-codex';
+  profileId: string | null;
+  authState: 'connected' | 'expired' | 'missing' | 'error';
+  checkedAt: string;
+  models: Array<{
+    id: string;
+    label: string;
+    reasoningEfforts: ReasoningEffort[] | null;
+  }>;
+  allowedWorkdirs: string[];
 }
 
 export type ScheduledTaskStatus = 'ok' | 'error' | 'unknown';
@@ -309,6 +330,7 @@ export interface ScheduledTaskInput {
   skills?: string[];
   model?: string | null;
   provider?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
   baseUrl?: string | null;
   workdir?: string | null;
   repeat?: number | null;

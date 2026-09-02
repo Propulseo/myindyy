@@ -59,10 +59,10 @@ async function readHead(path: string, maxBytes = 8192): Promise<string> {
   }
 }
 
-export async function listScheduledTaskRuns(scheduledTaskId: string, limit = 50): Promise<ScheduledTaskRun[]> {
+async function readScheduledTaskRuns(scheduledTaskId: string, limit?: number): Promise<ScheduledTaskRun[]> {
   if (!isValidSegment(scheduledTaskId)) return [];
   const dir = join(resolveOutputDir(), scheduledTaskId);
-  const safeLimit = Math.max(1, Math.min(limit, 50));
+  const safeLimit = limit === undefined ? Number.POSITIVE_INFINITY : Math.max(1, Math.min(limit, 50));
 
   let names: string[];
   try {
@@ -83,6 +83,14 @@ export async function listScheduledTaskRuns(scheduledTaskId: string, limit = 50)
       return { id: stem, scheduledTaskId, ranAt: parseTimestamp(stem), path, status: detectStatus(head), preview: buildPreview(head) };
     }),
   );
+}
+
+export async function listScheduledTaskRuns(scheduledTaskId: string, limit = 50): Promise<ScheduledTaskRun[]> {
+  return await readScheduledTaskRuns(scheduledTaskId, limit);
+}
+
+export async function listAllScheduledTaskRuns(scheduledTaskId: string): Promise<ScheduledTaskRun[]> {
+  return await readScheduledTaskRuns(scheduledTaskId);
 }
 
 export async function getScheduledTaskRunContent(scheduledTaskId: string, runId: string): Promise<ScheduledTaskRunContent | null> {

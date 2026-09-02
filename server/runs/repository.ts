@@ -5,6 +5,8 @@ import type {
   ClaimCommandInput,
   CommandClaimResult,
   CompleteCommandInput,
+  CronOccurrenceInput,
+  CronOccurrenceUpsertResult,
   CreateRunInput,
   FinishRunRecordInput,
   MissionRun,
@@ -65,12 +67,17 @@ const SENSITIVE_KEY_PARTS = [
   'cookie',
 ] as const;
 
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/(bearer\s+)[^\s,;]+/gi, '$1[REDACTED]')
+    .replace(/((?:access[_-]?)?token|api[_-]?key|secret|credential|authorization)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]');
+}
+
 function serializeRedactedEventPayload(payload: Readonly<Record<string, unknown>>): string {
   return JSON.stringify(payload, (key, value: unknown) => {
     const normalizedKey = key.toLowerCase();
-    return SENSITIVE_KEY_PARTS.some((part) => normalizedKey.includes(part))
-      ? REDACTED
-      : value;
+    if (SENSITIVE_KEY_PARTS.some((part) => normalizedKey.includes(part))) return REDACTED;
+    return typeof value === 'string' ? redactSensitiveText(value) : value;
   });
 }
 
@@ -135,6 +142,7 @@ export function createRunRepository(
     )
   `);
   const getRun = database.prepare('SELECT * FROM mission_runs WHERE id = ?');
+  const getRunByOccurrence = database.prepare('SELECT * FROM mission_runs WHERE occurrence_key = ?');
   const updateSession = database.prepare(`
     UPDATE mission_runs
     SET session_id = @session_id, session_confirmed_at = @session_confirmed_at
@@ -209,6 +217,81 @@ export function createRunRepository(
     SET status = 'completed', result_json = @result_json, completed_at = @completed_at
     WHERE idempotency_key = @idempotency_key AND status = 'claimed'
   `);
+  const nextMissionAttempt = database.prepare(`
+    SELECT COALESCE(MAX(attempt), 0) + 1 AS attempt
+    FROM mission_runs
+    WHERE mission_id = ?
+  `);
+  const insertCronOccurrence = database.prepare(`
+    INSERT OR IGNORE INTO mission_runs (
+      id, mission_id, session_id, session_confirmed_at, attempt, provider, model,
+      reasoning_effort, status, started_at, last_activity_at, finished_at,
+      finish_reason, previous_run_id, occurrence_key, workdir, provenance_json
+    ) VALUES (
+      @id, @mission_id, @session_id, @session_confirmed_at, @attempt, @provider, @model,
+      @reasoning_effort, @status, @started_at, @last_activity_at, @finished_at,
+      @finish_reason, NULL, @occurrence_key, @workdir, @provenance_json
+    )
+  `);
+
+  const upsertCronOccurrenceTransaction = database.transaction((input: CronOccurrenceInput): CronOccurrenceUpsertResult => {
+    const existing = getRunByOccurrence.get(input.occurrenceKey) as MissionRunRow | undefined;
+    if (existing) return { created: false, run: toRun(existing) };
+
+    const attempt = (nextMissionAttempt.get(input.missionId) as { attempt: number }).attempt;
+    const terminalAt = input.occurredAt + 1;
+    const result = insertCronOccurrence.run({
+      id: input.occurrenceKey,
+      mission_id: input.missionId,
+      session_id: input.sessionId,
+      session_confirmed_at: input.occurredAt,
+      attempt,
+      provider: input.provider,
+      model: input.model,
+      reasoning_effort: input.reasoningEffort,
+      status: input.status,
+      started_at: input.occurredAt,
+      last_activity_at: terminalAt,
+      finished_at: terminalAt,
+      finish_reason: input.finishReason,
+      occurrence_key: input.occurrenceKey,
+      workdir: input.workdir,
+      provenance_json: serializeRedactedEventPayload(input.provenance),
+    });
+    if (result.changes === 0) {
+      const replay = getRunByOccurrence.get(input.occurrenceKey) as MissionRunRow | undefined;
+      if (!replay) throw new Error(`Cron occurrence conflict: ${input.occurrenceKey}`);
+      return { created: false, run: toRun(replay) };
+    }
+
+    const startedPayload = serializeRedactedEventPayload({
+      source: 'hermes-cron-output',
+      provenance: input.provenance,
+    });
+    insertEvent.run({
+      id: `${input.occurrenceKey}:started`,
+      run_id: input.occurrenceKey,
+      type: 'run.started',
+      occurred_at: input.occurredAt,
+      payload_json: startedPayload,
+    });
+    insertEvent.run({
+      id: `${input.occurrenceKey}:terminal`,
+      run_id: input.occurrenceKey,
+      type: input.status === 'completed' ? 'run.completed' : 'run.failed',
+      occurred_at: terminalAt,
+      payload_json: serializeRedactedEventPayload({
+        source: 'hermes-cron-output',
+        reason: input.finishReason,
+        error: input.error,
+        provenance: input.provenance,
+      }),
+    });
+    return {
+      created: true,
+      run: toRun(getRunByOccurrence.get(input.occurrenceKey) as MissionRunRow),
+    };
+  });
 
   const appendEventTransaction = database.transaction((input: AppendRunEventInput): boolean => {
     const result = insertEvent.run({
@@ -340,6 +423,10 @@ export function createRunRepository(
         throw new Error(`Operator command is not claimable: ${input.idempotencyKey}`);
       }
       return toCommand(getCommand.get(input.idempotencyKey) as OperatorCommandRow);
+    },
+
+    upsertCronOccurrence(input: CronOccurrenceInput): CronOccurrenceUpsertResult {
+      return upsertCronOccurrenceTransaction(input);
     },
   };
 }

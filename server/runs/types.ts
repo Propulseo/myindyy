@@ -77,6 +77,26 @@ export interface CompleteCommandInput {
   readonly completedAt?: number;
 }
 
+export interface CronOccurrenceInput {
+  readonly missionId: string;
+  readonly occurrenceKey: string;
+  readonly sessionId: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly reasoningEffort: ReasoningEffort | null;
+  readonly workdir: string | null;
+  readonly occurredAt: number;
+  readonly status: Extract<MissionRunStatus, 'completed' | 'failed'>;
+  readonly finishReason: string;
+  readonly error: string | null;
+  readonly provenance: Readonly<Record<string, unknown>>;
+}
+
+export interface CronOccurrenceUpsertResult {
+  readonly created: boolean;
+  readonly run: MissionRun;
+}
+
 export interface RunRepository {
   createRun(input: CreateRunInput): MissionRun;
   appendRunEvent(input: AppendRunEventInput): boolean;
@@ -90,6 +110,7 @@ export interface RunRepository {
   findActiveRuns(missionId?: string): MissionRun[];
   claimCommand(input: ClaimCommandInput): CommandClaimResult;
   completeCommand(input: CompleteCommandInput): OperatorCommand;
+  upsertCronOccurrence(input: CronOccurrenceInput): CronOccurrenceUpsertResult;
 }
 
 export interface RunRepositoryOptions {

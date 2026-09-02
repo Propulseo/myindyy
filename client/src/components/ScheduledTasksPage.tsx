@@ -22,7 +22,15 @@ import {
   Zap,
   type LucideIcon,
 } from 'lucide-react';
-import type { ScheduledTask, ScheduledTaskInput, ScheduledTaskRun, ScheduledTaskRunContent, ScheduledTaskStatus } from '@shared/types';
+import type {
+  ReasoningEffort,
+  ScheduledTask,
+  ScheduledTaskInput,
+  ScheduledTaskRun,
+  ScheduledTaskRunContent,
+  ScheduledTaskStatus,
+  ScheduledTasksPolicyContext,
+} from '@shared/types';
 import {
   createScheduledTask,
   deleteScheduledTask,
@@ -47,10 +55,9 @@ import {
   type SchedulePreset,
 } from '../lib/schedule';
 import { buildScheduledTaskEditDraft, buildScheduledTaskFixDraft, scheduledTaskDeliveryIssueText } from '../lib/scheduledTaskFix';
-import { useAgentConfig } from '../hooks/useAgentConfig';
+import { scheduledTaskRunReadiness } from '../lib/scheduledTaskReadiness';
 import { DeleteConfirmModal } from './DeleteConfirmModal';
 import { usePageHeader, type PageHeaderConfig } from './Header';
-import { ModelPicker } from './InputToolbar';
 import { MarkdownContent } from './MarkdownContent';
 
 const DEFAULT_PAUSE_REASON = 'Paused from Minions';
@@ -105,6 +112,7 @@ type ScheduledTaskFormState = {
   deliver: string;
   model: string;
   provider: string;
+  reasoningEffort: ReasoningEffort | '';
   workdir: string;
   repeatMode: RepeatMode;
   repeatCount: string;
@@ -279,7 +287,8 @@ function initialFormState(scheduledTask?: ScheduledTask, template?: ScheduledTas
     ...schedule,
     deliver: deliver || 'local',
     model: scheduledTask?.model ?? '',
-    provider: scheduledTask?.provider ?? '',
+    provider: scheduledTask?.provider ?? 'openai-codex',
+    reasoningEffort: scheduledTask?.reasoningEffort ?? '',
     workdir: scheduledTask?.workdir ?? '',
     repeatMode: repeatTimes === 1 ? 'once' : repeatTimes ? 'times' : 'forever',
     repeatCount: repeatTimes && repeatTimes > 1 ? String(repeatTimes) : '3',
@@ -299,14 +308,11 @@ function scheduledTaskInputFromForm(form: ScheduledTaskFormState, previous?: Sch
     prompt: form.prompt.trim(),
     schedule,
     deliver: form.deliver.trim() || 'local',
+    provider: form.provider.trim() || null,
+    model: form.model.trim() || null,
+    reasoningEffort: form.reasoningEffort || null,
+    workdir: form.workdir.trim() || null,
   };
-
-  if (form.model.trim()) input.model = form.model.trim();
-  else if (previous?.model) input.model = null;
-  if (form.provider.trim()) input.provider = form.provider.trim();
-  else if (previous?.provider) input.provider = null;
-  if (form.workdir.trim()) input.workdir = form.workdir.trim();
-  else if (previous?.workdir) input.workdir = null;
   if (repeat !== null) input.repeat = repeat;
   else if (previous?.repeat?.times != null) input.repeat = null;
 
@@ -319,8 +325,10 @@ function scheduledTaskInputFromForm(form: ScheduledTaskFormState, previous?: Sch
   if (input.prompt !== (previous.prompt ?? '')) updates.prompt = input.prompt;
   if (input.schedule !== previousSchedule) updates.schedule = input.schedule;
   if (input.deliver !== (previous.deliver?.trim() || 'local')) updates.deliver = input.deliver;
-  if ('model' in input) updates.model = input.model;
-  if ('workdir' in input) updates.workdir = input.workdir;
+  if (input.provider !== previous.provider) updates.provider = input.provider;
+  if (input.model !== previous.model) updates.model = input.model;
+  if (input.reasoningEffort !== previous.reasoningEffort) updates.reasoningEffort = input.reasoningEffort;
+  if (input.workdir !== previous.workdir) updates.workdir = input.workdir;
   if (repeat !== previousRepeat) updates.repeat = repeat;
   return updates;
 }
@@ -594,12 +602,13 @@ function ScheduledTaskRowActions({
   className?: string;
 }) {
   const disabled = Boolean(pendingAction);
-  const runDisabled = disabled || anyRunWatched;
+  const readiness = scheduledTaskRunReadiness(scheduledTask);
+  const runDisabled = disabled || anyRunWatched || !readiness.ready;
   const runTitle = isRunning
-    ? 'Watching for new run...'
+    ? 'Surveillance de la nouvelle exécution…'
     : anyRunWatched
-      ? 'Another run is being watched'
-      : 'Run now';
+      ? 'Une autre exécution est déjà surveillée.'
+      : readiness.reason ?? 'Exécuter maintenant';
   return (
     <div className={`flex items-center justify-end gap-1 ${className ?? ''}`}>
       <IconButton title="View runs" icon={<Clock3 size={15} />} emphasis disabled={disabled} onClick={() => onOpenRuns(scheduledTask)}>
@@ -611,7 +620,7 @@ function ScheduledTaskRowActions({
         disabled={runDisabled}
         onClick={() => onRun(scheduledTask)}
       >
-        {isRunning ? 'Running...' : 'Run now'}
+        {isRunning ? 'Exécution…' : 'Exécuter maintenant'}
       </IconButton>
       <IconButton
         title="More actions"
@@ -821,6 +830,14 @@ function ScheduledTasksList({
                         <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-zinc-500 dark:text-zinc-400" title={description}>
                           {description}
                         </p>
+                        <p className="mt-1 truncate font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+                          {scheduledTask.provider ?? 'provider absent'} · {scheduledTask.model ?? 'modèle absent'} · effort {scheduledTask.reasoningEffort ?? 'absent'}
+                        </p>
+                        {!scheduledTask.readiness?.ready && (
+                          <p className="mt-1 line-clamp-2 text-[11px] text-amber-700 dark:text-amber-300">
+                            {scheduledTask.readiness?.reason ?? 'Validation serveur indisponible.'}
+                          </p>
+                        )}
                       </div>
                       <ScheduleToggle
                         enabled={scheduledTask.enabled}
@@ -843,6 +860,11 @@ function ScheduledTasksList({
                         </div>
                       ))}
                     </div>
+                    {scheduledTask.lastError && (
+                      <p className="mt-2 line-clamp-2 text-xs text-rose-600 dark:text-rose-400">
+                        Dernière erreur : {scheduledTask.lastError}
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -913,6 +935,9 @@ function ScheduledTasksList({
                       <div className="min-w-0 flex-1">
                         <p className="truncate font-semibold text-sky-700 underline-offset-4 group-hover:underline dark:text-sky-300" title={scheduledTask.name}>{scheduledTask.name}</p>
                         <p className="truncate text-xs text-zinc-500 dark:text-zinc-400" title={description}>{description}</p>
+                        <p className="truncate font-mono text-[11px] text-zinc-400 dark:text-zinc-500">
+                          {scheduledTask.provider ?? 'provider absent'} · {scheduledTask.model ?? 'modèle absent'} · {scheduledTask.reasoningEffort ?? 'effort absent'}
+                        </p>
                       </div>
                     </button>
                   </td>
@@ -928,6 +953,11 @@ function ScheduledTasksList({
                         </span>
                       )}
                     </div>
+                    {scheduledTask.lastError && (
+                      <p className="mt-1 truncate text-xs text-rose-600 dark:text-rose-400" title={scheduledTask.lastError}>
+                        {scheduledTask.lastError}
+                      </p>
+                    )}
                   </td>
                   <td className="px-2 py-3 align-middle text-zinc-500 dark:text-zinc-400">
                     <div className="truncate">{nextRun}</div>
@@ -996,6 +1026,7 @@ function TextInput({
   placeholder,
   mono,
   autoFocus,
+  disabled,
   type = 'text',
 }: {
   value: string;
@@ -1003,6 +1034,7 @@ function TextInput({
   placeholder?: string;
   mono?: boolean;
   autoFocus?: boolean;
+  disabled?: boolean;
   type?: string;
 }) {
   return (
@@ -1012,6 +1044,7 @@ function TextInput({
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
       autoFocus={autoFocus}
+      disabled={disabled}
       className={`${INPUT_CLASS} ${mono ? 'font-mono' : ''}`}
     />
   );
@@ -1021,13 +1054,15 @@ function SelectInput({
   value,
   onChange,
   children,
+  disabled,
 }: {
   value: string;
   onChange: (value: string) => void;
   children: ReactNode;
+  disabled?: boolean;
 }) {
   return (
-    <select value={value} onChange={(event) => onChange(event.target.value)} className={INPUT_CLASS}>
+    <select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled} className={INPUT_CLASS}>
       {children}
     </select>
   );
@@ -1037,6 +1072,7 @@ function ScheduledTaskEditorPage({
   mode,
   scheduledTask,
   template,
+  policy,
   saving,
   justSaved = false,
   error,
@@ -1046,6 +1082,7 @@ function ScheduledTaskEditorPage({
   mode: 'create' | 'edit';
   scheduledTask?: ScheduledTask;
   template?: ScheduledTaskTemplate;
+  policy: ScheduledTasksPolicyContext | null;
   saving: boolean;
   justSaved?: boolean;
   error: string | null;
@@ -1053,7 +1090,6 @@ function ScheduledTaskEditorPage({
   onSubmit: (form: ScheduledTaskFormState) => void;
 }) {
   const [form, setForm] = useState<ScheduledTaskFormState>(() => initialFormState(scheduledTask, template));
-  const { defaults: agentDefaults, modelGroups } = useAgentConfig();
   const schedule = useMemo(
     () => compileSchedule(form),
     [form.preset, form.time, form.weekday, form.intervalValue, form.intervalUnit, form.rawSchedule],
@@ -1063,12 +1099,31 @@ function ScheduledTaskEditorPage({
     [schedule, form.preset, form.intervalValue, form.intervalUnit],
   );
   const isEdit = mode === 'edit';
-  const canSubmit = form.name.trim().length > 0 && form.prompt.trim().length > 0 && schedule.trim().length > 0 && !preview.invalid && !saving;
+  const selectedModel = policy?.models.find((model) => model.id === form.model) ?? null;
+  const supportedEfforts = selectedModel?.reasoningEfforts ?? null;
+  const runtimeReady = policy?.authState === 'connected' && policy.profileId === 'etienne-openai';
+  const canSubmit = form.name.trim().length > 0
+    && form.prompt.trim().length > 0
+    && schedule.trim().length > 0
+    && !preview.invalid
+    && runtimeReady
+    && form.provider === 'openai-codex'
+    && selectedModel !== null
+    && supportedEfforts !== null
+    && Boolean(form.reasoningEffort && supportedEfforts.includes(form.reasoningEffort))
+    && form.workdir.trim().length > 0
+    && !saving;
   const deliveryIssue = scheduledTask ? deliveryIssueSummary(scheduledTask) : null;
 
   function patch(updates: Partial<ScheduledTaskFormState>) {
     setForm((current) => ({ ...current, ...updates }));
   }
+
+  useEffect(() => {
+    if (!form.workdir && policy?.allowedWorkdirs[0]) {
+      patch({ workdir: policy.allowedWorkdirs[0] });
+    }
+  }, [form.workdir, policy]);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -1235,17 +1290,44 @@ function ScheduledTaskEditorPage({
           </section>
 
           <section className="border-t border-zinc-200 pt-5 dark:border-zinc-800">
-            <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Model</h3>
-            <div className="mt-3">
-              <ModelPicker
-                value={form.model}
-                provider={form.provider || null}
-                fallback={agentDefaults?.model ?? null}
-                fallbackProvider={agentDefaults?.provider ?? null}
-                modelGroups={modelGroups}
-                title="Recurring task model"
-                onChange={(model, selection) => patch({ model, provider: selection?.provider ?? '' })}
-              />
+            <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Runtime Codex OAuth</h3>
+            <div className="mt-3 space-y-3">
+              <div className={`rounded-md border px-3 py-2 text-xs ${runtimeReady
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200'
+                : 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200'
+              }`}>
+                {runtimeReady
+                  ? 'Codex OAuth connecté · profil etienne-openai'
+                  : `Exécution désactivée · OAuth ${policy?.authState ?? 'indisponible'} · profil ${policy?.profileId ?? 'absent'}`}
+              </div>
+              <FieldLabel label="Provider">
+                <TextInput value="openai-codex" onChange={() => {}} disabled />
+              </FieldLabel>
+              <FieldLabel label="Modèle">
+                <SelectInput
+                  value={form.model}
+                  onChange={(model) => patch({ model, reasoningEffort: '' })}
+                >
+                  <option value="">Choisir un modèle explicite</option>
+                  {(policy?.models ?? []).map((model) => (
+                    <option key={model.id} value={model.id}>{model.label}</option>
+                  ))}
+                </SelectInput>
+              </FieldLabel>
+              <FieldLabel label="Effort">
+                <SelectInput
+                  value={form.reasoningEffort}
+                  onChange={(effort) => patch({ reasoningEffort: effort as ReasoningEffort | '' })}
+                  disabled={!supportedEfforts || supportedEfforts.length === 0}
+                >
+                  <option value="">
+                    {supportedEfforts === null ? 'Capacités non publiées' : 'Choisir un effort supporté'}
+                  </option>
+                  {(supportedEfforts ?? []).map((effort) => (
+                    <option key={effort} value={effort}>{effort}</option>
+                  ))}
+                </SelectInput>
+              </FieldLabel>
             </div>
           </section>
 
@@ -1255,7 +1337,13 @@ function ScheduledTaskEditorPage({
             </summary>
             <div className="mt-3 space-y-3">
               <FieldLabel label="Workdir">
-                <TextInput mono value={form.workdir} onChange={(workdir) => patch({ workdir })} placeholder="~/.minions/workspace" />
+                <SelectInput value={form.workdir} onChange={(workdir) => patch({ workdir })}>
+                  <option value="">Choisir un dossier enregistré</option>
+                  {[...new Set([
+                    ...(policy?.allowedWorkdirs ?? []),
+                    ...(form.workdir ? [form.workdir] : []),
+                  ])].map((workdir) => <option key={workdir} value={workdir}>{workdir}</option>)}
+                </SelectInput>
               </FieldLabel>
               <FieldLabel label="Repeat">
                 <SelectInput value={form.repeatMode} onChange={(v) => patch({ repeatMode: v as RepeatMode })}>
@@ -1317,12 +1405,13 @@ function ScheduledTaskRunsView({
   const isRunning = watchedRunScheduledTaskId === scheduledTask.id
     || (pendingAction?.action === 'run' && pendingAction.scheduledTaskId === scheduledTask.id);
   const anotherRunWatched = watchedRunScheduledTaskId !== null && watchedRunScheduledTaskId !== scheduledTask.id;
-  const runDisabled = Boolean(pendingAction) || isRunning || anotherRunWatched;
+  const readiness = scheduledTaskRunReadiness(scheduledTask);
+  const runDisabled = Boolean(pendingAction) || isRunning || anotherRunWatched || !readiness.ready;
   const runTitle = isRunning
-    ? 'Watching for new run...'
+    ? 'Surveillance de la nouvelle exécution…'
     : anotherRunWatched
-      ? 'Another run is being watched'
-      : 'Run now';
+      ? 'Une autre exécution est déjà surveillée.'
+      : readiness.reason ?? 'Exécuter maintenant';
   const activeRun = useMemo(() => runs.find((run) => run.id === activeRunId) ?? null, [activeRunId, runs]);
   const activeRunStatus = activeRun?.status ?? runContent?.status ?? null;
   const runBody = runContent?.body.trim() ?? '';
@@ -1339,8 +1428,8 @@ function ScheduledTaskRunsView({
         title={runTitle}
         onClick={onRun}
       >
-        <span className="hidden sm:inline">{isRunning ? 'Running...' : 'Run now'}</span>
-        <span className="sm:hidden">{isRunning ? 'Running' : 'Run'}</span>
+        <span className="hidden sm:inline">{isRunning ? 'Exécution…' : 'Exécuter maintenant'}</span>
+        <span className="sm:hidden">{isRunning ? 'Exécution' : 'Lancer'}</span>
       </ActionButton>
     </>
   ), [isRunning, onEdit, onEditWithAI, onRun, runDisabled, runTitle]);
@@ -1357,6 +1446,15 @@ function ScheduledTaskRunsView({
   return (
     <>
       <DeliveryIssueBanner scheduledTask={scheduledTask} onFix={onFixIssue} />
+      <div className={`border-b px-4 py-2.5 text-xs sm:px-5 ${readiness.ready
+        ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/20 dark:text-emerald-200'
+        : 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-200'
+      }`}>
+        <span className="font-semibold">{readiness.ready ? 'Codex OAuth prêt' : 'Exécution bloquée'}</span>
+        {' · '}{scheduledTask.provider ?? 'provider absent'} · {scheduledTask.model ?? 'modèle absent'} · effort {scheduledTask.reasoningEffort ?? 'absent'}
+        {!readiness.ready && readiness.reason ? ` · ${readiness.reason}` : ''}
+        {scheduledTask.lastError ? ` · Dernière erreur : ${scheduledTask.lastError}` : ''}
+      </div>
 
       <div className="grid min-h-[640px] grid-cols-1 lg:min-h-0 lg:flex-1 lg:grid-cols-[340px_minmax(0,1fr)] lg:overflow-hidden">
         <aside className="border-b border-zinc-200 bg-white lg:flex lg:min-h-0 lg:flex-col lg:border-b-0 lg:border-r dark:border-zinc-800 dark:bg-zinc-950">
@@ -1471,6 +1569,7 @@ export function ScheduledTasksPage() {
   const selectedScheduledTaskId = scheduledTaskId ?? null;
 
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
+  const [policy, setPolicy] = useState<ScheduledTasksPolicyContext | null>(null);
   const [runs, setRuns] = useState<ScheduledTaskRun[]>([]);
   const [runContent, setRunContent] = useState<ScheduledTaskRunContent | null>(null);
   const [loadingScheduledTasks, setLoadingScheduledTasks] = useState(true);
@@ -1516,8 +1615,9 @@ export function ScheduledTasksPage() {
   const loadScheduledTasks = useCallback(async () => {
     setLoadingScheduledTasks(true);
     try {
-      const { scheduledTasks: nextScheduledTasks } = await fetchScheduledTasks(true, SCHEDULED_TASKS_PAGE_SIZE);
+      const { scheduledTasks: nextScheduledTasks, policy: nextPolicy } = await fetchScheduledTasks(true, SCHEDULED_TASKS_PAGE_SIZE);
       setScheduledTasks(nextScheduledTasks);
+      setPolicy(nextPolicy);
       setError(null);
     } catch (err) {
       setError(toErrorMessage(err, 'Failed to load recurring tasks'));
@@ -1547,8 +1647,9 @@ export function ScheduledTasksPage() {
     if (!selectedScheduledTaskId || selectedScheduledTask || loadingScheduledTasks) return;
     let cancelled = false;
     fetchScheduledTask(selectedScheduledTaskId)
-      .then(({ scheduledTask }) => {
+      .then(({ scheduledTask, policy: nextPolicy }) => {
         if (cancelled) return;
+        setPolicy(nextPolicy);
         if (scheduledTask) replaceScheduledTask(scheduledTask);
         else navigate(ROUTES.list, { replace: true });
       })
@@ -1656,6 +1757,13 @@ export function ScheduledTasksPage() {
     action: 'pause' | 'resume' | 'run',
     scheduledTask: ScheduledTask,
   ) => {
+    if (action === 'run') {
+      const readiness = scheduledTaskRunReadiness(scheduledTask);
+      if (!readiness.ready) {
+        setError(readiness.reason);
+        return;
+      }
+    }
     setPendingAction({ action, scheduledTaskId: scheduledTask.id });
 
     let previousLatestRunId: string | null = null;
@@ -1673,18 +1781,21 @@ export function ScheduledTasksPage() {
     }
 
     try {
-      let result: { scheduledTask: ScheduledTask };
-      if (action === 'pause') result = await pauseScheduledTask(scheduledTask.id, DEFAULT_PAUSE_REASON);
-      else if (action === 'resume') result = await resumeScheduledTask(scheduledTask.id);
-      else result = await runScheduledTask(scheduledTask.id);
-      replaceScheduledTask(result.scheduledTask);
-      setError(null);
       if (action === 'run') {
+        await runScheduledTask(scheduledTask.id, crypto.randomUUID());
+        setError(null);
         setRunPoll({
           scheduledTaskId: scheduledTask.id,
           previousLatestRunId,
           startedAt: Date.now(),
         });
+      } else {
+        const result = action === 'pause'
+          ? await pauseScheduledTask(scheduledTask.id, DEFAULT_PAUSE_REASON)
+          : await resumeScheduledTask(scheduledTask.id);
+        replaceScheduledTask(result.scheduledTask);
+        setPolicy(result.policy);
+        setError(null);
       }
     } catch (err) {
       setError(toErrorMessage(err, `Failed to ${action} recurring task`));
@@ -1699,15 +1810,17 @@ export function ScheduledTasksPage() {
     try {
       if (isCreateRoute) {
         const input = scheduledTaskInputFromForm(form) as ScheduledTaskInput;
-        const { scheduledTask } = await createScheduledTask(input);
+        const { scheduledTask, policy: nextPolicy } = await createScheduledTask(input);
         replaceScheduledTask(scheduledTask);
+        setPolicy(nextPolicy);
         setTemplateDraft(undefined);
         navigate(ROUTES.runs(scheduledTask.id));
       } else if (selectedScheduledTask) {
         const updates = scheduledTaskInputFromForm(form, selectedScheduledTask) as Partial<ScheduledTaskInput>;
         if (Object.keys(updates).length > 0) {
-          const { scheduledTask } = await updateScheduledTask(selectedScheduledTask.id, updates);
+          const { scheduledTask, policy: nextPolicy } = await updateScheduledTask(selectedScheduledTask.id, updates);
           replaceScheduledTask(scheduledTask);
+          setPolicy(nextPolicy);
         }
         setJustSaved(true);
       }
@@ -1797,6 +1910,7 @@ export function ScheduledTasksPage() {
           key={`create:${templateDraft?.key ?? 'blank'}`}
           mode="create"
           template={templateDraft}
+          policy={policy}
           saving={saving}
           error={editorError}
           onCancel={cancelEditor}
@@ -1816,6 +1930,7 @@ export function ScheduledTasksPage() {
           key={`edit:${selectedScheduledTask.id}`}
           mode="edit"
           scheduledTask={selectedScheduledTask}
+          policy={policy}
           saving={saving}
           justSaved={justSaved}
           error={editorError}
@@ -1872,6 +1987,14 @@ export function ScheduledTasksPage() {
   return (
     <>
       <PageShell fitted={isRunsRoute}>
+        {policy && !isEditRoute && !isCreateRoute && (
+          <div className={`border-b px-5 py-2 text-xs ${policy.authState === 'connected' && policy.profileId === 'etienne-openai'
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/20 dark:text-emerald-200'
+            : 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-200'
+          }`}>
+            Codex OAuth : {policy.authState} · profil {policy.profileId ?? 'absent'} · catalogue vérifié {formatDate(policy.checkedAt)}
+          </div>
+        )}
         {error && !isEditRoute && !isCreateRoute && (
           <div className="flex items-center gap-2 border-b border-rose-200 bg-rose-50 px-5 py-2 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
             <AlertCircle size={15} />

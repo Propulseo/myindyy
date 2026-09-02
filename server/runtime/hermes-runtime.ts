@@ -58,8 +58,8 @@ function runtimeOptions(options?: AgentRunOptions): AgentRunOptions {
   };
 }
 
-function scheduledTaskSettings(input: Pick<ScheduledTaskInput, 'provider' | 'model'>): AgentRunSettings {
-  return { provider: input.provider, model: input.model };
+function scheduledTaskSettings(input: Pick<ScheduledTaskInput, 'provider' | 'model' | 'reasoningEffort'>): AgentRunSettings {
+  return { provider: input.provider, model: input.model, reasoningEffort: input.reasoningEffort };
 }
 
 export class HermesOAuthRuntime extends HermesWorkerAdapter {
@@ -162,6 +162,7 @@ export class HermesOAuthRuntime extends HermesWorkerAdapter {
     assertAllowedRuntime({
       provider: updates.provider === undefined ? current.provider : updates.provider,
       model: updates.model === undefined ? current.model : updates.model,
+      reasoningEffort: updates.reasoningEffort === undefined ? current.reasoningEffort : updates.reasoningEffort,
     });
     return await super.updateScheduledTask(scheduledTaskId, updates);
   }
@@ -169,21 +170,21 @@ export class HermesOAuthRuntime extends HermesWorkerAdapter {
   async resumeScheduledTask(scheduledTaskId: string): Promise<ScheduledTask | null> {
     const scheduledTask = await super.getScheduledTask(scheduledTaskId);
     if (!scheduledTask) return null;
-    assertAllowedRuntime({ provider: scheduledTask.provider, model: scheduledTask.model });
+    assertAllowedRuntime({ provider: scheduledTask.provider, model: scheduledTask.model, reasoningEffort: scheduledTask.reasoningEffort });
     return await super.resumeScheduledTask(scheduledTaskId);
   }
 
   async runScheduledTask(scheduledTaskId: string): Promise<ScheduledTask | null> {
     const scheduledTask = await super.getScheduledTask(scheduledTaskId);
     if (!scheduledTask) return null;
-    assertAllowedRuntime({ provider: scheduledTask.provider, model: scheduledTask.model });
+    assertAllowedRuntime({ provider: scheduledTask.provider, model: scheduledTask.model, reasoningEffort: scheduledTask.reasoningEffort });
     return await super.runScheduledTask(scheduledTaskId);
   }
 
   async tickScheduledTasks(): Promise<number> {
     const scheduledTasks = await super.listScheduledTasks(false);
     for (const scheduledTask of scheduledTasks) {
-      assertAllowedRuntime({ provider: scheduledTask.provider, model: scheduledTask.model });
+      assertAllowedRuntime({ provider: scheduledTask.provider, model: scheduledTask.model, reasoningEffort: scheduledTask.reasoningEffort });
     }
     return await super.tickScheduledTasks();
   }

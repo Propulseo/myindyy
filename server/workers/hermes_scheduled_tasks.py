@@ -65,6 +65,7 @@ def _normalize_scheduled_task(job: dict[str, Any] | None) -> dict[str, Any] | No
         "lastDeliveryError": string_or_none(job.get("last_delivery_error")),
         "model": string_or_none(job.get("model")),
         "provider": string_or_none(job.get("provider")),
+        "reasoningEffort": string_or_none(job.get("reasoning_effort")),
         "baseUrl": string_or_none(job.get("base_url")),
         "deliver": string_or_none(job.get("deliver")),
         "origin": json_safe(raw_origin) if isinstance(raw_origin, dict) else None,
@@ -130,6 +131,8 @@ def _build_update_dict(request: dict[str, Any]) -> dict[str, Any]:
 
     if "baseUrl" in request:
         updates["base_url"] = string_or_none(request.get("baseUrl"))
+    if "reasoningEffort" in request:
+        updates["reasoning_effort"] = string_or_none(request.get("reasoningEffort"))
     if "repeat" in request:
         updates["repeat"] = _repeat_update(request.get("repeat"))
     if "contextFrom" in request:
@@ -145,11 +148,13 @@ def list_scheduled_tasks(include_disabled: bool = False, limit: Any = 100) -> di
     from cron.jobs import list_jobs
 
     try:
-        safe_limit = max(1, min(int(limit), 100))
+        requested_limit = int(limit)
+        safe_limit = None if requested_limit == 0 else max(1, min(requested_limit, 100))
     except (TypeError, ValueError):
         safe_limit = 100
     jobs = [_normalize_scheduled_task(job) for job in list_jobs(include_disabled=include_disabled)]
-    return {"scheduledTasks": [job for job in jobs if job is not None][:safe_limit]}
+    normalized_jobs = [job for job in jobs if job is not None]
+    return {"scheduledTasks": normalized_jobs if safe_limit is None else normalized_jobs[:safe_limit]}
 
 
 def get_scheduled_task(job_id: Any) -> dict[str, Any]:
@@ -173,6 +178,7 @@ def create_scheduled_task(request: dict[str, Any]) -> dict[str, Any]:
             skills=_list_of_strings(request.get("skills")),
             model=string_or_none(request.get("model")),
             provider=string_or_none(request.get("provider")),
+            reasoning_effort=string_or_none(request.get("reasoningEffort")),
             base_url=string_or_none(request.get("baseUrl")),
             workdir=string_or_none(request.get("workdir")),
             repeat=_int_or_none(request.get("repeat")),

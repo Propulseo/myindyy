@@ -24,6 +24,7 @@ import type {
   ScheduledTaskInput,
   ScheduledTaskRun,
   ScheduledTaskRunContent,
+  ScheduledTasksPolicyContext,
   SkillMeta,
   SkillInstallResult,
   ClawHubSkillSummary,
@@ -186,15 +187,15 @@ export function interruptTask(taskId: string, reason?: string) {
 }
 
 export function fetchScheduledTasks(includeDisabled = true, limit = 100) {
-  return request<{ scheduledTasks: ScheduledTask[] }>(`/scheduled-tasks?includeDisabled=${includeDisabled ? 'true' : 'false'}&limit=${limit}`);
+  return request<{ scheduledTasks: ScheduledTask[]; policy: ScheduledTasksPolicyContext }>(`/scheduled-tasks?includeDisabled=${includeDisabled ? 'true' : 'false'}&limit=${limit}`);
 }
 
 export function fetchScheduledTask(scheduledTaskId: string) {
-  return request<{ scheduledTask: ScheduledTask | null }>(`/scheduled-tasks/${encodeURIComponent(scheduledTaskId)}`);
+  return request<{ scheduledTask: ScheduledTask | null; policy: ScheduledTasksPolicyContext }>(`/scheduled-tasks/${encodeURIComponent(scheduledTaskId)}`);
 }
 
 export function createScheduledTask(input: ScheduledTaskInput) {
-  return request<{ scheduledTask: ScheduledTask }>('/scheduled-tasks', {
+  return request<{ scheduledTask: ScheduledTask; policy: ScheduledTasksPolicyContext }>('/scheduled-tasks', {
     method: 'POST',
     body: JSON.stringify(input),
   });
@@ -331,7 +332,7 @@ export function deleteFileEntry(path: string, recursive = false) {
 }
 
 export function updateScheduledTask(scheduledTaskId: string, updates: Partial<ScheduledTaskInput>) {
-  return request<{ scheduledTask: ScheduledTask }>(`/scheduled-tasks/${encodeURIComponent(scheduledTaskId)}`, {
+  return request<{ scheduledTask: ScheduledTask; policy: ScheduledTasksPolicyContext }>(`/scheduled-tasks/${encodeURIComponent(scheduledTaskId)}`, {
     method: 'PATCH',
     body: JSON.stringify(updates),
   });
@@ -346,21 +347,27 @@ export function fetchScheduledTaskRunContent(scheduledTaskId: string, runId: str
 }
 
 export function pauseScheduledTask(scheduledTaskId: string, reason?: string) {
-  return request<{ scheduledTask: ScheduledTask }>(`/scheduled-tasks/${encodeURIComponent(scheduledTaskId)}/pause`, {
+  return request<{ scheduledTask: ScheduledTask; policy: ScheduledTasksPolicyContext }>(`/scheduled-tasks/${encodeURIComponent(scheduledTaskId)}/pause`, {
     method: 'POST',
     body: JSON.stringify(reason ? { reason } : {}),
   });
 }
 
 export function resumeScheduledTask(scheduledTaskId: string) {
-  return request<{ scheduledTask: ScheduledTask }>(`/scheduled-tasks/${encodeURIComponent(scheduledTaskId)}/resume`, {
+  return request<{ scheduledTask: ScheduledTask; policy: ScheduledTasksPolicyContext }>(`/scheduled-tasks/${encodeURIComponent(scheduledTaskId)}/resume`, {
     method: 'POST',
   });
 }
 
-export function runScheduledTask(scheduledTaskId: string) {
-  return request<{ scheduledTask: ScheduledTask }>(`/scheduled-tasks/${encodeURIComponent(scheduledTaskId)}/run`, {
+export function runScheduledTask(scheduledTaskId: string, idempotencyKey: string) {
+  return request<{
+    accepted: true;
+    durableRun: null;
+    idempotencyKey: string;
+    scheduledTaskId: string;
+  }>(`/scheduled-tasks/${encodeURIComponent(scheduledTaskId)}/run`, {
     method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
   });
 }
 

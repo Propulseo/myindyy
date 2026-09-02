@@ -58,6 +58,7 @@ An anonymous `OPTIONS /api/**` preflight is not public metadata: it crosses the 
 | `INDY_PROXY_SECRET_FILE` | Absolute path to the mounted secret file. The file contains at least 32 bytes; one final newline is ignored. The secret itself must not be placed in an environment variable. |
 | `INDY_TRUSTED_PROXY_CIDRS` | Comma-separated private proxy addresses or CIDRs, for example `10.20.0.5/32,fd42:1234::5/128`. Public ranges and invalid entries make authentication unavailable. |
 | `INDY_DEV_ACTOR` | Optional local-only bypass. It is effective only with the exact value `etienne`, `NODE_ENV=development`, and an actual loopback socket. It is ignored in test and production. |
+| `INDY_SCHEDULED_WORKDIRS` | Optional server-side registry of additional directories allowed for Hermes scheduled tasks. Separate entries with the platform path delimiter (`;` on Windows, `:` on POSIX). Each root is resolved through the filesystem before use; missing roots, traversal and symlink escapes are rejected. The Minions workspace remains allowed by default. |
 
 Create and mount a distinct high-entropy transport secret with restrictive permissions, for example:
 
@@ -67,6 +68,14 @@ openssl rand -hex 32 > /run/secrets/indy-proxy
 ```
 
 Configure the proxy to read the same secret from its secret store and inject it upstream; never expose it to browser JavaScript or proxy access logs. Set `INDY_PUBLIC_ORIGIN=https://indy.example.com`, set `INDY_PROXY_SECRET_FILE=/run/secrets/indy-proxy`, and restrict `INDY_TRUSTED_PROXY_CIDRS` to the proxy's real private source network. The proxy must send `Host: indy.example.com` on browser traffic. Missing or invalid production configuration fails closed with `503`. Missing or invalid transport credentials return the same generic `401`; a trusted, transport-authenticated identity other than exact `etienne` returns `403`.
+
+## Hermes scheduled-task policy
+
+Hermes is the only source of schedule truth and the only component that decides when a recurring task runs. Indy does not copy or rewrite schedules and does not run a parallel ticker. It passively imports completed Hermes output records into the mission history at startup and while the server is running; this importer never triggers a task.
+
+Creating, updating, resuming or manually running a scheduled task is fail-closed. The server requires the exact `openai-codex` provider, the connected `etienne-openai` OAuth profile, an explicit model from a freshly authenticated Hermes catalog, an explicit effort published for that model, and a canonical workdir in the server registry. A missing catalog or unknown effort does not fall back to defaults. Manual runs also require an `Idempotency-Key`; reusing the same key and payload replays the server acknowledgement, while a different payload returns `409` without triggering Hermes again.
+
+Every durable Hermes output occurrence is projected exactly once into `mission_runs` using `cron:<scheduled-task-id>:<Hermes-run-id>`. SQLite stores this control-plane history and a stable cron mission identity, never the schedule itself. A manual trigger is therefore acknowledged as accepted only by the server and does not become a successful mission run until Hermes writes durable output evidence.
 
 ## Features
 
