@@ -49,6 +49,7 @@ type FakeBehavior = {
   terminationDelayMs?: number;
   synchronousTerminationEvent?: boolean;
   stderrChunks?: string[];
+  stdoutChunks?: string[];
 };
 
 class FakeWorkerChild extends EventEmitter {
@@ -105,6 +106,7 @@ class FakeWorkerChild extends EventEmitter {
     }
     if (request.type !== 'runtime.status') return;
     for (const chunk of this.behavior.stderrChunks ?? []) this.stderr.write(chunk);
+    for (const chunk of this.behavior.stdoutChunks ?? []) this.stdout.write(chunk);
     if (this.behavior.runtime === 'respond') {
       this.send(request.id, {
         provider: 'openai-codex',
@@ -275,11 +277,15 @@ describe('Hermes worker generations', () => {
     expect(await sibling).toContain('Hermes worker did not respond within 10ms');
   });
 
-  it('buffers stderr by line before redacting a secret split across chunks', async () => {
+  it('never forwards opaque worker stdout or stderr while retaining a structural diagnostic', async () => {
     const worker = await loadWorkerModule();
     const fake = fakeSpawner([{
       runtime: 'respond',
-      stderrChunks: ['[provider] Authorization: Bearer fragmented-', 'worker-secret'],
+      stderrChunks: [
+        '[provider] Authorization: Bearer fragmented-',
+        'worker-secret\nprovider rejected opaque-oauth-value-123456789',
+      ],
+      stdoutChunks: ['provider stdout contained opaque-stdout-secret-987654321\n'],
     }]);
     const adapter = new worker.HermesWorkerAdapter({
       launchContract: worker.captureWorkerLaunchContract(process.env),
@@ -293,11 +299,15 @@ describe('Hermes worker generations', () => {
     }) as typeof process.stderr.write);
 
     await adapter.getRuntimeDiagnostic(100);
-    expect(stderr).toEqual([]);
+    expect(stderr.join('')).not.toContain('opaque-oauth-value-123456789');
+    expect(stderr.join('')).not.toContain('opaque-stdout-secret-987654321');
     await adapter.stop();
 
-    expect(stderr.join('')).toContain('[REDACTED]');
-    expect(stderr.join('')).not.toContain('fragmented-worker-secret');
-    expect(stderr).toHaveLength(1);
+    const captured = stderr.join('');
+    expect(captured).toContain('[hermes-worker] worker stderr received');
+    expect(captured).toContain('[hermes-worker] discarded non-protocol stdout');
+    expect(captured).not.toContain('fragmented-worker-secret');
+    expect(captured).not.toContain('opaque-oauth-value-123456789');
+    expect(captured).not.toContain('opaque-stdout-secret-987654321');
   });
 });

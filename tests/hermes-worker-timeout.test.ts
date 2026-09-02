@@ -29,7 +29,8 @@ lines.on('line', (line) => {
   }
   if (mode === 'secret-boundary') {
     const detail = 'Authorization: Bearer bearer-worker-secret\\nAuthorization: Basic dXNlcjpwYXNz\\nAuthorization: Digest username="digest-worker-user", nonce="digest-worker-nonce", response="digest-worker-response"\\n{"token":"worker-token-secret","credential":"worker-credential-secret","password":"worker-password-secret"}';
-    process.stderr.write('[provider] ' + detail + '\\n');
+    process.stderr.write('[provider] ' + detail + '\\nprovider rejected opaque-oauth-value-123456789\\n');
+    process.stdout.write('provider stdout contained opaque-stdout-secret-987654321\\n');
     process.stdout.write(JSON.stringify({
       id: request.id,
       type: 'error',
@@ -126,7 +127,7 @@ describe('Hermes worker bounded request lifecycle', () => {
     expect(fresh.models.map((model) => model.id)).toEqual(['fresh-model']);
   });
 
-  it('turns worker failures into stable public errors and redacts captured stderr and stream events', async () => {
+  it('turns worker failures into stable public errors and suppresses untrusted logs and stream events', async () => {
     const adapter = adapterFor('secret-boundary');
     const stderr: string[] = [];
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
@@ -153,8 +154,10 @@ describe('Hermes worker bounded request lifecycle', () => {
         'bearer-worker-secret', 'dXNlcjpwYXNz', 'digest-worker-user',
         'digest-worker-nonce', 'digest-worker-response', 'worker-token-secret',
         'worker-credential-secret', 'worker-password-secret',
+        'opaque-oauth-value-123456789', 'opaque-stdout-secret-987654321',
       ]) expect(exposed).not.toContain(secret);
-      expect(stderr.join('')).toContain('[REDACTED]');
+      expect(stderr.join('')).toContain('[hermes-worker] worker stderr received');
+      expect(stderr.join('')).toContain('[hermes-worker] discarded non-protocol stdout');
     } finally {
       stderrSpy.mockRestore();
     }

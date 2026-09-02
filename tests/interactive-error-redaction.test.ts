@@ -8,7 +8,7 @@ import {
   subscribe,
 } from '../server/live-chat.js';
 import { redactSensitiveText } from '../server/security/redaction.js';
-import { publicError } from '../server/errors.js';
+import { publicError, toErrorMessage } from '../server/errors.js';
 
 const SECRETS = [
   'bearer-secret',
@@ -19,6 +19,7 @@ const SECRETS = [
   'token-secret',
   'credential-secret',
   'password-secret',
+  'opaque-oauth-value-123456789',
 ] as const;
 
 const SECRET_ERROR = [
@@ -46,11 +47,20 @@ describe('interactive error redaction boundary', () => {
   });
 
   it('maps hostile or unknown worker codes to the stable generic code', () => {
-    expect(publicError('constructor', SECRET_ERROR)).toMatchObject({
+    const error = publicError('constructor', `${SECRET_ERROR}\nopaque-oauth-value-123456789`);
+    expect(error).toMatchObject({
       code: 'worker_error',
       message: 'Hermes worker request failed.',
     });
-    expectSecretFree(publicError('constructor', SECRET_ERROR).diagnostic);
+    expect(error.diagnostic).toBe('Untrusted diagnostic suppressed.');
+    expectSecretFree(error);
+  });
+
+  it('does not publish opaque messages from untyped errors', () => {
+    expect(toErrorMessage(
+      new Error('provider rejected opaque-oauth-value-123456789'),
+      'Hermes request failed.',
+    )).toBe('Hermes request failed.');
   });
 
   it('redacts live state and the exact serialized SSE payload before writing', () => {

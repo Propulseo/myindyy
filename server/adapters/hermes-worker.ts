@@ -34,7 +34,6 @@ import { expandHomePrefix } from '../paths.js';
 import { sanitizeWorkerEnv } from '../runtime/policy.js';
 import { validateHermesRuntimeExecution } from '../hermes-runtime-manifest.js';
 import { PublicError, publicError } from '../errors.js';
-import { redactSensitiveText } from '../security/redaction.js';
 
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const WORKER_INTERRUPT_TIMEOUT_MS = 10_000;
@@ -238,20 +237,14 @@ export function captureWorkerLaunchContract(
 
 const PROCESS_WORKER_LAUNCH_CONTRACT = captureWorkerLaunchContract({ ...PROCESS_ENVIRONMENT });
 
-function workerErrorDiagnostic(error: string | WorkerErrorPayload | undefined): string {
-  if (!error) return '';
-  if (typeof error === 'string') return error;
-  return [error.message, error.hint].filter(Boolean).join(' ');
-}
-
 function workerErrorCode(error: string | WorkerErrorPayload | undefined): string | undefined {
   return typeof error === 'object' ? error.code : undefined;
 }
 
 class HermesWorkerError extends PublicError {
   constructor(error: string | WorkerErrorPayload | undefined) {
-    const safe = publicError(workerErrorCode(error), workerErrorDiagnostic(error));
-    super(safe.code, safe.diagnostic);
+    const safe = publicError(workerErrorCode(error));
+    super(safe.code);
     this.name = 'HermesWorkerError';
   }
 }
@@ -331,7 +324,8 @@ type WorkerGeneration = {
   readonly pending: Map<string, Pending>;
   readonly terminated: Promise<void>;
   resolveTerminated: () => void;
-  stderrBuffer: string;
+  stderrPendingFragment: boolean;
+  stderrNoticeWritten: boolean;
   stderrFlushed: boolean;
   terminal: boolean;
   ready: boolean;
@@ -515,7 +509,8 @@ class HermesWorkerClient {
       pending: new Map(),
       terminated,
       resolveTerminated,
-      stderrBuffer: '',
+      stderrPendingFragment: false,
+      stderrNoticeWritten: false,
       stderrFlushed: false,
       terminal: false,
       ready: false,
@@ -547,7 +542,7 @@ class HermesWorkerClient {
     try {
       event = JSON.parse(line) as WorkerEvent;
     } catch {
-      process.stderr.write(`[hermes-worker] non-json stdout: ${redactSensitiveText(line)}\n`);
+      process.stderr.write('[hermes-worker] discarded non-protocol stdout\n');
       return;
     }
 
@@ -574,23 +569,22 @@ class HermesWorkerClient {
 
   private handleStderrChunk(generation: WorkerGeneration, chunk: string): void {
     if (generation.stderrFlushed) return;
-    generation.stderrBuffer += chunk;
-    let newline = generation.stderrBuffer.indexOf('\n');
-    while (newline >= 0) {
-      const line = generation.stderrBuffer.slice(0, newline + 1);
-      generation.stderrBuffer = generation.stderrBuffer.slice(newline + 1);
-      process.stderr.write(redactSensitiveText(line));
-      newline = generation.stderrBuffer.indexOf('\n');
-    }
+    if (!chunk) return;
+    generation.stderrPendingFragment = !chunk.endsWith('\n');
+    if (chunk.includes('\n')) this.writeStderrNotice(generation);
   }
 
   private flushStderr(generation: WorkerGeneration): void {
     if (generation.stderrFlushed) return;
     generation.stderrFlushed = true;
-    if (generation.stderrBuffer) {
-      process.stderr.write(redactSensitiveText(generation.stderrBuffer));
-      generation.stderrBuffer = '';
-    }
+    if (generation.stderrPendingFragment) this.writeStderrNotice(generation);
+    generation.stderrPendingFragment = false;
+  }
+
+  private writeStderrNotice(generation: WorkerGeneration): void {
+    if (generation.stderrNoticeWritten) return;
+    generation.stderrNoticeWritten = true;
+    process.stderr.write('[hermes-worker] worker stderr received\n');
   }
 
   private handleExit(generation: WorkerGeneration): void {

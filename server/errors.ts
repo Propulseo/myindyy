@@ -30,7 +30,7 @@ export class PublicError extends Error {
     super(PUBLIC_ERROR_MESSAGES[code]);
     this.name = 'PublicError';
     this.code = code;
-    this.diagnostic = redactSensitiveText(diagnostic);
+    this.diagnostic = diagnostic ? 'Untrusted diagnostic suppressed.' : '';
   }
 }
 
@@ -43,7 +43,7 @@ export function publicError(code: unknown, diagnostic = ''): PublicError {
 }
 
 export function toErrorMessage(error: unknown, fallback = 'Something went wrong'): string {
-  return error instanceof Error ? redactSensitiveText(error.message) : fallback;
+  return error instanceof PublicError ? error.message : redactSensitiveText(fallback);
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
