@@ -17,6 +17,7 @@ import type { RuntimeAuthState } from '../adapters/worker-protocol.js';
 import { assertAllowedRuntime, RuntimePolicyError } from './policy.js';
 import type { RuntimeSessionInspection } from '../runs/reconcile.js';
 import { REASONING_EFFORTS } from '../../shared/types.js';
+import { requireInteractiveAdmission } from './interactive-admission.js';
 
 export interface RuntimeModel {
   id: string;
@@ -83,7 +84,7 @@ export class HermesOAuthRuntime extends HermesWorkerAdapter {
       authState,
       checkedAt: typeof diagnostic.checkedAt === 'string'
         ? diagnostic.checkedAt
-        : new Date().toISOString(),
+        : '',
       models: providerMatches && authState === 'connected'
         ? filterOAuthModels([{ provider: diagnostic.provider, models: diagnostic.models.map((model) => ({
           ...model,
@@ -147,11 +148,13 @@ export class HermesOAuthRuntime extends HermesWorkerAdapter {
 
   async setDefaults(updates: { provider?: string | null; model?: string | null; reasoningEffort?: string | null }): Promise<AgentDefaults> {
     const current = await super.getDefaults();
-    const settings = assertAllowedRuntime({
+    const candidate: AgentRunSettings = {
       provider: updates.provider === undefined ? current.provider : updates.provider,
       model: updates.model === undefined ? current.model : updates.model,
       reasoningEffort: updates.reasoningEffort === undefined ? current.reasoningEffort : updates.reasoningEffort as AgentRunSettings['reasoningEffort'],
-    });
+    };
+    await requireInteractiveAdmission(this, candidate);
+    const settings = assertAllowedRuntime(candidate);
     return await super.setDefaults(settings);
   }
 

@@ -152,8 +152,8 @@ describe('Codex OAuth runtime status', () => {
       provider: 'openai-codex',
       profileId: 'etienne-openai',
       authState: 'connected',
-      checkedAt: '2026-09-01T08:00:00.000Z',
-      models: [{ id: 'gpt-live', label: 'gpt-live', reasoningEfforts: null }],
+      checkedAt: new Date().toISOString(),
+      models: [{ id: 'gpt-live', label: 'gpt-live', reasoningEfforts: ['low', 'medium', 'high', 'xhigh'] }],
     });
     const generationSpy = vi.spyOn(adapter, 'chatStream').mockImplementation(async function* () {
       yield { type: 'done', sessionId: 'must-not-run' };
@@ -183,6 +183,107 @@ describe('Codex OAuth runtime status', () => {
     } finally {
       statusSpy.mockRestore();
       generationSpy.mockRestore();
+      database.close();
+      vi.doUnmock('../server/events.js');
+      vi.resetModules();
+    }
+  });
+
+  it('rejects the wrong connected OAuth profile before mutating task, runs, or live effects', async () => {
+    const { app: productionApp, adapter, broadcast, database } = await loadProductionAppWithBroadcastSpy(
+      'indy-runtime-profile-',
+    );
+    const missionId = `runtime-wrong-profile-${Date.now()}`;
+    database.prepare(`
+      INSERT INTO tasks (
+        id, title, description, status, agent_model, agent_provider, reasoning_effort,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, 'done', ?, ?, ?, 1, 1)
+    `).run(missionId, 'Wrong profile', 'Do not launch', 'gpt-live', 'openai-codex', 'high');
+    const before = database.prepare('SELECT * FROM tasks WHERE id = ?').get(missionId);
+    const statusSpy = vi.spyOn(adapter, 'getRuntimeStatus').mockResolvedValue({
+      provider: 'openai-codex',
+      profileId: 'another-profile',
+      authState: 'connected',
+      checkedAt: new Date().toISOString(),
+      models: [{ id: 'gpt-live', label: 'gpt-live', reasoningEfforts: ['high'] }],
+    });
+    const generationSpy = vi.spyOn(adapter, 'chatStream').mockImplementation(async function* () {
+      yield { type: 'done', sessionId: 'must-not-run' };
+    });
+
+    try {
+      const response = await request(productionApp)
+        .post(`/api/tasks/${missionId}/messages`)
+        .set(productionAuthHeaders())
+        .send({ content: 'Do not launch', model: 'gpt-live', reasoningEffort: 'high' });
+
+      expect(response.status).toBe(409);
+      expect(response.body).toEqual({
+        error: 'The etienne-openai Codex OAuth profile is required',
+        code: 'OAUTH_PROFILE_REQUIRED',
+      });
+      expect(database.prepare('SELECT * FROM tasks WHERE id = ?').get(missionId)).toEqual(before);
+      expect(database.prepare('SELECT COUNT(*) AS count FROM mission_runs WHERE mission_id = ?').get(missionId))
+        .toEqual({ count: 0 });
+      expect(database.prepare('SELECT COUNT(*) AS count FROM run_events').get()).toEqual({ count: 0 });
+      expect(broadcast).not.toHaveBeenCalled();
+      expect(generationSpy).not.toHaveBeenCalled();
+    } finally {
+      statusSpy.mockRestore();
+      generationSpy.mockRestore();
+      database.close();
+      vi.doUnmock('../server/events.js');
+      vi.resetModules();
+    }
+  });
+
+  it('rejects compaction admission before creating live state or calling the worker effect', async () => {
+    const { app: productionApp, adapter, broadcast, database } = await loadProductionAppWithBroadcastSpy(
+      'indy-runtime-compact-',
+    );
+    const missionId = `runtime-compact-${Date.now()}`;
+    database.prepare(`
+      INSERT INTO tasks (
+        id, title, description, status, agent_model, agent_provider, reasoning_effort,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, 'in_review', ?, ?, ?, 1, 1)
+    `).run(missionId, 'Compact admission', 'Do not compact', 'gpt-live', 'openai-codex', 'high');
+    database.prepare(`
+      INSERT INTO mission_runs (
+        id, mission_id, session_id, session_confirmed_at, attempt, provider, model,
+        reasoning_effort, status, started_at, last_activity_at, finished_at, finish_reason
+      ) VALUES (?, ?, ?, 1, 1, ?, ?, ?, 'completed', 1, 1, 1, 'done')
+    `).run(`${missionId}-run`, missionId, `${missionId}-session`, 'openai-codex', 'gpt-live', 'high');
+    const beforeTask = database.prepare('SELECT * FROM tasks WHERE id = ?').get(missionId);
+    const beforeRun = database.prepare('SELECT * FROM mission_runs WHERE mission_id = ?').get(missionId);
+    const statusSpy = vi.spyOn(adapter, 'getRuntimeStatus').mockResolvedValue({
+      provider: 'openai-codex',
+      profileId: 'etienne-openai',
+      authState: 'connected',
+      checkedAt: new Date().toISOString(),
+      models: [{ id: 'gpt-live', label: 'gpt-live', reasoningEfforts: ['low'] }],
+    });
+    const compactSpy = vi.spyOn(adapter, 'compressSession').mockRejectedValue(new Error('must not run'));
+
+    try {
+      const response = await request(productionApp)
+        .post(`/api/tasks/${missionId}/compact`)
+        .set(productionAuthHeaders())
+        .send({ focusTopic: 'safe boundary' });
+
+      expect(response.status).toBe(409);
+      expect(response.body).toEqual({
+        error: 'The requested reasoning effort is not supported by the selected Codex model',
+        code: 'REASONING_EFFORT_UNAVAILABLE',
+      });
+      expect(database.prepare('SELECT * FROM tasks WHERE id = ?').get(missionId)).toEqual(beforeTask);
+      expect(database.prepare('SELECT * FROM mission_runs WHERE mission_id = ?').get(missionId)).toEqual(beforeRun);
+      expect(broadcast).not.toHaveBeenCalled();
+      expect(compactSpy).not.toHaveBeenCalled();
+    } finally {
+      statusSpy.mockRestore();
+      compactSpy.mockRestore();
       database.close();
       vi.doUnmock('../server/events.js');
       vi.resetModules();

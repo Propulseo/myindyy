@@ -3,8 +3,16 @@ import { getTask } from '../db/queries.js';
 import { isRecord, toErrorMessage } from '../errors.js';
 import { taskRunSettings } from '../agent-settings.js';
 import { REASONING_EFFORTS } from '../../shared/types.js';
-import type { AgentDefaults, Task, TaskAgentSettings, ReasoningEffort } from '../../shared/types.js';
+import type { AgentDefaults, AgentModelsResponse, Task, TaskAgentSettings, ReasoningEffort } from '../../shared/types.js';
 import type { HermesWorkerAdapter } from '../adapters/hermes-worker.js';
+import {
+  InteractiveAdmissionError,
+  requireFreshInteractiveCatalog,
+  toInteractiveAdmissionHttp,
+  type InteractiveRuntimeSource,
+} from '../runtime/interactive-admission.js';
+
+type AgentRouterAdapter = Pick<HermesWorkerAdapter, 'getDefaults' | 'setDefaults'> & InteractiveRuntimeSource;
 
 const FALLBACK_DEFAULTS: AgentDefaults = {
   provider: null,
@@ -40,7 +48,7 @@ function buildTaskSettings(task: Task, defaults: AgentDefaults): TaskAgentSettin
   };
 }
 
-export function createAgentRouter(adapter: HermesWorkerAdapter): Router {
+export function createAgentRouter(adapter: AgentRouterAdapter): Router {
   const router = Router();
 
   router.get('/defaults', async (_req, res) => {
@@ -86,15 +94,34 @@ export function createAgentRouter(adapter: HermesWorkerAdapter): Router {
       const defaults = await adapter.setDefaults(updates);
       res.json(defaults);
     } catch (error) {
+      if (error instanceof InteractiveAdmissionError) {
+        const failure = toInteractiveAdmissionHttp(error);
+        return res.status(failure.status).json(failure.body);
+      }
       res.status(503).json({ error: toErrorMessage(error, 'Failed to update defaults') });
     }
   });
 
   router.get('/models', async (_req, res) => {
     try {
-      res.json(await adapter.getModels());
+      const runtime = await requireFreshInteractiveCatalog(adapter);
+      const response: AgentModelsResponse = {
+        defaultModel: null,
+        activeProvider: runtime.provider,
+        groups: [{
+          provider: runtime.provider,
+          models: runtime.models.map((model) => ({
+            id: model.id,
+            label: model.label,
+            source: 'catalog',
+            provider: runtime.provider,
+          })),
+        }],
+      };
+      res.json(response);
     } catch (error) {
-      res.status(503).json({ error: toErrorMessage(error, 'Hermes worker unavailable') });
+      const failure = toInteractiveAdmissionHttp(error);
+      res.status(failure.status).json(failure.body);
     }
   });
 

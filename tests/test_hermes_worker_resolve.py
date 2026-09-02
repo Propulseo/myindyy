@@ -145,6 +145,22 @@ def _sensitive_keys(value, path=""):
 
 
 class RuntimeStatusTest(unittest.TestCase):
+    def test_projects_parser_supported_reasoning_efforts_when_catalog_omits_metadata(self):
+        groups = {
+            "Codex OAuth": [{
+                "id": "gpt-account-model",
+                "label": "Account model",
+                "provider": "openai-codex",
+                "source": "catalog",
+            }],
+        }
+
+        self.assertEqual(hermes_worker._runtime_catalog_models(groups), [{
+            "id": "gpt-account-model",
+            "label": "Account model",
+            "reasoningEfforts": ["none", "minimal", "low", "medium", "high", "xhigh"],
+        }])
+
     def test_classifies_all_public_oauth_states_from_structured_error_metadata(self):
         cases = [
             (type("Missing", (RuntimeError,), {"code": "codex_auth_missing"})("secret"), "missing"),

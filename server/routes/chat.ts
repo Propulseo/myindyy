@@ -29,6 +29,7 @@ import type { AgentRunSettings, StreamEvent } from '../adapters/types.js';
 import { CHAT_RUN_MODES, MINIONS_GOAL_MAX_TURNS, type ChatRunMode, type CompactResult, type ContextUsage, type GoalStateSnapshot, type Task } from '../../shared/types.js';
 import { createRunRepository } from '../runs/repository.js';
 import { createRunService } from '../runs/service.js';
+import { requireInteractiveAdmission, toInteractiveAdmissionHttp } from '../runtime/interactive-admission.js';
 
 export const chatRouter: ExpressRouter = Router();
 
@@ -404,23 +405,10 @@ chatRouter.post('/:id/messages', async (req, res) => {
   const candidateRunTask: Task = { ...task, ...taskUpdates };
 
   try {
-    const runtimeStatus = await adapter.getRuntimeStatus();
-    const requestedModel = candidateRunTask.agent_model?.trim();
-    const modelAvailable = runtimeStatus.authState === 'connected'
-      && candidateRunTask.agent_provider === runtimeStatus.provider
-      && Boolean(requestedModel)
-      && runtimeStatus.models.some((model) => model.id === requestedModel);
-    if (!modelAvailable) {
-      return res.status(409).json({
-        error: 'The requested Codex model is not available for the active OAuth profile',
-        code: 'MODEL_UNAVAILABLE',
-      });
-    }
-  } catch {
-    return res.status(503).json({
-      error: 'Codex runtime status is unavailable',
-      code: 'RUNTIME_UNAVAILABLE',
-    });
+    await requireInteractiveAdmission(adapter, taskRunSettings(candidateRunTask));
+  } catch (error) {
+    const failure = toInteractiveAdmissionHttp(error);
+    return res.status(failure.status).json(failure.body);
   }
 
   let runTask = task;
@@ -503,6 +491,14 @@ chatRouter.post('/:id/compact', async (req, res) => {
   const currentTokens = task.last_context_used_tokens ?? undefined;
   const sessionId = latestConfirmedSessionId(task.id);
   if (!sessionId) return res.status(409).json({ error: 'This task has no Hermes session to compact' });
+
+  try {
+    await requireInteractiveAdmission(adapter, taskRunSettings(task));
+  } catch (error) {
+    const failure = toInteractiveAdmissionHttp(error);
+    return res.status(failure.status).json(failure.body);
+  }
+
   const { snapshot, state } = startCompactionRun(task.id, sessionId);
   broadcast({ type: 'task_run_updated', run: state });
   broadcastLive(task.id, { type: 'snapshot', run: snapshot });

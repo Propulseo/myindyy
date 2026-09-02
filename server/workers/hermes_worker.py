@@ -60,7 +60,8 @@ PENDING_INTERRUPTS: dict[str, str] = {}
 ACTIVE_TASKS_LOCK = threading.Lock()
 DEFAULT_INTERRUPT_REASON = "Stopped by user"
 
-ALLOWED_REASONING = {"none", "minimal", "low", "medium", "high", "xhigh"}
+ALLOWED_REASONING_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh")
+ALLOWED_REASONING = frozenset(ALLOWED_REASONING_ORDER)
 KNOWN_PROVIDER_PREFIXES = {
     "anthropic",
     "openai",
@@ -874,7 +875,7 @@ def _runtime_catalog_models(groups: dict[str, list[dict[str, Any]]]) -> list[dic
                 continue
             seen.add(model_id)
             raw_efforts = model.get("reasoningEfforts")
-            efforts = None
+            efforts = list(ALLOWED_REASONING_ORDER)
             if isinstance(raw_efforts, list):
                 efforts = [
                     effort for effort in raw_efforts
