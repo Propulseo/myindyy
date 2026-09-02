@@ -3,6 +3,11 @@ const SENSITIVE_KEY_PARTS = [
   'token', 'key', 'secret', 'credential', 'authorization', 'cookie',
   'password', 'passwd', 'pwd', 'passphrase',
 ] as const;
+const SAFE_SENSITIVE_LIKE_KEYS = new Set([
+  'used_tokens', 'window_tokens', 'input_tokens', 'output_tokens',
+  'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens',
+  'dispatchtoken', 'idempotencykey',
+]);
 
 export function redactSensitiveText(value: string): string {
   return value
@@ -31,7 +36,8 @@ export function redactSensitiveValue<T>(value: T): T {
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, child]) => {
       const normalizedKey = key.toLowerCase();
-      return [key, SENSITIVE_KEY_PARTS.some((part) => normalizedKey.includes(part))
+      return [key, !SAFE_SENSITIVE_LIKE_KEYS.has(normalizedKey)
+        && SENSITIVE_KEY_PARTS.some((part) => normalizedKey.includes(part))
         ? REDACTED
         : redactSensitiveValue(child)];
     })) as T;

@@ -287,4 +287,49 @@ describe('run repository', () => {
     expect(repository.claimCommand({ ...command, createdAt: 60 }).status).toBe('duplicate');
     expect(repository.claimCommand({ ...command, payloadHash: 'hash-b' }).status).toBe('conflict');
   });
+
+  it('redacts terminal reasons and command results at their final SQLite writes', () => {
+    const run = repository.createRun({
+      missionId: 'mission-1',
+      sessionId: 'hermes-session-1',
+      attempt: 1,
+      provider: 'openai-codex',
+      model: 'gpt-5.6-sol',
+    });
+    repository.finishRunRecord({
+      runId: run.id,
+      status: 'failed',
+      finishReason: 'Authorization: Basic dXNlcjpwYXNzd29yZA==',
+    });
+    repository.claimCommand({
+      idempotencyKey: 'secret-command',
+      actorId: 'etienne',
+      missionId: 'mission-1',
+      runId: run.id,
+      commandType: 'retry',
+      payloadHash: 'hash-secret-command',
+    });
+    repository.completeCommand({
+      idempotencyKey: 'secret-command',
+      result: {
+        httpStatus: 503,
+        body: {
+          error: '{"authorization":"Digest username=\\"Mufasa\\", nonce=\\"nonce-secret\\", response=\\"response-secret\\"","token":"token-secret","credential":"credential-secret","password":"password-secret"}',
+        },
+      },
+    });
+
+    const persisted = JSON.stringify({
+      run: database.prepare('SELECT finish_reason FROM mission_runs WHERE id = ?').get(run.id),
+      command: database.prepare('SELECT result_json FROM operator_commands WHERE idempotency_key = ?').get('secret-command'),
+    });
+    for (const secret of [
+      'dXNlcjpwYXNzd29yZA==', 'Mufasa', 'nonce-secret', 'response-secret',
+      'token-secret', 'credential-secret', 'password-secret',
+    ]) {
+      expect(persisted).not.toContain(secret);
+    }
+    expect(repository.getRunRecord(run.id)?.finishReason).toContain('[REDACTED]');
+    expect(JSON.stringify(repository.getCommand('secret-command')?.result)).toContain('[REDACTED]');
+  });
 });

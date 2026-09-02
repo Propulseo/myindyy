@@ -420,7 +420,7 @@ export function createRunRepository(
         run_id: input.runId,
         status: input.status,
         finished_at: input.finishedAt ?? now(),
-        finish_reason: input.finishReason ?? null,
+        finish_reason: input.finishReason ? redactSensitiveText(input.finishReason) : null,
       });
       if (result.changes === 0) throw new Error(`Unknown mission run: ${input.runId}`);
       return getRunRecord(input.runId)!;
@@ -475,7 +475,7 @@ export function createRunRepository(
     completeCommand(input: CompleteCommandInput): OperatorCommand {
       const result = completeCommand.run({
         idempotency_key: input.idempotencyKey,
-        result_json: JSON.stringify(input.result),
+        result_json: serializeRedacted(input.result),
         completed_at: input.completedAt ?? now(),
       });
       if (result.changes === 0) {

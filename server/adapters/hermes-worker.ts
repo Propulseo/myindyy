@@ -32,6 +32,8 @@ import type {
 import { expandHomePrefix, resolveHermesHome, resolveMinionsWorkspaceDir } from '../paths.js';
 import { sanitizeWorkerEnv } from '../runtime/policy.js';
 import { validateHermesRuntimeExecution } from '../hermes-runtime-manifest.js';
+import { PublicError, publicError } from '../errors.js';
+import { redactSensitiveText } from '../security/redaction.js';
 
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const WORKER_INTERRUPT_TIMEOUT_MS = 10_000;
@@ -194,26 +196,21 @@ export function resolveWorkerScript(environment: NodeJS.ProcessEnv = process.env
   return found;
 }
 
-function formatWorkerError(error: string | WorkerErrorPayload | undefined): string {
-  if (!error) return 'Hermes worker error';
+function workerErrorDiagnostic(error: string | WorkerErrorPayload | undefined): string {
+  if (!error) return '';
   if (typeof error === 'string') return error;
-
-  const code = error.code ? `[${error.code}] ` : '';
-  const hint = error.hint ? ` ${error.hint}` : '';
-  return `${code}${error.message}${hint}`;
+  return [error.message, error.hint].filter(Boolean).join(' ');
 }
 
 function workerErrorCode(error: string | WorkerErrorPayload | undefined): string | undefined {
   return typeof error === 'object' ? error.code : undefined;
 }
 
-class HermesWorkerError extends Error {
-  code?: string;
-
+class HermesWorkerError extends PublicError {
   constructor(error: string | WorkerErrorPayload | undefined) {
-    super(formatWorkerError(error));
+    const safe = publicError(workerErrorCode(error), workerErrorDiagnostic(error));
+    super(safe.code, safe.diagnostic);
     this.name = 'HermesWorkerError';
-    this.code = workerErrorCode(error);
   }
 }
 
@@ -434,7 +431,7 @@ class HermesWorkerClient {
     this.ready = false;
     this.readline = createInterface({ input: child.stdout });
     this.readline.on('line', (line) => this.handleLine(line));
-    child.stderr.on('data', (chunk) => process.stderr.write(String(chunk)));
+    child.stderr.on('data', (chunk) => process.stderr.write(redactSensitiveText(String(chunk))));
     child.on('error', (error) => this.handleExit(error));
     child.on('exit', (code, signal) => {
       this.handleExit(new Error(`Hermes worker exited (${signal ?? code ?? 'unknown'})`));
@@ -446,7 +443,7 @@ class HermesWorkerClient {
     try {
       event = JSON.parse(line) as WorkerEvent;
     } catch {
-      process.stderr.write(`[hermes-worker] non-json stdout: ${line}\n`);
+      process.stderr.write(`[hermes-worker] non-json stdout: ${redactSensitiveText(line)}\n`);
       return;
     }
 
@@ -569,7 +566,8 @@ export class HermesWorkerAdapter implements AgentAdapter {
           };
           break;
         case 'error':
-          yield { type: 'error', error: formatWorkerError(event.error), code: workerErrorCode(event.error) };
+          const safeError = new HermesWorkerError(event.error);
+          yield { type: 'error', error: safeError.message, code: safeError.code };
           break;
         case 'done':
           yield { type: 'done', sessionId: event.sessionId ?? sessionId, context: event.context, interrupted: event.interrupted };

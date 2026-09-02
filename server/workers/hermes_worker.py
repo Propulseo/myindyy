@@ -141,6 +141,31 @@ class _ModelListCache:
 _MODEL_LIST_CACHE: _ModelListCache | None = None
 _MODEL_LIST_CACHE_LOCK = threading.Lock()
 
+_PUBLIC_ERROR_MESSAGES = {
+    "auth_error": "Codex authentication failed.",
+    "rate_limit": "Codex rate limit reached.",
+    "quota_exhausted": "Codex quota is unavailable.",
+    "model_error": "The selected Codex model is unavailable.",
+    "provider_error": "Codex provider request failed.",
+    "import_error": "Hermes runtime is unavailable.",
+    "hermes_not_found": "Hermes runtime is unavailable.",
+    "invalid_provider": "The selected provider is unavailable.",
+    "task_busy": "The Hermes task is already running.",
+    "bad_request": "Hermes rejected the request.",
+    "not_found": "The requested Hermes resource was not found.",
+    "compact_skipped": "Hermes could not compact this session.",
+    "compact_unavailable": "Hermes compaction is unavailable.",
+    "session_db_unavailable": "Hermes session storage is unavailable.",
+    "session_load_error": "Hermes session history is unavailable.",
+    "scheduled_task_busy": "The Hermes scheduled task is already running.",
+    "worker_error": "Hermes worker request failed.",
+}
+
+_PUBLIC_ERROR_HINTS = {
+    "auth_error": "Reconnect the Codex OAuth profile.",
+    "rate_limit": "Retry the request later.",
+}
+
 
 def _send(payload: dict[str, Any]) -> None:
     with PROTOCOL_LOCK:
@@ -154,9 +179,10 @@ def _result(request_id: str, data: dict[str, Any]) -> None:
 
 def _error_payload(exc: BaseException) -> dict[str, str]:
     if isinstance(exc, WorkerError):
-        payload = {"message": str(exc), "code": exc.code}
-        if exc.hint:
-            payload["hint"] = exc.hint
+        code = exc.code if exc.code in _PUBLIC_ERROR_MESSAGES else "worker_error"
+        payload = {"message": _PUBLIC_ERROR_MESSAGES[code], "code": code}
+        if code in _PUBLIC_ERROR_HINTS:
+            payload["hint"] = _PUBLIC_ERROR_HINTS[code]
         return payload
 
     message = str(exc) or exc.__class__.__name__
@@ -166,21 +192,21 @@ def _error_payload(exc: BaseException) -> dict[str, str]:
 
     if isinstance(exc, ImportError) or "no module named" in lower:
         code = "import_error"
-        hint = "Use HERMES_PYTHON=~/.hermes/hermes-agent/venv/bin/python."
+        hint = None
     elif "unauthorized" in lower or "authentication" in lower or "401" in lower or "api key" in lower:
         code = "auth_error"
-        hint = "Run hermes model or update ~/.hermes/config.yaml credentials."
+        hint = _PUBLIC_ERROR_HINTS["auth_error"]
     elif "rate limit" in lower or "429" in lower:
         code = "rate_limit"
-        hint = "Retry later or switch provider/model."
+        hint = _PUBLIC_ERROR_HINTS["rate_limit"]
     elif "quota" in lower or "credit" in lower or "insufficient" in lower:
         code = "quota_exhausted"
-        hint = "Top up provider account or switch provider/model."
+        hint = None
     elif "model" in lower and ("not found" in lower or "rejected" in lower or "invalid" in lower):
         code = "model_error"
-        hint = "Pick another model from the model menu."
+        hint = None
 
-    payload = {"message": message, "code": code}
+    payload = {"message": _PUBLIC_ERROR_MESSAGES[code], "code": code}
     if hint:
         payload["hint"] = hint
     return payload

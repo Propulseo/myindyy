@@ -1099,5 +1099,37 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
         self.assertEqual(stored["indy_dispatch_token"], "dispatch-token-2")
         self.assertEqual(replay["dispatchReceipt"]["state"], "accepted")
 
+class WorkerErrorBoundaryTest(unittest.TestCase):
+    def test_provider_exceptions_become_stable_secret_free_public_payloads(self):
+        detail = (
+            'Authorization: Bearer bearer-python-secret\n'
+            'Authorization: Basic dXNlcjpwYXNz\n'
+            'Authorization: Digest username="digest-python-user", nonce="digest-python-nonce", response="digest-python-response"\n'
+            '{"token":"python-token-secret","credential":"python-credential-secret","password":"python-password-secret"}'
+        )
+
+        auth_payload = hermes_worker._error_payload(Exception(f"401 unauthorized {detail}"))
+        provider_payload = hermes_worker._error_payload(
+            hermes_worker.WorkerError(detail, code="provider_error", hint=detail)
+        )
+
+        self.assertEqual(auth_payload, {
+            "message": "Codex authentication failed.",
+            "code": "auth_error",
+            "hint": "Reconnect the Codex OAuth profile.",
+        })
+        self.assertEqual(provider_payload, {
+            "message": "Codex provider request failed.",
+            "code": "provider_error",
+        })
+        exposed = json.dumps([auth_payload, provider_payload])
+        for secret in (
+            "bearer-python-secret", "dXNlcjpwYXNz", "digest-python-user",
+            "digest-python-nonce", "digest-python-response", "python-token-secret",
+            "python-credential-secret", "python-password-secret",
+        ):
+            self.assertNotIn(secret, exposed)
+
+
 if __name__ == "__main__":
     unittest.main()

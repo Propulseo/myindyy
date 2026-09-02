@@ -137,7 +137,7 @@ describe('durable run service', () => {
         type: 'run.completed',
         payload: {
           sessionId: 'native-2',
-          context: { used_tokens: '[REDACTED]', window_tokens: '[REDACTED]' },
+          context: { used_tokens: 7, window_tokens: 100 },
         },
       },
     ]);
@@ -164,7 +164,7 @@ describe('durable run service', () => {
         payload: {
           transportDone: true,
           sessionId: 'native-goal',
-          context: { used_tokens: '[REDACTED]', window_tokens: '[REDACTED]' },
+          context: { used_tokens: 5, window_tokens: 100 },
         },
       },
       {
@@ -172,7 +172,7 @@ describe('durable run service', () => {
         payload: {
           transportDone: true,
           sessionId: 'native-goal',
-          context: { used_tokens: '[REDACTED]', window_tokens: '[REDACTED]' },
+          context: { used_tokens: 8, window_tokens: 100 },
         },
       },
     ]);
@@ -214,7 +214,7 @@ describe('durable run service', () => {
       payload: {
         sessionId: 'native-goal',
         interrupted: true,
-        context: { used_tokens: '[REDACTED]', window_tokens: '[REDACTED]' },
+        context: { used_tokens: 12, window_tokens: 100 },
       },
     });
     const terminalEvents = events

@@ -9,6 +9,7 @@ import type {
   SessionMetadata,
   TaskMessage,
 } from '../../shared/types.js';
+import type { PublicErrorCode } from '../errors.js';
 
 export type { AgentRunSettings, ContextUsage };
 
@@ -25,7 +26,7 @@ export interface StreamEvent {
   type: 'text_delta' | 'thinking_delta' | 'tool_progress' | 'done' | 'error';
   content?: string;
   error?: string;
-  code?: string;
+  code?: PublicErrorCode;
   sessionId?: string;
   tool?: string;
   status?: 'running' | 'completed' | 'error';

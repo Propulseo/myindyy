@@ -1,13 +1,13 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HermesWorkerAdapter } from '../server/adapters/hermes-worker.js';
 
 const originalEnvironment = { ...process.env };
 const adapters: HermesWorkerAdapter[] = [];
 
-function workerFixture(mode: 'frozen' | 'late-then-ready'): string {
+function workerFixture(mode: 'frozen' | 'late-then-ready' | 'secret-boundary'): string {
   const directory = mkdtempSync(join(tmpdir(), 'indy-worker-timeout-'));
   const script = join(directory, 'worker.mjs');
   writeFileSync(script, `
@@ -20,6 +20,19 @@ lines.on('line', (line) => {
   const request = JSON.parse(line);
   if (request.type === 'health') {
     send(request.id, { ok: true });
+    return;
+  }
+  if (mode === 'secret-boundary') {
+    const detail = 'Authorization: Bearer bearer-worker-secret\\nAuthorization: Basic dXNlcjpwYXNz\\nAuthorization: Digest username="digest-worker-user", nonce="digest-worker-nonce", response="digest-worker-response"\\n{"token":"worker-token-secret","credential":"worker-credential-secret","password":"worker-password-secret"}';
+    process.stderr.write('[provider] ' + detail + '\\n');
+    process.stdout.write(JSON.stringify({
+      id: request.id,
+      type: 'error',
+      error: { code: 'auth_error', message: detail, hint: detail },
+    }) + '\\n');
+    if (request.type === 'chat') {
+      process.stdout.write(JSON.stringify({ id: request.id, type: 'done', sessionId: request.sessionId }) + '\\n');
+    }
     return;
   }
   if (request.type !== 'runtime.status' || mode === 'frozen') return;
@@ -41,7 +54,7 @@ lines.on('line', (line) => {
   return script;
 }
 
-function adapterFor(mode: 'frozen' | 'late-then-ready'): HermesWorkerAdapter {
+function adapterFor(mode: 'frozen' | 'late-then-ready' | 'secret-boundary'): HermesWorkerAdapter {
   process.env.HERMES_PYTHON = process.execPath;
   process.env.HERMES_WORKER_SCRIPT = workerFixture(mode);
   const adapter = new HermesWorkerAdapter();
@@ -100,5 +113,39 @@ describe('Hermes worker bounded request lifecycle', () => {
     const fresh = await adapter.getRuntimeDiagnostic(200);
 
     expect(fresh.models.map((model) => model.id)).toEqual(['fresh-model']);
+  });
+
+  it('turns worker failures into stable public errors and redacts captured stderr and stream events', async () => {
+    const adapter = adapterFor('secret-boundary');
+    const stderr: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      stderr.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+
+    try {
+      const diagnostic = await adapter.getRuntimeDiagnostic(200).then(
+        () => ({ message: 'resolved', code: undefined }),
+        (error: Error & { code?: string }) => ({ message: error.message, code: error.code }),
+      );
+      const events = [];
+      for await (const event of adapter.chatStream('secret-session', 'safe prompt')) events.push(event);
+
+      expect(diagnostic).toEqual({ message: 'Codex authentication failed.', code: 'auth_error' });
+      expect(events).toContainEqual({
+        type: 'error',
+        error: 'Codex authentication failed.',
+        code: 'auth_error',
+      });
+      const exposed = JSON.stringify({ stderr, events, diagnostic });
+      for (const secret of [
+        'bearer-worker-secret', 'dXNlcjpwYXNz', 'digest-worker-user',
+        'digest-worker-nonce', 'digest-worker-response', 'worker-token-secret',
+        'worker-credential-secret', 'worker-password-secret',
+      ]) expect(exposed).not.toContain(secret);
+      expect(stderr.join('')).toContain('[REDACTED]');
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 });

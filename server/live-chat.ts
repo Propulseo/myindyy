@@ -2,6 +2,7 @@ import type { Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import type { GoalStateSnapshot, LiveChatRun, LiveChatMessage, LiveChatRunStatus, TaskRunState, ToolProgressEvent } from '../shared/types.js';
 import type { StreamEvent } from './adapters/types.js';
+import { redactSensitiveText, redactSensitiveValue, serializeRedacted } from './security/redaction.js';
 
 export type LiveChatEvent = StreamEvent | { type: 'snapshot'; run: LiveChatRun };
 
@@ -13,7 +14,7 @@ const KEEPALIVE_INTERVAL_MS = 30_000;
 let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
 function cloneRun(run: LiveChatRun): LiveChatRun {
-  return {
+  return redactSensitiveValue({
     ...run,
     messages: run.messages.map((message) => ({
       ...message,
@@ -21,7 +22,7 @@ function cloneRun(run: LiveChatRun): LiveChatRun {
     })),
     goal: run.goal ? { ...run.goal } : null,
     context: run.context ? { ...run.context } : null,
-  };
+  });
 }
 
 function runState(run: LiveChatRun): TaskRunState {
@@ -77,7 +78,7 @@ function mergeToolProgress(tools: ToolProgressEvent[], event: StreamEvent): void
 
 function writeEvent(res: Response, event: LiveChatEvent): boolean {
   try {
-    return res.write(`data: ${JSON.stringify(event)}\n\n`);
+    return res.write(`data: ${serializeRedacted(event)}\n\n`);
   } catch {
     return false;
   }
@@ -235,23 +236,24 @@ export function applyEvent(taskId: string, expectedRunId: string, event: StreamE
   const run = runs.get(taskId);
   if (!run || run.runId !== expectedRunId) return false;
 
+  const safeEvent = redactSensitiveValue(event);
   const assistant = assistantMessage(run);
 
-  if (event.type === 'text_delta' && event.content) {
-    assistant.content += event.content;
-  } else if (event.type === 'thinking_delta' && event.content) {
-    assistant.thinking = `${assistant.thinking ?? ''}${event.content}`;
-  } else if (event.type === 'tool_progress') {
+  if (safeEvent.type === 'text_delta' && safeEvent.content) {
+    assistant.content += safeEvent.content;
+  } else if (safeEvent.type === 'thinking_delta' && safeEvent.content) {
+    assistant.thinking = `${assistant.thinking ?? ''}${safeEvent.content}`;
+  } else if (safeEvent.type === 'tool_progress') {
     if (!assistant.tools) assistant.tools = [];
-    mergeToolProgress(assistant.tools, event);
-  } else if (event.type === 'done') {
-    if (run.status !== 'error') run.status = event.interrupted ? 'stopped' : 'done';
-    if (event.sessionId) run.sessionId = event.sessionId;
-    if (event.context !== undefined) {
-      run.context = event.context;
+    mergeToolProgress(assistant.tools, safeEvent);
+  } else if (safeEvent.type === 'done') {
+    if (run.status !== 'error') run.status = safeEvent.interrupted ? 'stopped' : 'done';
+    if (safeEvent.sessionId) run.sessionId = safeEvent.sessionId;
+    if (safeEvent.context !== undefined) {
+      run.context = safeEvent.context;
     }
-  } else if (event.type === 'error') {
-    const error = event.error || 'Unknown error';
+  } else if (safeEvent.type === 'error') {
+    const error = redactSensitiveText(safeEvent.error || 'Unknown error');
     run.status = 'error';
     run.error = error;
     if (!assistant.content.includes(`[Error: ${error}]`)) {
