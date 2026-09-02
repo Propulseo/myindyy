@@ -301,6 +301,7 @@ export function findForbiddenModelKeyAssignments(
     addNormalizedFindings(file.path, content, characters, addFinding);
     addNormalizedFindings(file.path, content, withoutComments(characters), addFinding);
     addNormalizedFindings(file.path, content, decodeLiteralEscapes(content, characters), addFinding);
+    addNormalizedFindings(file.path, content, foldEnvironmentFromCharCode(characters), addFinding);
     addNormalizedFindings(
       file.path,
       content,

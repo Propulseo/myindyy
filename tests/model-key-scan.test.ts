@@ -129,12 +129,22 @@ describe('tracked-file model credential scan', () => {
       path: 'server/from-char-code-comments.ts',
       content: [
         'const safe = true;',
-        'process.env[String/* receiver */.fromCharCode(',
+        'process/* root */./* property */env/* index */[String/* receiver */.fromCharCode(',
         `  ${expression}`,
         ')] = "leaked";',
         '',
       ].join('\n'),
     }])).toEqual([{ path: 'server/from-char-code-comments.ts', line: 2, name }]);
+  });
+
+  it('retains constant-fold coverage for tracked references written entirely inside comments', () => {
+    const name = CREDENTIAL_NAMES[3]!;
+    const codePoints = [...name].map((character) => character.codePointAt(0)!).join(',');
+
+    expect(findForbiddenModelKeyAssignments([{
+      path: 'docs/commented-fixture.ts',
+      content: `// process.env[String.fromCharCode(${codePoints})] = "documented";\n`,
+    }])).toEqual([{ path: 'docs/commented-fixture.ts', line: 1, name }]);
   });
 
   it('decodes BOM-marked UTF-16 PowerShell and fails closed on ambiguous NUL text', () => {
