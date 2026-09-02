@@ -685,6 +685,28 @@ describe('operator run commands', () => {
     expect(hermes.interruptions).toEqual([]);
   });
 
+  it('startup recovery drains every expired command beyond one lease page', () => {
+    for (let index = 0; index < 101; index += 1) {
+      repository.claimCommand({
+        idempotencyKey: `startup-page-${index}`,
+        actorId: 'etienne',
+        missionId: `recovery-mission-${index}`,
+        runId: null,
+        commandType: 'retry',
+        payloadHash: `hash-${index}`,
+        createdAt: index,
+      });
+    }
+
+    expect(recoverPendingInteractiveCommands({
+      database,
+      runService: service,
+      now: () => 1_000,
+      leaseOwner: () => 'startup-page-owner',
+    })).toBe(101);
+    expect(repository.listPendingCommands()).toEqual([]);
+  });
+
   it('stops the mission without deleting durable events or session references', async () => {
     const current = startRun();
     repository.appendRunEvent({
@@ -917,6 +939,43 @@ describe('operator run commands', () => {
     mountCommandApp({ now: () => clock, leaseMs: 5, leaseOwner: () => 'owner-b' });
     const replay = await command('crash-stop', payload);
     expect(replay.status).toBe(202);
+    expect(hermes.interruptions).toHaveLength(1);
+    expect(repository.listRunEvents(current.runId).filter((event) => event.type === 'run.cancelled'))
+      .toHaveLength(1);
+  });
+
+  it('terminalizes a stop crash before its receipt without repeating the mutation', async () => {
+    const current = startRun();
+    let clock = 100;
+    mountCommandApp({
+      now: () => clock,
+      leaseMs: 5,
+      leaseOwner: () => 'owner-a',
+      crashSeams: {
+        afterStopMutationBeforeReceipt: () => {
+          throw new InjectedCommandCrashError('afterStopMutationBeforeReceipt');
+        },
+      },
+    });
+    const payload = { type: 'stop', runId: current.runId, reason: 'done' };
+
+    expect((await command('ambiguous-stop', payload)).status).toBe(503);
+    expect(repository.getCommand('ambiguous-stop')).toMatchObject({
+      status: 'claimed', phase: 'stopping',
+    });
+    expect(repository.getRunRecord(current.runId)?.status).toBe('cancelled');
+    expect((database.prepare('SELECT status FROM tasks WHERE id = ?').get('mission-1') as Task).status)
+      .toBe('done');
+
+    clock = 106;
+    mountCommandApp({ now: () => clock, leaseMs: 5, leaseOwner: () => 'owner-b' });
+    const replay = await command('ambiguous-stop', payload);
+
+    expect(replay.status).toBe(409);
+    expect(replay.body).toMatchObject({ code: 'COMMAND_OUTCOME_UNKNOWN', status: 'unknown' });
+    expect(repository.getCommand('ambiguous-stop')).toMatchObject({
+      status: 'needs_reconciliation', phase: 'needs_reconciliation',
+    });
     expect(hermes.interruptions).toHaveLength(1);
     expect(repository.listRunEvents(current.runId).filter((event) => event.type === 'run.cancelled'))
       .toHaveLength(1);

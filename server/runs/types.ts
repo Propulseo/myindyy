@@ -58,6 +58,7 @@ export type OperatorCommandPhase =
   | 'claimed'
   | 'interrupting'
   | 'interrupted'
+  | 'stopping'
   | 'attempt_prepared'
   | 'attempt_created'
   | 'launching'

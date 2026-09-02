@@ -35,6 +35,7 @@ export interface CommandCrashSeams {
   readonly afterAttemptCreated?: () => void | Promise<void>;
   readonly afterLaunchBeforeReceipt?: () => void | Promise<void>;
   readonly afterLaunch?: () => void | Promise<void>;
+  readonly afterStopMutationBeforeReceipt?: () => void | Promise<void>;
   readonly afterStopMutation?: () => void | Promise<void>;
   readonly beforeCompleteCommand?: (type: RunCommandBody['type']) => void | Promise<void>;
 }
@@ -233,11 +234,13 @@ export async function executeClaimedInteractiveCommand(
   }
 
   if (command.type === 'stop') {
+    persistProgress(repository, claimed, owner, 'stopping');
     if (!TERMINAL_STATUSES.has(current.status)) runService.cancel(current.id, 'operator-stop');
     setMissionStatus.run('done', now(), claimed.missionId);
     const updated = getMission.get(claimed.missionId) as Task;
     broadcast({ type: 'task_updated', task: updated });
     const result = acceptedResult(command, claimed.missionId, current.id);
+    await invokeSeam(crashSeams, 'afterStopMutationBeforeReceipt');
     persistProgress(repository, claimed, owner, 'stopped', { result });
     await invokeSeam(crashSeams, 'afterStopMutation');
     return await completeWithSeam(repository, claimed, owner, result, crashSeams);
@@ -331,7 +334,7 @@ export function recoverLeasedInteractiveCommand(
   if (command.phase === 'interrupted' && command.commandType === 'correct' && receipt?.interrupted) {
     const run = command.runId ? repository.getRunRecord(command.runId) : undefined;
     if (run && !TERMINAL_STATUSES.has(run.status)) runService.cancel(run.id, 'operator-interrupt');
-  } else if (command.phase === 'interrupting') {
+  } else if (command.phase === 'interrupting' || command.phase === 'stopping') {
     markTargetRunUnknown(repository, command);
   }
 
@@ -354,23 +357,26 @@ export function recoverPendingInteractiveCommands(
   let recovered = 0;
   for (const commandType of RUN_COMMAND_TYPES) {
     const owner = dependencies.leaseOwner?.() ?? `interactive-recovery:${randomUUID()}`;
-    const commands = repository.leasePendingCommands({
-      owner,
-      commandType,
-      now: now(),
-      leaseMs: dependencies.leaseMs ?? 30_000,
-      limit: 100,
-    });
-    for (const command of commands) {
-      recoverLeasedInteractiveCommand(
-        dependencies.database,
-        repository,
-        runService,
-        command,
+    while (true) {
+      const commands = repository.leasePendingCommands({
         owner,
-        now,
-      );
-      recovered += 1;
+        commandType,
+        now: now(),
+        leaseMs: dependencies.leaseMs ?? 30_000,
+        limit: 100,
+      });
+      if (commands.length === 0) break;
+      for (const command of commands) {
+        recoverLeasedInteractiveCommand(
+          dependencies.database,
+          repository,
+          runService,
+          command,
+          owner,
+          now,
+        );
+        recovered += 1;
+      }
     }
   }
   return recovered;
