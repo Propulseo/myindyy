@@ -92,6 +92,7 @@ function parseManifest(value: unknown, manifestPath: string): ScheduledTaskOccur
     || !outputRef || !provider || !model || !Number.isFinite(started) || !Number.isFinite(finished)
     || finished < started || (raw.status !== 'completed' && raw.status !== 'failed')
     || !hermesStatus || !['completed', 'failed', 'unknown'].includes(hermesStatus)) return null;
+  if ((raw.status === 'completed') !== (hermesStatus === 'completed')) return null;
   if (effort !== null && !REASONING_EFFORTS.includes(effort as ReasoningEffort)) return null;
   const provenance = parseProvenance(raw.provenance, hermesStatus as HermesTerminalStatus);
   if (!provenance.ok) return null;

@@ -112,6 +112,31 @@ describe('tracked-file model credential scan', () => {
     }])).toEqual([{ path: 'server/from-char-code.ts', line: 1, name }]);
   });
 
+  it('constant-folds decimal, hexadecimal, binary, and octal arguments through interleaved comments', () => {
+    const name = CREDENTIAL_NAMES[0]!;
+    const bases = [...name].map((character, index) => {
+      const value = character.codePointAt(0)!;
+      if (index % 4 === 0) return String(value);
+      if (index % 4 === 1) return `0x${value.toString(16)}`;
+      if (index % 4 === 2) return `0b${value.toString(2)}`;
+      return `0o${value.toString(8)}`;
+    });
+    const expression = bases
+      .map((value, index) => `${value}${index + 1 < bases.length ? '/* separator */,' : ''}`)
+      .join('\n  ');
+
+    expect(findForbiddenModelKeyAssignments([{
+      path: 'server/from-char-code-comments.ts',
+      content: [
+        'const safe = true;',
+        'process.env[String/* receiver */.fromCharCode(',
+        `  ${expression}`,
+        ')] = "leaked";',
+        '',
+      ].join('\n'),
+    }])).toEqual([{ path: 'server/from-char-code-comments.ts', line: 2, name }]);
+  });
+
   it('decodes BOM-marked UTF-16 PowerShell and fails closed on ambiguous NUL text', () => {
     const name = CREDENTIAL_NAMES[0]!;
     const script = `$env:${name} = 'inherited'\r\n`;

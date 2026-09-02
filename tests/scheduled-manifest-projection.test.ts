@@ -42,6 +42,41 @@ function manifest(overrides: Partial<ScheduledTaskOccurrenceManifest> = {}): Sch
 }
 
 describe('terminal Hermes manifest projection', () => {
+  it.each([
+    ['completed', 'completed', true],
+    ['failed', 'failed', true],
+    ['failed', 'unknown', true],
+    ['completed', 'failed', false],
+    ['completed', 'unknown', false],
+    ['failed', 'completed', false],
+  ] as const)('enforces coherent outer/Hermes terminal status pair %s/%s', async (status, hermesStatus, valid) => {
+    const root = mkdtempSync(join(tmpdir(), 'indy-status-pair-'));
+    const dir = join(root, 'task');
+    mkdirSync(dir, { recursive: true });
+    const value = {
+      ...manifest({ status, hermesStatus }),
+      manifestPath: undefined,
+      provenance: hermesStatus === 'unknown'
+        ? {
+            source: 'indy-hermes-run-job-hook',
+            evidence: 'cron.executions',
+            originalHermesStatus: 'unknown',
+            startedAtEvidence: 'claimed_at',
+          }
+        : {
+            source: 'indy-hermes-run-job-hook',
+            evidence: 'cron.executions',
+            originalHermesStatus: hermesStatus,
+            startedAtEvidence: 'started_at',
+          },
+    };
+    writeFileSync(join(dir, 'terminal.json'), JSON.stringify(value));
+
+    const parsed = await listScheduledTaskOccurrenceManifests(root);
+
+    expect(parsed).toHaveLength(valid ? 1 : 0);
+  });
+
   it('defers partial, temporary, malformed and unclassified artifacts', async () => {
     const root = mkdtempSync(join(tmpdir(), 'indy-terminal-scan-'));
     const dir = join(root, 'task');
@@ -52,7 +87,14 @@ describe('terminal Hermes manifest projection', () => {
         model: '<missing>',
         reasoningEffort: null,
         status: 'failed',
+        hermesStatus: 'failed',
         error: 'SCHEDULED_PROVIDER_REQUIRED',
+        provenance: {
+          source: 'indy-hermes-run-job-hook',
+          evidence: 'cron.executions',
+          originalHermesStatus: 'failed',
+          startedAtEvidence: 'started_at',
+        },
       }),
       manifestPath: undefined,
     };

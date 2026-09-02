@@ -138,17 +138,19 @@ function decodeLiteralEscapes(
 }
 
 function foldEnvironmentFromCharCode(
-  source: string,
   characters: readonly SourceCharacter[],
 ): SourceCharacter[] {
+  const source = characters.map(({ character }) => character).join('');
   const expression = /process\s*\.\s*env\s*\[\s*String\s*\.\s*fromCharCode\s*\(([^)]*)\)/gi;
   const matches = [...source.matchAll(expression)];
   if (matches.length === 0) return [...characters];
 
+  const integer = '(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|[0-9]+)';
+  const argumentsPattern = new RegExp(`^\\s*${integer}(?:\\s*,\\s*${integer})*\\s*$`);
   const replacements = new Map<number, { readonly end: number; readonly value: string }>();
   for (const match of matches) {
     const argumentsText = match[1] ?? '';
-    if (!/^\s*(?:0x[0-9a-f]+|\d+)(?:\s*,\s*(?:0x[0-9a-f]+|\d+))*\s*$/i.test(argumentsText)) continue;
+    if (!argumentsPattern.test(argumentsText)) continue;
     const values = argumentsText.split(',').map((value) => Number(value.trim()));
     if (values.some((value) => !Number.isInteger(value) || value < 0 || value > 0xffff)) {
       throw new Error('Invalid constant String.fromCharCode argument in environment access');
@@ -166,21 +168,21 @@ function foldEnvironmentFromCharCode(
   const result: SourceCharacter[] = [];
   for (let index = 0; index < characters.length; index += 1) {
     const current = characters[index]!;
-    const replacement = replacements.get(current.sourceIndex);
+    const replacement = replacements.get(index);
     if (!replacement) {
       result.push(current);
       continue;
     }
+    const replacementEnd = characters[replacement.end] ?? current;
     for (const character of replacement.value) {
       result.push({
         character,
         line: current.line,
         sourceIndex: current.sourceIndex,
-        sourceEndIndex: replacement.end,
+        sourceEndIndex: replacementEnd.sourceEndIndex,
       });
     }
-    while (index + 1 < characters.length
-      && characters[index + 1]!.sourceIndex <= replacement.end) index += 1;
+    index = replacement.end;
   }
   return result;
 }
@@ -305,7 +307,12 @@ export function findForbiddenModelKeyAssignments(
       decodeLiteralEscapes(content, withoutComments(characters)),
       addFinding,
     );
-    addNormalizedFindings(file.path, content, foldEnvironmentFromCharCode(content, characters), addFinding);
+    addNormalizedFindings(
+      file.path,
+      content,
+      foldEnvironmentFromCharCode(withoutComments(characters)),
+      addFinding,
+    );
   }
   return findings;
 }
