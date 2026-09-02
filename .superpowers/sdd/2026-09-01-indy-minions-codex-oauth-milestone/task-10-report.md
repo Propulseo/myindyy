@@ -99,3 +99,25 @@
 
 - Le fallback documenté est volontairement fail-closed : les appels directs internes qui ne rendent pas disponible l’ID durable Hermes sont refusés. Les exécutions supportées passent par le ticker/API Hermes et conservent l’ID ledger réel.
 - La boucle de reprise d’outbox n’est pas un scheduler de cron : elle ne calcule aucune échéance de tâche et ne déclenche que des commandes manuelles déjà réclamées avec leur token durable.
+
+## Fix review round 3/5
+
+- La machine de receipt est désormais récupérable à chaque frontière de crash. Le receipt `prepared` contient un snapshot runtime nettoyé; sous le verrou Hermes, le hook écrit le pending avec le vrai `execution_id`, lie ensuite le receipt, puis retire le token one-shot avant le runner. Une évidence pending ou terminal antérieure portant exactement `(task, token)` est reprise sans attribuer le token à l’occurrence suivante. Un receipt déjà lié peut reconstruire un pending manquant depuis son snapshot et rester finalisable depuis `cron.executions`. Un receipt seulement préparé, sans marqueur job exact, ne vaut jamais acceptation.
+- Une panne temporaire de `getRuntimeStatus` ou du catalogue pendant le traitement outbox libère le lease avec backoff et conserve une réponse honnête `202 pending`. La reprise dans le même processus revalide le catalogue frais et n’effectue qu’un seul trigger. Les refus policy déterministes ne deviennent terminaux qu’après chargement réussi du runtime.
+- La redaction TypeScript/Python consomme toute la valeur d’un header `Authorization` jusqu’à la fin de ligne, y compris les paramètres Digest séparés par virgules. Les clés structurées `password`, `passwd`, `pwd` et `passphrase` rejoignent token/key/secret/credential/cookie dans le scrubber récursif; outputs, manifests, SQLite et réponses HTTP ne conservent pas ces fixtures.
+- L’intégration est explicitement épinglée à `hermes-agent==0.15.1`. Le démarrage valide par AST/source la chaîne réelle `create_execution` → injection/copie `execution_id` → `run_one_job` → `_run_one_job_body` → `run_job`. Version, source ou signature divergente désactive le worker avant ticker/requêtes. Le README documente la procédure d’upgrade et les tests de caractérisation obligatoires.
+
+### TDD du fix round 3
+
+- RED/GREEN Python : ticker avant replay Node, prepared+token, quatre frontières pending/bind/clear/runner, reconstruction d’un pending perdu, auto suivant sans token, absence de fausse acceptation inter-store, version/source drift et redaction structurée Digest/password.
+- RED/GREEN API : catalogue temporairement indisponible conservé pending, récupération dans le processus, replay accepted et trigger unique.
+- RED/GREEN sécurité/projection : Basic, Digest complet et aliases de mots de passe absents des previews, outputs complets, manifests et lignes SQLite.
+
+### Vérifications du fix round 3
+
+- Ciblé TypeScript : 3 fichiers, 66 tests, 0 échec.
+- Python worker : 38 tests, 0 échec.
+- `pnpm test` (binaire Vitest installé) : 25 fichiers, 213 tests, 0 échec.
+- Typecheck serveur et client : exit 0.
+- `pnpm build` : serveur, client et assets, exit 0; 2 602 modules transformés. Le warning Vite historique sur le chunk principal reste inchangé.
+- `git diff --check` : exit 0.

@@ -312,13 +312,11 @@ describe('scheduled task HTTP policy boundary', () => {
     expect(adapter.runScheduledTask).not.toHaveBeenCalled();
   });
 
-  it.each(['create', 'update', 'run'] as const)('fails closed on %s when the fresh runtime catalog cannot be loaded', async (operation) => {
+  it.each(['create', 'update'] as const)('fails closed on %s when the fresh runtime catalog cannot be loaded', async (operation) => {
     const { adapter, app, valid } = routeFixture({ runtimeError: new Error('Bearer secret-must-not-escape') });
     const response = operation === 'create'
       ? await request(app).post('/api/scheduled-tasks').send(valid)
-      : operation === 'update'
-        ? await request(app).patch('/api/scheduled-tasks/cron-policy-1').send({ prompt: 'Nouveau brief' })
-        : await request(app).post('/api/scheduled-tasks/cron-policy-1/run').set('Idempotency-Key', 'runtime-down');
+      : await request(app).patch('/api/scheduled-tasks/cron-policy-1').send({ prompt: 'Nouveau brief' });
 
     expect(response.status).toBe(503);
     expect(response.body).toEqual({
@@ -330,6 +328,34 @@ describe('scheduled task HTTP policy boundary', () => {
     expect(adapter.createScheduledTask).not.toHaveBeenCalled();
     expect(adapter.updateScheduledTask).not.toHaveBeenCalled();
     expect(adapter.runScheduledTask).not.toHaveBeenCalled();
+  });
+
+  it('keeps a run command pending across a transient catalog outage and replays one accepted dispatch', async () => {
+    const database = createDatabase(':memory:');
+    const runRepository = createRunRepository(database);
+    const { adapter, app, registry } = routeFixture({ runRepository });
+    adapter.getRuntimeStatus
+      .mockRejectedValueOnce(new Error('Authorization: Digest username="operator", nonce="catalog-secret"'))
+      .mockResolvedValue(CONNECTED_RUNTIME);
+    try {
+      const pending = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'runtime-recovers');
+      expect(pending.status).toBe(202);
+      expect(pending.body).toMatchObject({ accepted: false, pending: true });
+      expect(runRepository.listPendingCommands('cron.run')).toHaveLength(1);
+      expect(adapter.runScheduledTask).not.toHaveBeenCalled();
+
+      expect(await recoverPendingCronDispatches(adapter as never, runRepository, registry)).toEqual({
+        recovered: 1,
+        deferred: 0,
+      });
+      const replay = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'runtime-recovers');
+      expect(replay.status).toBe(202);
+      expect(replay.body).toMatchObject({ pending: true, dispatchAccepted: true });
+      expect(adapter.runScheduledTask).toHaveBeenCalledOnce();
+      expect(runRepository.listPendingCommands('cron.run')).toHaveLength(0);
+    } finally { database.close(); }
   });
 
   it('replays a duplicate manual command without triggering Hermes twice', async () => {
@@ -666,9 +692,13 @@ describe('scheduled task HTTP policy boundary', () => {
     const task = {
       ...scheduledTaskRecord(paths.valid),
       name: 'Authorization: Basic dXNlcjpwYXNz',
-      lastError: '{"authorization":"Digest username=secret-fixture"}',
+      lastError: 'Authorization: Digest username="Mufasa", realm="indy", nonce="secret-fixture", uri="/cron"\r\nPolicy refused',
       deliver: 'credential=delivery-provenance-secret',
-      origin: { chat_name: 'Authorization: Basic origin-provenance-secret' },
+      origin: {
+        chat_name: 'Authorization: Basic origin-provenance-secret',
+        password: 'origin-password-secret',
+        nested: { passwd: 'origin-passwd-secret', pwd: 'origin-pwd-secret' },
+      },
       contextFrom: ['api_key=context-provenance-secret'],
       skills: ['secret=skill-provenance-secret'],
     };
@@ -678,8 +708,12 @@ describe('scheduled task HTTP policy boundary', () => {
     expect(response.status).toBe(200);
     expect(JSON.stringify(response.body)).not.toContain('dXNlcjpwYXNz');
     expect(JSON.stringify(response.body)).not.toContain('secret-fixture');
+    expect(JSON.stringify(response.body)).not.toContain('Mufasa');
     expect(JSON.stringify(response.body)).not.toContain('delivery-provenance-secret');
     expect(JSON.stringify(response.body)).not.toContain('origin-provenance-secret');
+    expect(JSON.stringify(response.body)).not.toContain('origin-password-secret');
+    expect(JSON.stringify(response.body)).not.toContain('origin-passwd-secret');
+    expect(JSON.stringify(response.body)).not.toContain('origin-pwd-secret');
     expect(JSON.stringify(response.body)).not.toContain('context-provenance-secret');
     expect(JSON.stringify(response.body)).not.toContain('skill-provenance-secret');
     expect(response.body.scheduledTasks[0].name).toContain('[REDACTED]');

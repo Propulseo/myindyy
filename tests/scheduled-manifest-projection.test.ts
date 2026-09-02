@@ -108,11 +108,11 @@ describe('terminal Hermes manifest projection', () => {
     const database = createDatabase(':memory:');
     let manifests = [manifest({
       scheduledTaskName: 'Authorization: Basic dXNlcjpwYXNz',
-      provider: 'Authorization: Digest provider-secret',
+      provider: 'Authorization: Digest username="cron", realm="indy", nonce="provider-secret", uri="/cron"',
       model: 'credential=model-secret',
       workdir: 'api_key=workdir-secret',
       status: 'failed',
-      error: 'Bearer oauth-secret token=hidden',
+      error: 'Bearer oauth-secret token=hidden password=nested-password passwd=nested-passwd pwd=nested-pwd',
     })];
     const source = { listScheduledTasks: vi.fn() };
     const listManifests = vi.fn().mockImplementation(async () => manifests);
@@ -131,6 +131,9 @@ describe('terminal Hermes manifest projection', () => {
       expect(persisted).not.toContain('model-secret');
       expect(persisted).not.toContain('workdir-secret');
       expect(persisted).not.toContain('dXNlcjpwYXNz');
+      expect(persisted).not.toContain('nested-password');
+      expect(persisted).not.toContain('nested-passwd');
+      expect(persisted).not.toContain('nested-pwd');
       expect(database.prepare('SELECT COUNT(*) AS count FROM mission_runs').get()).toEqual({ count: 1 });
     } finally { database.close(); }
   });

@@ -6,11 +6,14 @@ shape normalization, and a background ticker thread.
 
 from __future__ import annotations
 
+import ast
+import importlib.metadata
 import json
 import inspect
 import os
 import re
 import sys
+import textwrap
 import threading
 import time
 import uuid
@@ -37,15 +40,20 @@ _OCCURRENCE_DISPATCH_TOKEN: ContextVar[str | None] = ContextVar("indy_cron_dispa
 
 _OAUTH_PROVIDER = "openai-codex"
 _OAUTH_PROFILE = "etienne-openai"
+_SUPPORTED_HERMES_AGENT_VERSIONS = frozenset({"0.15.1"})
 _KNOWN_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+_SENSITIVE_KEY_PARTS = (
+    "token", "key", "secret", "credential", "authorization", "cookie",
+    "password", "passwd", "pwd", "passphrase",
+)
 _QUOTED_AUTHORIZATION = re.compile(
     r'''(?i)((?:"|')(?:proxy[_-]?)?authorization(?:"|')\s*:\s*)(?:"[^"]*"|'[^']*')'''
 )
 _PLAIN_AUTHORIZATION = re.compile(
-    r'''(?i)((?:proxy[_-]?)?authorization\s*[:=]\s*)(?:[A-Za-z][A-Za-z0-9+._-]*\s+)?[^\s,;}\]]+'''
+    r'''(?i)(\b(?:proxy[_-]?)?authorization\s*[:=]\s*)[^\r\n]*'''
 )
 _SENSITIVE_TEXT = re.compile(
-    r'''(?i)(bearer\s+)[^\s,;]+|((?:"|')?(?:(?:access[_-]?)?token|api[_-]?key|secret|credential|password)(?:"|')?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)'''
+    r'''(?i)(bearer\s+)[^\s,;]+|((?:"|')?(?:(?:access[_-]?)?token|api[_-]?key|secret|credential|password|passwd|pwd|passphrase)(?:"|')?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)'''
 )
 
 
@@ -63,6 +71,19 @@ def _redact_text(value: Any) -> str:
         return f"{match.group(2)}[REDACTED]"
 
     return _SENSITIVE_TEXT.sub(replace, raw)
+
+
+def _redact_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _redact_text(value)
+    if isinstance(value, list):
+        return [_redact_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): "[REDACTED]" if any(part in str(key).lower() for part in _SENSITIVE_KEY_PARTS) else _redact_value(child)
+            for key, child in value.items()
+        }
+    return value
 
 
 def _fresh_runtime_status() -> dict[str, Any]:
@@ -230,6 +251,64 @@ def _after_dispatch_job_update() -> None:
     """Crash-test seam after Hermes persisted the token with run-now state."""
 
 
+def _after_occurrence_pending_write() -> None:
+    """Crash-test seam after durable pending evidence exists."""
+
+
+def _after_occurrence_receipt_bind() -> None:
+    """Crash-test seam after the receipt is bound to a real Hermes execution."""
+
+
+def _after_occurrence_token_clear() -> None:
+    """Crash-test seam after the one-shot job token is durably cleared."""
+
+
+def _before_occurrence_runner() -> None:
+    """Crash-test seam immediately before the admitted Hermes runner."""
+
+
+def _runtime_snapshot(job: dict[str, Any], runtime: dict[str, Any] | None = None) -> dict[str, Any]:
+    source = runtime or {}
+    raw_effort = _redact_text(source.get("reasoningEffort") or job.get("reasoning_effort")) or None
+    return {
+        "scheduledTaskName": _redact_text(string_or_none(job.get("name")) or string_or_none(job.get("id")) or "unknown"),
+        "provider": _redact_text(source.get("provider") or job.get("provider")) or "<missing>",
+        "model": _redact_text(source.get("model") or job.get("model")) or "<missing>",
+        "reasoningEffort": raw_effort if raw_effort in _KNOWN_REASONING_EFFORTS else None,
+        "workdir": _redact_text(source.get("workdir") or job.get("workdir")) or None,
+    }
+
+
+def _pending_occurrence_path(job_id: str, execution_id: str) -> Path:
+    return _manifest_root() / _safe_file_segment(job_id) / f"{_safe_file_segment(execution_id)}.pending.json"
+
+
+def _terminal_occurrence_path(job_id: str, execution_id: str) -> Path:
+    return _manifest_root() / _safe_file_segment(job_id) / f"{_safe_file_segment(execution_id)}.json"
+
+
+def _write_pending_occurrence(
+    job_id: str,
+    execution_id: str,
+    snapshot: dict[str, Any],
+    dispatch_token: str | None,
+    refusal: dict[str, str] | None = None,
+) -> Path:
+    pending_path = _pending_occurrence_path(job_id, execution_id)
+    output_ref = pending_path.with_name(f"{_safe_file_segment(execution_id)}.output.json")
+    clean = _runtime_snapshot({"id": job_id, "name": snapshot.get("scheduledTaskName")}, snapshot)
+    _atomic_replace_json(pending_path, {
+        "schemaVersion": 1,
+        "hermesRunId": execution_id,
+        "scheduledTaskId": job_id,
+        **clean,
+        "dispatchToken": dispatch_token,
+        "outputRef": str(output_ref),
+        "refusal": refusal,
+    })
+    return output_ref
+
+
 def _prepare_occurrence(
     job: dict[str, Any],
     execution_id: str,
@@ -237,40 +316,73 @@ def _prepare_occurrence(
     refusal: dict[str, str] | None,
 ) -> Path:
     job_id = string_or_none(job.get("id")) or "unknown"
-    directory = _manifest_root() / _safe_file_segment(job_id)
-    run_id = _safe_file_segment(execution_id)
-    output_ref = directory / f"{run_id}.output.json"
-    pending_path = directory / f"{run_id}.pending.json"
-    # Provider/model are required by the terminal manifest schema even for a
-    # policy refusal. A stable sentinel keeps the refused occurrence
-    # projectable without inventing a fallback. Redact all operator-supplied
-    # runtime fields before they become durable evidence.
-    provider = _redact_text(runtime.get("provider")) or "<missing>"
-    model = _redact_text(runtime.get("model")) or "<missing>"
-    raw_effort = _redact_text(runtime.get("reasoningEffort")) or None
-    effort = raw_effort if raw_effort in _KNOWN_REASONING_EFFORTS else None
-    workdir = _redact_text(runtime.get("workdir")) or None
-    _atomic_replace_json(pending_path, {
-        "schemaVersion": 1,
-        "hermesRunId": execution_id,
-        "scheduledTaskId": job_id,
-        "scheduledTaskName": _redact_text(string_or_none(job.get("name")) or job_id),
-        "provider": provider,
-        "model": model,
-        "reasoningEffort": effort,
-        "workdir": workdir,
-        "dispatchToken": _OCCURRENCE_DISPATCH_TOKEN.get(),
-        "outputRef": str(output_ref),
-        "refusal": refusal,
-    })
-    return output_ref
+    return _write_pending_occurrence(
+        job_id,
+        execution_id,
+        _runtime_snapshot(job, runtime),
+        _OCCURRENCE_DISPATCH_TOKEN.get(),
+        refusal,
+    )
 
 
 def _write_occurrence_output(output_ref: Path, output: Any) -> None:
-    _atomic_immutable_json(output_ref, {"body": _redact_text(output)})
+    safe_output = _redact_value(json_safe(output))
+    _atomic_immutable_json(output_ref, {"body": _redact_text(safe_output)})
+
+
+def _find_dispatch_evidence(job_id: str, token: str) -> str | None:
+    directory = _manifest_root() / _safe_file_segment(job_id)
+    matches: set[str] = set()
+    try:
+        paths = list(directory.glob("*.pending.json")) + [
+            path for path in directory.glob("*.json")
+            if not path.name.endswith(".pending.json") and not path.name.endswith(".output.json")
+        ]
+    except OSError:
+        return None
+    for path in paths:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if value.get("scheduledTaskId") == job_id and value.get("dispatchToken") == token:
+            occurrence_id = string_or_none(value.get("hermesRunId"))
+            if occurrence_id:
+                matches.add(occurrence_id)
+    if len(matches) > 1:
+        raise RuntimeError("Hermes dispatch token is bound to multiple occurrences")
+    return next(iter(matches), None)
+
+
+def _ensure_bound_receipt_pending(receipt: dict[str, Any]) -> None:
+    job_id = string_or_none(receipt.get("scheduledTaskId"))
+    execution_id = string_or_none(receipt.get("occurrenceId"))
+    token = string_or_none(receipt.get("token"))
+    snapshot = receipt.get("configSnapshot")
+    if not job_id or not execution_id or not token or not isinstance(snapshot, dict):
+        return
+    if _terminal_occurrence_path(job_id, execution_id).exists() or _pending_occurrence_path(job_id, execution_id).exists():
+        return
+    _write_pending_occurrence(job_id, execution_id, snapshot, token)
+
+
+def _recover_bound_receipt_pending_manifests() -> None:
+    directory = _manifest_root() / "dispatch-receipts"
+    try:
+        receipts = list(directory.glob("*.json"))
+    except OSError:
+        return
+    for path in receipts:
+        try:
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(receipt, dict) and receipt.get("state") == "accepted":
+                _ensure_bound_receipt_pending(receipt)
+        except (OSError, ValueError, TypeError):
+            continue
 
 
 def _finalize_pending_manifests_once() -> int:
+    _recover_bound_receipt_pending_manifests()
     root = _manifest_root()
     try:
         pending_paths = list(root.glob("*/*.pending.json"))
@@ -326,26 +438,39 @@ def _associate_dispatch_token_with_occurrence(job: dict[str, Any], execution_id:
 
     with jobs._jobs_lock():
         receipt = _read_dispatch_receipt(token)
-        if not isinstance(receipt, dict) or receipt.get("scheduledTaskId") != job_id or receipt.get("state") != "accepted":
+        if not isinstance(receipt, dict) or receipt.get("scheduledTaskId") != job_id or receipt.get("state") not in {"prepared", "accepted"}:
             return None
         associated = string_or_none(receipt.get("occurrenceId"))
         current = jobs.get_job(job_id)
         if associated:
+            _ensure_bound_receipt_pending(receipt)
             if isinstance(current, dict) and current.get("indy_dispatch_token") == token:
                 jobs.update_job(job_id, {"indy_dispatch_token": None})
+                _after_occurrence_token_clear()
             return token if associated == execution_id else None
         if not isinstance(current, dict) or current.get("indy_dispatch_token") != token:
             return None
-        # Persist the exact occurrence association before clearing the job
-        # field. If the process dies between these writes, the next occurrence
-        # sees the association and cannot inherit the token.
-        _atomic_replace_json(_dispatch_receipt_path(token), {
+        evidence_id = _find_dispatch_evidence(job_id, token)
+        snapshot = receipt.get("configSnapshot")
+        if not isinstance(snapshot, dict):
+            snapshot = _runtime_snapshot(current)
+        bound_execution_id = evidence_id or execution_id
+        if evidence_id is None:
+            _write_pending_occurrence(job_id, execution_id, snapshot, token)
+            _after_occurrence_pending_write()
+        accepted = {
             **receipt,
-            "occurrenceId": execution_id,
+            "state": "accepted",
+            "acceptedAt": receipt.get("acceptedAt") or _utc_now(),
+            "configSnapshot": snapshot,
+            "occurrenceId": bound_execution_id,
             "consumedAt": _utc_now(),
-        })
+        }
+        _atomic_replace_json(_dispatch_receipt_path(token), accepted)
+        _after_occurrence_receipt_bind()
         jobs.update_job(job_id, {"indy_dispatch_token": None})
-        return token
+        _after_occurrence_token_clear()
+        return token if bound_execution_id == execution_id else None
 
 
 def _controlled_run_job(job: Any, *args: Any, **kwargs: Any) -> Any:
@@ -373,6 +498,7 @@ def _controlled_run_job(job: Any, *args: Any, **kwargs: Any) -> Any:
             return False, message, "", message
         output_ref = _prepare_occurrence(candidate, execution_id, runtime, None)
         try:
+            _before_occurrence_runner()
             no_fallback = _NO_FALLBACK_CONTEXT.set(True)
             try:
                 result = original(job, *args, **kwargs)
@@ -388,15 +514,73 @@ def _controlled_run_job(job: Any, *args: Any, **kwargs: Any) -> Any:
         _OCCURRENCE_DISPATCH_TOKEN.reset(dispatch_context)
 
 
+def _installed_hermes_version() -> str | None:
+    try:
+        return importlib.metadata.version("hermes-agent")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _call_first_argument_is(tree: ast.AST, function_name: str, argument_name: str) -> bool:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        called = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else None
+        if called == function_name and node.args and isinstance(node.args[0], ast.Name) and node.args[0].id == argument_name:
+            return True
+    return False
+
+
+def _tick_execution_id_contract(tree: ast.AST) -> bool:
+    creates_execution = any(
+        isinstance(node, ast.Call)
+        and ((isinstance(node.func, ast.Name) and node.func.id == "create_execution")
+             or (isinstance(node.func, ast.Attribute) and node.func.attr == "create_execution"))
+        for node in ast.walk(tree)
+    )
+    dispatch_injection = any(
+        isinstance(node, ast.keyword)
+        and node.arg == "execution_id"
+        and isinstance(node.value, ast.Subscript)
+        and isinstance(node.value.value, ast.Name)
+        and node.value.value.id == "execution"
+        and isinstance(node.value.slice, ast.Constant)
+        and node.value.slice.value == "id"
+        for node in ast.walk(tree)
+    )
+    claim_copy = any(
+        isinstance(node, (ast.Assign, ast.AnnAssign))
+        and isinstance(node.targets[0] if isinstance(node, ast.Assign) else node.target, ast.Subscript)
+        and ast.unparse(node.targets[0] if isinstance(node, ast.Assign) else node.target) == "claimed_job['execution_id']"
+        and ast.unparse(node.value) == "job['execution_id']"
+        for node in ast.walk(tree)
+        if getattr(node, "value", None) is not None
+    )
+    return creates_execution and dispatch_injection and claim_copy and _call_first_argument_is(tree, "run_one_job", "claimed_job")
+
+
 def _validate_execution_hook_contract(scheduler: Any, _jobs: Any = None) -> bool:
+    if _installed_hermes_version() not in _SUPPORTED_HERMES_AGENT_VERSIONS:
+        return False
     runner = getattr(scheduler, "run_job", None)
-    if not callable(runner):
+    tick = getattr(scheduler, "tick", None)
+    run_one_job = getattr(scheduler, "run_one_job", None)
+    run_one_body = getattr(scheduler, "_run_one_job_body", None)
+    if not all(callable(value) for value in (runner, tick, run_one_job, run_one_body)):
         return False
     try:
         parameters = inspect.signature(runner).parameters
-    except (TypeError, ValueError):
+        tick_tree = ast.parse(textwrap.dedent(inspect.getsource(tick)))
+        one_tree = ast.parse(textwrap.dedent(inspect.getsource(run_one_job)))
+        body_tree = ast.parse(textwrap.dedent(inspect.getsource(run_one_body)))
+    except (TypeError, ValueError, OSError, SyntaxError, IndentationError):
         return False
-    return "job" in parameters
+    return (
+        "job" in parameters
+        and _tick_execution_id_contract(tick_tree)
+        and _call_first_argument_is(one_tree, "_run_one_job_body", "job")
+        and _call_first_argument_is(body_tree, "run_job", "job")
+    )
 
 
 def install_scheduled_task_execution_hook() -> None:
@@ -642,10 +826,12 @@ def trigger_scheduled_task(job_id: Any, dispatch_token: Any = None) -> dict[str,
             return {"scheduledTask": None, "dispatchReceipt": failed}
         if current.get("indy_dispatch_token") == token:
             accepted = {
+                **(receipt or {}),
                 "token": token,
                 "scheduledTaskId": scheduled_task_id,
                 "state": "accepted",
                 "acceptedAt": (receipt or {}).get("acceptedAt") or _utc_now(),
+                "configSnapshot": (receipt or {}).get("configSnapshot") or _runtime_snapshot(current),
             }
             _atomic_replace_json(receipt_path, accepted)
             job = _normalize_scheduled_task(current)
@@ -655,6 +841,7 @@ def trigger_scheduled_task(job_id: Any, dispatch_token: Any = None) -> dict[str,
                 "scheduledTaskId": scheduled_task_id,
                 "state": "prepared",
                 "preparedAt": (receipt or {}).get("preparedAt") or _utc_now(),
+                "configSnapshot": (receipt or {}).get("configSnapshot") or _runtime_snapshot(current),
             }
             _atomic_replace_json(receipt_path, prepared)
             _before_dispatch_job_update()

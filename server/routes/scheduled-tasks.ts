@@ -256,18 +256,16 @@ export async function recoverPendingCronDispatches(
       try {
         runtime = await adapter.getRuntimeStatus();
       } catch {
-        runRepository.completeCommand({
+        const at = options.now ?? Date.now();
+        const retryDelay = command.attemptCount <= 1
+          ? 0
+          : Math.min(30_000, 250 * (2 ** Math.min(command.attemptCount - 2, 7)));
+        runRepository.releaseCommandLease({
           idempotencyKey: command.idempotencyKey,
-          result: {
-            statusCode: 503,
-            body: {
-              error: 'Le catalogue Codex OAuth frais est indisponible.',
-              code: 'SCHEDULED_RUNTIME_UNAVAILABLE',
-              field: 'runtime',
-            },
-          },
+          owner,
+          nextAttemptAt: at + retryDelay,
         });
-        recovered += 1;
+        deferred += 1;
         continue;
       }
       const validation = validateScheduledTask(scheduledTask, runtime, workdirRegistry);

@@ -1,5 +1,8 @@
 const REDACTED = '[REDACTED]';
-const SENSITIVE_KEY_PARTS = ['token', 'key', 'secret', 'credential', 'authorization', 'cookie'] as const;
+const SENSITIVE_KEY_PARTS = [
+  'token', 'key', 'secret', 'credential', 'authorization', 'cookie',
+  'password', 'passwd', 'pwd', 'passphrase',
+] as const;
 
 export function redactSensitiveText(value: string): string {
   return value
@@ -8,12 +11,12 @@ export function redactSensitiveText(value: string): string {
       '$1"[REDACTED]"',
     )
     .replace(
-      /(\b(?:(?:proxy[_-]?)?authorization)\s*[:=]\s*)(?:[a-z][a-z0-9+._-]*\s+)?[^\s,;}\]]+/gi,
+      /(\b(?:(?:proxy[_-]?)?authorization)\s*[:=]\s*)[^\r\n]*/gi,
       '$1[REDACTED]',
     )
     .replace(/(bearer\s+)[^\s,;]+/gi, '$1[REDACTED]')
     .replace(
-      /((?:"|')?(?:(?:access[_-]?)?token|api[_-]?key|secret|credential|password)(?:"|')?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
+      /((?:"|')?(?:(?:access[_-]?)?token|api[_-]?key|secret|credential|password|passwd|pwd|passphrase)(?:"|')?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
       '$1[REDACTED]',
     );
 }

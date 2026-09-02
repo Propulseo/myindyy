@@ -18,7 +18,13 @@ describe('scheduled run HTTP projection redaction', () => {
     mkdirSync(dir, { recursive: true });
     const outputRef = join(dir, 'run-1.output.json');
     writeFileSync(outputRef, JSON.stringify({
-      body: 'Bearer output-secret Authorization: Basic dXNlcjpwYXNz password=hunter2 credential=fixture-secret {"access_token":"json-token","credential":"json-credential","authorization":"Digest json-auth-secret"}',
+      body: [
+        'Bearer output-secret',
+        'Authorization: Basic dXNlcjpwYXNz',
+        'Authorization: Digest username="Mufasa", realm="testrealm", nonce="digest-secret", uri="/dir"',
+        'password=hunter2 credential=fixture-secret',
+        JSON.stringify({ access_token: 'json-token', credential: 'json-credential', password: 'nested-password', passwd: 'nested-passwd', pwd: 'nested-pwd' }),
+      ].join('\r\n'),
     }));
     writeFileSync(join(dir, 'run-1.json'), JSON.stringify({
       schemaVersion: 1, hermesRunId: 'run-1', scheduledTaskId: 'cron-1', scheduledTaskName: 'Cron',
@@ -39,6 +45,11 @@ describe('scheduled run HTTP projection redaction', () => {
     expect(serialized).not.toContain('json-credential');
     expect(serialized).not.toContain('dXNlcjpwYXNz');
     expect(serialized).not.toContain('json-auth-secret');
+    expect(serialized).not.toContain('Mufasa');
+    expect(serialized).not.toContain('digest-secret');
+    expect(serialized).not.toContain('nested-password');
+    expect(serialized).not.toContain('nested-passwd');
+    expect(serialized).not.toContain('nested-pwd');
     expect(serialized).toContain('[REDACTED]');
   });
 });

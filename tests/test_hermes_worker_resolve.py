@@ -8,6 +8,7 @@ instances (HTTP 401 "User not found").
 """
 
 import json
+import inspect
 import sys
 import tempfile
 import types
@@ -400,7 +401,25 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
         import cron.jobs as jobs
         import cron.scheduler as scheduler
 
+        self.assertEqual(hermes_scheduled_tasks._installed_hermes_version(), "0.15.1")
         self.assertTrue(hermes_scheduled_tasks._validate_execution_hook_contract(scheduler, jobs))
+
+    def test_execution_hook_contract_fails_closed_on_version_or_source_drift(self):
+        hermes_scheduled_tasks._ensure_imports()
+        import cron.jobs as jobs
+        import cron.scheduler as scheduler
+
+        with patch.object(hermes_scheduled_tasks, "_installed_hermes_version", return_value="0.16.0"):
+            self.assertFalse(hermes_scheduled_tasks._validate_execution_hook_contract(scheduler, jobs))
+        real_getsource = inspect.getsource
+        with patch.object(
+            hermes_scheduled_tasks.inspect,
+            "getsource",
+            side_effect=lambda value: "def tick():\n    return 0\n" if value is scheduler.tick else real_getsource(value),
+        ):
+            self.assertFalse(hermes_scheduled_tasks._validate_execution_hook_contract(scheduler, jobs))
+        with patch.object(hermes_scheduled_tasks.inspect, "getsource", side_effect=OSError("source unavailable")):
+            self.assertFalse(hermes_scheduled_tasks._validate_execution_hook_contract(scheduler, jobs))
 
     def test_direct_run_without_exposed_durable_execution_id_is_denied(self):
         cron_module = types.ModuleType("cron")
@@ -420,6 +439,7 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
             workdir.mkdir(parents=True)
             job = {"id": "direct", "name": "Direct", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high", "workdir": str(workdir)}
             with patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+                 patch.object(hermes_scheduled_tasks, "_validate_execution_hook_contract", return_value=True), \
                  patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", return_value={"provider": "openai-codex", "profileId": "etienne-openai", "authState": "connected", "models": [{"id": "gpt-5.6-sol", "reasoningEfforts": ["high"]}]}), \
                  patch.object(hermes_scheduled_tasks, "_scheduled_workdir_roots", return_value=[allowed]), \
                  patch.dict(sys.modules, {"cron": cron_module, "cron.jobs": jobs_module, "cron.scheduler": scheduler_module}), \
@@ -471,6 +491,7 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
             })
             with \
              patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+             patch.object(hermes_scheduled_tasks, "_validate_execution_hook_contract", return_value=True), \
              patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", return_value={
                  "provider": "openai-codex",
                  "profileId": "etienne-openai",
@@ -526,6 +547,7 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
             ])
             with \
              patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+             patch.object(hermes_scheduled_tasks, "_validate_execution_hook_contract", return_value=True), \
              patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", side_effect=runtimes) as runtime_status, \
              patch.object(hermes_scheduled_tasks, "_scheduled_workdir_roots", return_value=[allowed]), \
              patch.dict(sys.modules, {"cron": cron_module, "cron.scheduler": scheduler_module}), \
@@ -558,6 +580,7 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
             workdir.mkdir(parents=True)
             job = {"id": "no-fallback", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high", "workdir": str(workdir), "execution_id": "hermes-execution-1"}
             with patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+                 patch.object(hermes_scheduled_tasks, "_validate_execution_hook_contract", return_value=True), \
                  patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", return_value={"provider": "openai-codex", "profileId": "etienne-openai", "authState": "connected", "models": [{"id": "gpt-5.6-sol", "reasoningEfforts": ["high"]}]}), \
                  patch.object(hermes_scheduled_tasks, "_scheduled_workdir_roots", return_value=[allowed]), \
                  patch.dict(sys.modules, {"cron": cron_module, "cron.scheduler": scheduler_module, "cron.executions": executions_module}), \
@@ -590,6 +613,7 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
             workdir.mkdir(parents=True)
             job = {"id": "ledger-job", "name": "Ledger", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high", "workdir": str(workdir), "execution_id": "ledger-run"}
             with patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+                 patch.object(hermes_scheduled_tasks, "_validate_execution_hook_contract", return_value=True), \
                  patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", return_value={"provider": "openai-codex", "profileId": "etienne-openai", "authState": "connected", "models": [{"id": "gpt-5.6-sol", "reasoningEfforts": ["high"]}]}), \
                  patch.object(hermes_scheduled_tasks, "_scheduled_workdir_roots", return_value=[allowed]), \
                  patch.dict(sys.modules, {"cron": cron_module, "cron.scheduler": scheduler_module, "cron.executions": executions_module}), \
@@ -626,6 +650,7 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
             workdir.mkdir(parents=True)
             stored["workdir"] = str(workdir)
             with patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+                 patch.object(hermes_scheduled_tasks, "_validate_execution_hook_contract", return_value=True), \
                  patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", return_value={"provider": "openai-codex", "profileId": "etienne-openai", "authState": "connected", "models": [{"id": "gpt-5.6-sol", "reasoningEfforts": ["high"]}]}), \
                  patch.object(hermes_scheduled_tasks, "_scheduled_workdir_roots", return_value=[allowed]), \
                  patch.dict(sys.modules, {"cron": cron_module, "cron.jobs": jobs_module, "cron.scheduler": scheduler_module}), \
@@ -684,11 +709,177 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
 
     def test_redacts_basic_and_generic_authorization_schemes(self):
         scrubbed = hermes_scheduled_tasks._redact_text(
-            'Authorization: Basic dXNlcjpwYXNz {"authorization":"Digest json-secret"}'
+            'Authorization: Basic dXNlcjpwYXNz\r\n'
+            'Authorization: Digest username="Mufasa", realm="testrealm", nonce="digest-secret", uri="/dir"\r\n'
+            '{"authorization":"Digest json-secret","password":"nested-password","passwd":"nested-passwd","pwd":"nested-pwd"}'
         )
         self.assertNotIn("dXNlcjpwYXNz", scrubbed)
         self.assertNotIn("json-secret", scrubbed)
+        self.assertNotIn("Mufasa", scrubbed)
+        self.assertNotIn("digest-secret", scrubbed)
+        self.assertNotIn("nested-password", scrubbed)
+        self.assertNotIn("nested-passwd", scrubbed)
+        self.assertNotIn("nested-pwd", scrubbed)
         self.assertGreaterEqual(scrubbed.count("[REDACTED]"), 2)
+
+    def test_prepared_receipt_and_durable_job_token_bind_to_the_real_ticker_occurrence(self):
+        cron_module = types.ModuleType("cron")
+        jobs_module = types.ModuleType("cron.jobs")
+        scheduler_module = types.ModuleType("cron.scheduler")
+        stored = {"id": "cron-token", "name": "Cron", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high", "indy_dispatch_token": "manual-token"}
+        jobs_module._jobs_lock = nullcontext
+        jobs_module.get_job = lambda job_id: dict(stored) if job_id == "cron-token" else None
+        jobs_module.update_job = lambda job_id, updates: (stored.update(updates), dict(stored))[1]
+        scheduler_module.run_job = lambda job, *args, **kwargs: (True, "ok", "", None)
+        scheduler_module.get_fallback_chain = lambda config: []
+
+        with tempfile.TemporaryDirectory() as hermes_home:
+            allowed = Path(hermes_home) / "allowed"
+            workdir = allowed / "client"
+            workdir.mkdir(parents=True)
+            stored["workdir"] = str(workdir)
+            snapshot = {"scheduledTaskName": "Cron", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoningEffort": "high", "workdir": str(workdir)}
+            with patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+                 patch.object(hermes_scheduled_tasks, "_validate_execution_hook_contract", return_value=True), \
+                 patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", return_value={"provider": "openai-codex", "profileId": "etienne-openai", "authState": "connected", "models": [{"id": "gpt-5.6-sol", "reasoningEfforts": ["high"]}]}), \
+                 patch.object(hermes_scheduled_tasks, "_scheduled_workdir_roots", return_value=[allowed]), \
+                 patch.dict(sys.modules, {"cron": cron_module, "cron.jobs": jobs_module, "cron.scheduler": scheduler_module}), \
+                 patch.dict("os.environ", {"HERMES_HOME": hermes_home}):
+                hermes_scheduled_tasks._atomic_replace_json(
+                    hermes_scheduled_tasks._dispatch_receipt_path("manual-token"),
+                    {"token": "manual-token", "scheduledTaskId": "cron-token", "state": "prepared", "preparedAt": "2026-09-02T08:00:00Z", "configSnapshot": snapshot},
+                )
+                hermes_scheduled_tasks.install_scheduled_task_execution_hook()
+                scheduler_module.run_job({**stored, "execution_id": "manual-real-id"})
+                replay = hermes_scheduled_tasks.trigger_scheduled_task("cron-token", "manual-token")
+                scheduler_module.run_job({**stored, "execution_id": "automatic-id"})
+                receipt = hermes_scheduled_tasks._read_dispatch_receipt("manual-token")
+                manual = json.loads((Path(hermes_home) / "cron" / "indy-manifests" / "cron-token" / "manual-real-id.pending.json").read_text(encoding="utf-8"))
+                automatic = json.loads((Path(hermes_home) / "cron" / "indy-manifests" / "cron-token" / "automatic-id.pending.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(receipt["state"], "accepted")
+        self.assertEqual(replay["dispatchReceipt"], receipt)
+        self.assertEqual(receipt["occurrenceId"], "manual-real-id")
+        self.assertIsNone(stored.get("indy_dispatch_token"))
+        self.assertEqual(manual["dispatchToken"], "manual-token")
+        self.assertIsNone(automatic["dispatchToken"])
+
+    def test_bound_receipt_reconstructs_missing_pending_evidence_and_finalizes(self):
+        cron_module = types.ModuleType("cron")
+        executions_module = types.ModuleType("cron.executions")
+        executions_module.list_executions = lambda job_id=None, limit=50: [{
+            "id": "lost-pending", "job_id": "cron-recover", "status": "failed",
+            "started_at": "2026-09-02T08:00:00Z", "finished_at": "2026-09-02T08:00:01Z", "error": "password=ledger-secret",
+        }]
+        with tempfile.TemporaryDirectory() as hermes_home, \
+             patch.dict(sys.modules, {"cron": cron_module, "cron.executions": executions_module}), \
+             patch.dict("os.environ", {"HERMES_HOME": hermes_home}):
+            snapshot = {"scheduledTaskName": "Cron", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoningEffort": "high", "workdir": "C:/work"}
+            hermes_scheduled_tasks._atomic_replace_json(
+                hermes_scheduled_tasks._dispatch_receipt_path("recover-token"),
+                {"token": "recover-token", "scheduledTaskId": "cron-recover", "state": "accepted", "occurrenceId": "lost-pending", "configSnapshot": snapshot},
+            )
+            self.assertEqual(hermes_scheduled_tasks._finalize_pending_manifests_once(), 1)
+            terminal = json.loads((Path(hermes_home) / "cron" / "indy-manifests" / "cron-recover" / "lost-pending.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(terminal["dispatchToken"], "recover-token")
+        self.assertNotIn("ledger-secret", json.dumps(terminal))
+
+    def test_prepared_receipt_without_the_exact_durable_job_token_never_false_accepts(self):
+        cron_module = types.ModuleType("cron")
+        jobs_module = types.ModuleType("cron.jobs")
+        scheduler_module = types.ModuleType("cron.scheduler")
+        stored = {"id": "cron-safe", "name": "Cron", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high"}
+        jobs_module._jobs_lock = nullcontext
+        jobs_module.get_job = lambda job_id: dict(stored)
+        jobs_module.update_job = lambda job_id, updates: (stored.update(updates), dict(stored))[1]
+        scheduler_module.run_job = lambda job, *args, **kwargs: (True, "ok", "", None)
+        scheduler_module.get_fallback_chain = lambda config: []
+        with tempfile.TemporaryDirectory() as hermes_home:
+            allowed = Path(hermes_home) / "allowed"
+            workdir = allowed / "client"
+            workdir.mkdir(parents=True)
+            stored["workdir"] = str(workdir)
+            with patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+                 patch.object(hermes_scheduled_tasks, "_validate_execution_hook_contract", return_value=True), \
+                 patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", return_value={"provider": "openai-codex", "profileId": "etienne-openai", "authState": "connected", "models": [{"id": "gpt-5.6-sol", "reasoningEfforts": ["high"]}]}), \
+                 patch.object(hermes_scheduled_tasks, "_scheduled_workdir_roots", return_value=[allowed]), \
+                 patch.dict(sys.modules, {"cron": cron_module, "cron.jobs": jobs_module, "cron.scheduler": scheduler_module}), \
+                 patch.dict("os.environ", {"HERMES_HOME": hermes_home}):
+                hermes_scheduled_tasks._atomic_replace_json(
+                    hermes_scheduled_tasks._dispatch_receipt_path("orphan-token"),
+                    {"token": "orphan-token", "scheduledTaskId": "cron-safe", "state": "prepared", "configSnapshot": hermes_scheduled_tasks._runtime_snapshot(stored)},
+                )
+                hermes_scheduled_tasks.install_scheduled_task_execution_hook()
+                scheduler_module.run_job({**stored, "indy_dispatch_token": "orphan-token", "execution_id": "automatic-safe"})
+                receipt = hermes_scheduled_tasks._read_dispatch_receipt("orphan-token")
+                pending = json.loads((Path(hermes_home) / "cron" / "indy-manifests" / "cron-safe" / "automatic-safe.pending.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(receipt["state"], "prepared")
+        self.assertNotIn("occurrenceId", receipt)
+        self.assertIsNone(pending["dispatchToken"])
+
+    def test_structured_output_redaction_scrubs_nested_password_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output.json"
+            hermes_scheduled_tasks._write_occurrence_output(output, {
+                "nested": {"password": "hunter2", "passwd": "legacy", "pwd": "short"},
+                "message": 'Authorization: Digest username="Mufasa", nonce="digest-secret", uri="/"',
+            })
+            serialized = output.read_text(encoding="utf-8")
+        for secret in ("hunter2", "legacy", "short", "Mufasa", "digest-secret"):
+            self.assertNotIn(secret, serialized)
+
+    def test_dispatch_crash_boundaries_recover_the_same_occurrence_before_later_auto_run(self):
+        seams = (
+            "_after_occurrence_pending_write",
+            "_after_occurrence_receipt_bind",
+            "_after_occurrence_token_clear",
+            "_before_occurrence_runner",
+        )
+        for seam in seams:
+            with self.subTest(seam=seam), tempfile.TemporaryDirectory() as hermes_home:
+                cron_module = types.ModuleType("cron")
+                jobs_module = types.ModuleType("cron.jobs")
+                scheduler_module = types.ModuleType("cron.scheduler")
+                executions_module = types.ModuleType("cron.executions")
+                allowed = Path(hermes_home) / "allowed"
+                workdir = allowed / "client"
+                workdir.mkdir(parents=True)
+                stored = {"id": "cron-crash", "name": "Cron", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high", "workdir": str(workdir), "indy_dispatch_token": "crash-token"}
+                jobs_module._jobs_lock = nullcontext
+                jobs_module.get_job = lambda job_id: dict(stored) if job_id == "cron-crash" else None
+                jobs_module.update_job = lambda job_id, updates: (stored.update(updates), dict(stored))[1]
+                scheduler_module.run_job = lambda job, *args, **kwargs: (True, "ok", "", None)
+                scheduler_module.get_fallback_chain = lambda config: []
+                records = [{"id": "manual-crash-id", "job_id": "cron-crash", "status": "failed", "started_at": "2026-09-02T08:00:00Z", "finished_at": "2026-09-02T08:00:01Z", "error": "crashed"}]
+                executions_module.list_executions = lambda job_id=None, limit=50: list(records)
+                snapshot = {"scheduledTaskName": "Cron", "provider": "openai-codex", "model": "gpt-5.6-sol", "reasoningEffort": "high", "workdir": str(workdir)}
+                with patch.object(hermes_scheduled_tasks, "_ensure_imports"), \
+                     patch.object(hermes_scheduled_tasks, "_validate_execution_hook_contract", return_value=True), \
+                     patch.object(hermes_scheduled_tasks, "_fresh_runtime_status", return_value={"provider": "openai-codex", "profileId": "etienne-openai", "authState": "connected", "models": [{"id": "gpt-5.6-sol", "reasoningEfforts": ["high"]}]}), \
+                     patch.object(hermes_scheduled_tasks, "_scheduled_workdir_roots", return_value=[allowed]), \
+                     patch.dict(sys.modules, {"cron": cron_module, "cron.jobs": jobs_module, "cron.scheduler": scheduler_module, "cron.executions": executions_module}), \
+                     patch.dict("os.environ", {"HERMES_HOME": hermes_home}):
+                    hermes_scheduled_tasks._atomic_replace_json(
+                        hermes_scheduled_tasks._dispatch_receipt_path("crash-token"),
+                        {"token": "crash-token", "scheduledTaskId": "cron-crash", "state": "prepared", "preparedAt": "2026-09-02T08:00:00Z", "configSnapshot": snapshot},
+                    )
+                    hermes_scheduled_tasks.install_scheduled_task_execution_hook()
+                    self.assertIs(scheduler_module.run_job, hermes_scheduled_tasks._controlled_run_job)
+                    with patch.object(hermes_scheduled_tasks, seam, side_effect=RuntimeError(seam), create=True):
+                        with self.assertRaisesRegex(RuntimeError, seam):
+                            scheduler_module.run_job({**stored, "execution_id": "manual-crash-id"})
+                    hermes_scheduled_tasks._finalize_pending_manifests_once()
+                    scheduler_module.run_job({**stored, "execution_id": "automatic-after-crash"})
+                    receipt = hermes_scheduled_tasks._read_dispatch_receipt("crash-token")
+                    terminal = json.loads((Path(hermes_home) / "cron" / "indy-manifests" / "cron-crash" / "manual-crash-id.json").read_text(encoding="utf-8"))
+                    automatic = json.loads((Path(hermes_home) / "cron" / "indy-manifests" / "cron-crash" / "automatic-after-crash.pending.json").read_text(encoding="utf-8"))
+
+                self.assertEqual(receipt["occurrenceId"], "manual-crash-id")
+                self.assertEqual(terminal["dispatchToken"], "crash-token")
+                self.assertIsNone(stored.get("indy_dispatch_token"))
+                self.assertIsNone(automatic["dispatchToken"])
 
     def test_manual_dispatch_receipt_recovers_crash_after_atomic_job_marker_without_retrigger(self):
         cron_module = types.ModuleType("cron")
