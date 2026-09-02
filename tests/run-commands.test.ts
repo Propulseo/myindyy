@@ -402,11 +402,19 @@ describe('operator run commands', () => {
     const response = await command('http-secret-boundary', {
       type: 'interrupt', runId: current.runId, reason: 'safe reason',
     });
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(409);
     expect(response.body).toEqual({
-      error: 'Could not execute operator command',
-      code: 'COMMAND_EXECUTION_FAILED',
+      error: 'Command outcome requires operator reconciliation',
+      code: 'COMMAND_OUTCOME_UNKNOWN',
+      type: 'interrupt',
+      missionId: 'mission-1',
+      runId: current.runId,
+      status: 'unknown',
     });
+    expect(repository.getCommand('http-secret-boundary')).toMatchObject({
+      status: 'needs_reconciliation', phase: 'needs_reconciliation',
+    });
+    expect(repository.getRunRecord(current.runId)?.status).toBe('unknown');
     const persisted = database.prepare(`
       SELECT payload_json, effect_receipt_json, result_json
       FROM operator_commands WHERE idempotency_key = ?
@@ -726,6 +734,32 @@ describe('operator run commands', () => {
     expect(hermes.interruptions).toEqual([]);
   });
 
+  it('treats an unknown current attempt as potentially active before stopping it', async () => {
+    const current = startRun();
+    repository.updateRunStatus(current.runId, 'unknown');
+
+    const response = await command('stop-unknown', {
+      type: 'stop', runId: current.runId,
+    });
+
+    expect(response.status).toBe(202);
+    expect(hermes.interruptions).toEqual([{ sessionId: current.sessionId, reason: undefined }]);
+  });
+
+  it('rejects retry of an unknown attempt before claiming or launching', async () => {
+    const current = startRun();
+    repository.updateRunStatus(current.runId, 'unknown');
+
+    const response = await command('retry-unknown', {
+      type: 'retry', runId: current.runId, reason: 'again',
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({ error: 'Cannot retry an active attempt' });
+    expect(repository.getCommand('retry-unknown')).toBeUndefined();
+    expect(launched).toEqual([]);
+  });
+
   it('recovers a proved interrupt without repeating it after a crash', async () => {
     const current = startRun();
     let clock = 100;
@@ -788,9 +822,18 @@ describe('operator run commands', () => {
       status: 'needs_reconciliation', phase: 'needs_reconciliation',
     });
     expect(hermes.interruptions).toHaveLength(1);
+
+    const fenced = await command('after-ambiguous-interrupt', {
+      type: 'stop', runId: current.runId,
+    });
+    expect(fenced.status).toBe(409);
+    expect(fenced.body).toMatchObject({ code: 'MISSION_COMMAND_BUSY' });
+    expect(repository.getCommand('after-ambiguous-interrupt')).toBeUndefined();
+    expect(hermes.interruptions).toHaveLength(1);
   });
 
   it.each([
+    ['afterAttemptCreationBeforeReceipt', 'attempt_prepared', 0, 'unknown'],
     ['afterAttemptCreated', 'attempt_created', 0, 'unknown'],
     ['afterLaunchBeforeReceipt', 'launching', 1, 'unknown'],
     ['afterLaunch', 'launched', 1, 'accepted'],
@@ -827,6 +870,33 @@ describe('operator run commands', () => {
       );
     },
   );
+
+  it('terminalizes an ordinary post-launch acknowledgement failure as unknown immediately', async () => {
+    const current = startRun();
+    service.fail(current.runId, 'retryable failure');
+    mountCommandApp({
+      crashSeams: {
+        afterLaunchBeforeReceipt: () => {
+          throw new Error('provider rejected opaque-launch-secret-123456789');
+        },
+      },
+    });
+
+    const response = await command('ordinary-post-launch-failure', {
+      type: 'retry', runId: current.runId, reason: 'again',
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      code: 'COMMAND_OUTCOME_UNKNOWN', status: 'unknown',
+    });
+    expect(JSON.stringify(response.body)).not.toContain('opaque-launch-secret-123456789');
+    expect(repository.getCommand('ordinary-post-launch-failure')).toMatchObject({
+      status: 'needs_reconciliation', phase: 'needs_reconciliation',
+    });
+    expect(repository.listMissionRuns('mission-1').at(-1)?.status).toBe('unknown');
+    expect(launched).toHaveLength(1);
+  });
 
   it('recovers a durable stop mutation without interrupting or stopping twice', async () => {
     const current = startRun();

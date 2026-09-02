@@ -322,6 +322,28 @@ describe('run repository', () => {
     });
   });
 
+  it('keeps an unresolved interactive outcome as a durable mission fence', () => {
+    repository.claimCommand({
+      idempotencyKey: 'ambiguous-1', actorId: 'etienne', missionId: 'mission-1',
+      runId: null, commandType: 'retry', payloadHash: 'hash-1',
+    });
+    expect(repository.leasePendingCommands({ owner: 'owner-a', now: 10, leaseMs: 5 })).toHaveLength(1);
+    repository.markCommandNeedsReconciliation({
+      idempotencyKey: 'ambiguous-1', owner: 'owner-a', result: { status: 'unknown' },
+    });
+
+    const blocked = repository.claimCommand({
+      idempotencyKey: 'second-key', actorId: 'etienne', missionId: 'mission-1',
+      runId: null, commandType: 'stop', payloadHash: 'hash-2',
+    });
+
+    expect(blocked.status).toBe('busy');
+    expect(blocked.command).toMatchObject({
+      idempotencyKey: 'ambiguous-1', status: 'needs_reconciliation',
+    });
+    expect(repository.getCommand('second-key')).toBeUndefined();
+  });
+
   it('migrates legacy operator command rows without inventing an effect receipt', () => {
     const legacy = new Database(':memory:');
     try {

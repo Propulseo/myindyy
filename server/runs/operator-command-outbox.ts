@@ -31,6 +31,7 @@ export interface CommandExecutionContext {
 export interface CommandCrashSeams {
   readonly afterInterruptBeforeReceipt?: () => void | Promise<void>;
   readonly afterInterrupt?: () => void | Promise<void>;
+  readonly afterAttemptCreationBeforeReceipt?: () => void | Promise<void>;
   readonly afterAttemptCreated?: () => void | Promise<void>;
   readonly afterLaunchBeforeReceipt?: () => void | Promise<void>;
   readonly afterLaunch?: () => void | Promise<void>;
@@ -255,6 +256,7 @@ export async function executeClaimedInteractiveCommand(
     ...(command.type === 'retry' ? {} : { sessionRun: confirmed! }),
     runId: effectRunId,
   });
+  await invokeSeam(crashSeams, 'afterAttemptCreationBeforeReceipt');
   persistProgress(repository, claimed, owner, 'attempt_created', { effectRunId });
   await invokeSeam(crashSeams, 'afterAttemptCreated');
 

@@ -46,7 +46,9 @@ export interface RunsRouterDependencies {
   readonly now?: () => number;
 }
 
-const ACTIVE_STATUSES = new Set<MissionRun['status']>(['queued', 'running', 'waiting_approval']);
+const ACTIVE_STATUSES = new Set<MissionRun['status']>([
+  'queued', 'running', 'waiting_approval', 'unknown',
+]);
 const COMMAND_FIELDS = new Set(['type', 'runId', 'reason']);
 
 function canonicalHash(missionId: string, command: RunCommandBody): string {
@@ -269,6 +271,30 @@ export function createRunsRouter(dependencies: RunsRouterDependencies): ExpressR
           code: 'COMMAND_EXECUTION_FAILED',
         },
       };
+      let durable: ReturnType<typeof repository.getCommand>;
+      try {
+        durable = repository.getCommand(idempotencyKey);
+      } catch {
+        return res.status(result.httpStatus).json(result.body);
+      }
+      if (durable?.status === 'claimed'
+        && durable.leaseOwner === owner
+        && durable.phase !== 'claimed') {
+        try {
+          const recovered = recoverLeasedInteractiveCommand(
+            dependencies.database,
+            repository,
+            runService,
+            durable,
+            owner,
+            now,
+          );
+          return res.status(recovered.httpStatus).json(recovered.body);
+        } catch {
+          // Leave the durable phase claimed for the next lease owner to recover.
+          return res.status(result.httpStatus).json(result.body);
+        }
+      }
       try {
         repository.completeCommand({ idempotencyKey, owner, result });
       } catch {

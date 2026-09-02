@@ -223,7 +223,7 @@ export function createRunRepository(
   const getActiveInteractiveMissionCommand = database.prepare(`
     SELECT * FROM operator_commands
     WHERE mission_id = @mission_id
-      AND status = 'claimed'
+      AND status IN ('claimed', 'needs_reconciliation')
       AND command_type IN ('interrupt', 'correct', 'resume', 'retry', 'stop')
     ORDER BY created_at ASC, idempotency_key ASC
     LIMIT 1
