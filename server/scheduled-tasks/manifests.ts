@@ -3,6 +3,15 @@ import { join } from 'node:path';
 import { REASONING_EFFORTS, type ReasoningEffort } from '../../shared/types.js';
 import { resolveHermesHome } from '../paths.js';
 
+export type HermesTerminalStatus = 'completed' | 'failed' | 'unknown';
+
+export interface ScheduledTaskOccurrenceProvenance {
+  readonly source: 'indy-hermes-run-job-hook';
+  readonly evidence: 'cron.executions';
+  readonly originalHermesStatus: HermesTerminalStatus | null;
+  readonly startedAtEvidence: 'claimed_at' | 'started_at' | null;
+}
+
 export interface ScheduledTaskOccurrenceManifest {
   readonly schemaVersion: 1;
   readonly hermesRunId: string;
@@ -11,7 +20,8 @@ export interface ScheduledTaskOccurrenceManifest {
   readonly startedAt: string;
   readonly finishedAt: string;
   readonly status: 'completed' | 'failed';
-  readonly hermesStatus: 'completed' | 'failed' | 'unknown';
+  readonly hermesStatus: HermesTerminalStatus;
+  readonly provenance: ScheduledTaskOccurrenceProvenance | null;
   readonly error: string | null;
   readonly outputRef: string;
   readonly provider: string;
@@ -24,6 +34,41 @@ export interface ScheduledTaskOccurrenceManifest {
 
 function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+type ProvenanceParseResult =
+  | { readonly ok: true; readonly value: ScheduledTaskOccurrenceProvenance | null }
+  | { readonly ok: false };
+
+function parseProvenance(value: unknown, hermesStatus: HermesTerminalStatus): ProvenanceParseResult {
+  if (value === undefined) return hermesStatus === 'unknown' ? { ok: false } : { ok: true, value: null };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { ok: false };
+  const raw = value as Record<string, unknown>;
+  const allowedKeys = new Set(['source', 'evidence', 'originalHermesStatus', 'startedAtEvidence']);
+  if (Object.keys(raw).some((key) => !allowedKeys.has(key))) return { ok: false };
+  if (raw.source !== 'indy-hermes-run-job-hook' || raw.evidence !== 'cron.executions') return { ok: false };
+  const originalHermesStatus = text(raw.originalHermesStatus);
+  const startedAtEvidence = text(raw.startedAtEvidence);
+  if ((originalHermesStatus === null) !== (startedAtEvidence === null)) return { ok: false };
+  if (originalHermesStatus !== null
+    && (!['completed', 'failed', 'unknown'].includes(originalHermesStatus) || originalHermesStatus !== hermesStatus)) {
+    return { ok: false };
+  }
+  if (startedAtEvidence !== null && startedAtEvidence !== 'claimed_at' && startedAtEvidence !== 'started_at') {
+    return { ok: false };
+  }
+  if (hermesStatus === 'unknown' && (originalHermesStatus !== 'unknown' || startedAtEvidence === null)) {
+    return { ok: false };
+  }
+  return {
+    ok: true,
+    value: {
+      source: 'indy-hermes-run-job-hook',
+      evidence: 'cron.executions',
+      originalHermesStatus: originalHermesStatus as HermesTerminalStatus | null,
+      startedAtEvidence: startedAtEvidence as ScheduledTaskOccurrenceProvenance['startedAtEvidence'],
+    },
+  };
 }
 
 function parseManifest(value: unknown, manifestPath: string): ScheduledTaskOccurrenceManifest | null {
@@ -48,6 +93,8 @@ function parseManifest(value: unknown, manifestPath: string): ScheduledTaskOccur
     || finished < started || (raw.status !== 'completed' && raw.status !== 'failed')
     || !hermesStatus || !['completed', 'failed', 'unknown'].includes(hermesStatus)) return null;
   if (effort !== null && !REASONING_EFFORTS.includes(effort as ReasoningEffort)) return null;
+  const provenance = parseProvenance(raw.provenance, hermesStatus as HermesTerminalStatus);
+  if (!provenance.ok) return null;
   return {
     schemaVersion: 1,
     hermesRunId,
@@ -56,7 +103,8 @@ function parseManifest(value: unknown, manifestPath: string): ScheduledTaskOccur
     startedAt,
     finishedAt,
     status: raw.status,
-    hermesStatus: hermesStatus as ScheduledTaskOccurrenceManifest['hermesStatus'],
+    hermesStatus: hermesStatus as HermesTerminalStatus,
+    provenance: provenance.value,
     error: text(raw.error),
     outputRef,
     provider,

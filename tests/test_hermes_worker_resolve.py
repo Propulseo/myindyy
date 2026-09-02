@@ -674,9 +674,18 @@ class ScheduledTaskExecutionAdmissionTest(unittest.TestCase):
 
         self.assertEqual({terminal["status"] for terminal in terminals.values()}, {"failed"})
         self.assertEqual({terminal["hermesStatus"] for terminal in terminals.values()}, {"unknown"})
-        self.assertEqual({terminal["provenance"]["originalHermesStatus"] for terminal in terminals.values()}, {"unknown"})
-        self.assertEqual(terminals[claimed["id"]]["provenance"]["startedAtEvidence"], "claimed_at")
-        self.assertEqual(terminals[running["id"]]["provenance"]["startedAtEvidence"], "started_at")
+        self.assertEqual(terminals[claimed["id"]]["provenance"], {
+            "source": "indy-hermes-run-job-hook",
+            "evidence": "cron.executions",
+            "originalHermesStatus": "unknown",
+            "startedAtEvidence": "claimed_at",
+        })
+        self.assertEqual(terminals[running["id"]]["provenance"], {
+            "source": "indy-hermes-run-job-hook",
+            "evidence": "cron.executions",
+            "originalHermesStatus": "unknown",
+            "startedAtEvidence": "started_at",
+        })
 
     def test_manual_token_is_associated_under_lock_and_never_reaches_later_automatic_run(self):
         cron_module = types.ModuleType("cron")

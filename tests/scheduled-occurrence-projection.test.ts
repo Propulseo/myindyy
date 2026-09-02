@@ -44,6 +44,10 @@ const MANIFESTS: ScheduledTaskOccurrenceManifest[] = [
     finishedAt: '2026-09-01T08:00:01.000Z',
     status: 'completed',
     hermesStatus: 'completed',
+    provenance: {
+      source: 'indy-hermes-run-job-hook', evidence: 'cron.executions',
+      originalHermesStatus: 'completed', startedAtEvidence: 'started_at',
+    },
     error: null,
     outputRef: 'C:\\hermes\\cron\\indy-manifests\\hermes-daily-brief\\2026-09-01_08-00-00.output.json',
     provider: 'openai-codex', model: 'gpt-5.6-sol', reasoningEffort: 'high', workdir: 'C:\\work\\client',
@@ -59,6 +63,10 @@ const MANIFESTS: ScheduledTaskOccurrenceManifest[] = [
     finishedAt: '2026-09-02T08:00:01.000Z',
     status: 'failed',
     hermesStatus: 'failed',
+    provenance: {
+      source: 'indy-hermes-run-job-hook', evidence: 'cron.executions',
+      originalHermesStatus: 'failed', startedAtEvidence: 'started_at',
+    },
     error: 'Bearer another-secret-must-not-persist',
     outputRef: 'C:\\hermes\\cron\\indy-manifests\\hermes-daily-brief\\2026-09-02_08-00-00.output.json',
     provider: 'openai-codex', model: 'gpt-5.6-sol', reasoningEffort: 'high', workdir: 'C:\\work\\client',

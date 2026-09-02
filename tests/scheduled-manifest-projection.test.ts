@@ -23,6 +23,12 @@ function manifest(overrides: Partial<ScheduledTaskOccurrenceManifest> = {}): Sch
     finishedAt: '2026-09-02T08:00:02.875Z',
     status: 'completed',
     hermesStatus: 'completed',
+    provenance: {
+      source: 'indy-hermes-run-job-hook',
+      evidence: 'cron.executions',
+      originalHermesStatus: 'completed',
+      startedAtEvidence: 'started_at',
+    },
     error: null,
     outputRef: 'C:/hermes/cron/indy-manifests/deleted-task/run-shared.output.json',
     provider: 'openai-codex',
@@ -67,6 +73,80 @@ describe('terminal Hermes manifest projection', () => {
     });
   });
 
+  it('parses only allowlisted Hermes provenance and rejects malformed or untrusted evidence', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'indy-provenance-scan-'));
+    const dir = join(root, 'task');
+    mkdirSync(dir, { recursive: true });
+    const base = {
+      ...manifest({ status: 'failed', hermesStatus: 'unknown' }),
+      manifestPath: undefined,
+    };
+    writeFileSync(join(dir, 'claimed.json'), JSON.stringify({
+      ...base,
+      hermesRunId: 'claimed-run',
+      provenance: {
+        source: 'indy-hermes-run-job-hook',
+        evidence: 'cron.executions',
+        originalHermesStatus: 'unknown',
+        startedAtEvidence: 'claimed_at',
+      },
+    }));
+    writeFileSync(join(dir, 'running.json'), JSON.stringify({
+      ...base,
+      hermesRunId: 'running-run',
+      provenance: {
+        source: 'indy-hermes-run-job-hook',
+        evidence: 'cron.executions',
+        originalHermesStatus: 'unknown',
+        startedAtEvidence: 'started_at',
+      },
+    }));
+    writeFileSync(join(dir, 'bad-enum.json'), JSON.stringify({
+      ...base,
+      hermesRunId: 'bad-enum',
+      provenance: {
+        source: 'indy-hermes-run-job-hook',
+        evidence: 'cron.executions',
+        originalHermesStatus: 'unknown',
+        startedAtEvidence: 'invented_at',
+      },
+    }));
+    writeFileSync(join(dir, 'untrusted-extra.json'), JSON.stringify({
+      ...base,
+      hermesRunId: 'untrusted-extra',
+      provenance: {
+        source: 'indy-hermes-run-job-hook',
+        evidence: 'cron.executions',
+        originalHermesStatus: 'unknown',
+        startedAtEvidence: 'claimed_at',
+        authorization: 'Digest username="leak", nonce="secret", response="credential"',
+      },
+    }));
+
+    const manifests = await listScheduledTaskOccurrenceManifests(root);
+
+    expect(manifests.map((entry) => ({ id: entry.hermesRunId, provenance: entry.provenance }))).toEqual([
+      {
+        id: 'claimed-run',
+        provenance: {
+          source: 'indy-hermes-run-job-hook',
+          evidence: 'cron.executions',
+          originalHermesStatus: 'unknown',
+          startedAtEvidence: 'claimed_at',
+        },
+      },
+      {
+        id: 'running-run',
+        provenance: {
+          source: 'indy-hermes-run-job-hook',
+          evidence: 'cron.executions',
+          originalHermesStatus: 'unknown',
+          startedAtEvidence: 'started_at',
+        },
+      },
+    ]);
+  });
+
   it('imports terminal manifests without consulting live jobs and preserves exact evidenced timestamps/config', async () => {
     const database = createDatabase(':memory:');
     const listManifests = vi.fn().mockResolvedValue([manifest()]);
@@ -86,23 +166,55 @@ describe('terminal Hermes manifest projection', () => {
     } finally { database.close(); }
   });
 
-  it('projects recovered Hermes unknown evidence as failed while preserving the original terminal status', async () => {
+  it('projects claimed and running Hermes interruptions with distinct timestamp provenance in SQLite and events', async () => {
     const database = createDatabase(':memory:');
-    const interrupted = manifest({
+    const claimed = manifest({
+      hermesRunId: 'claimed-interrupted',
       status: 'failed',
       error: 'Scheduler restarted before a durable terminal result.',
       hermesStatus: 'unknown',
+      provenance: {
+        source: 'indy-hermes-run-job-hook',
+        evidence: 'cron.executions',
+        originalHermesStatus: 'unknown',
+        startedAtEvidence: 'claimed_at',
+      },
+    } as Partial<ScheduledTaskOccurrenceManifest>);
+    const running = manifest({
+      hermesRunId: 'running-interrupted',
+      status: 'failed',
+      error: 'Scheduler restarted before a durable terminal result.',
+      hermesStatus: 'unknown',
+      provenance: {
+        source: 'indy-hermes-run-job-hook',
+        evidence: 'cron.executions',
+        originalHermesStatus: 'unknown',
+        startedAtEvidence: 'started_at',
+      },
     } as Partial<ScheduledTaskOccurrenceManifest>);
     try {
       await reconcileScheduledTaskOccurrences(database, { listScheduledTasks: vi.fn() }, {
-        listManifests: vi.fn().mockResolvedValue([interrupted]),
+        listManifests: vi.fn().mockResolvedValue([claimed, running]),
       });
-      const row = database.prepare('SELECT status, provenance_json FROM mission_runs').get() as {
+      const rows = database.prepare('SELECT status, provenance_json FROM mission_runs ORDER BY id').all() as Array<{
         status: string; provenance_json: string;
-      };
-      expect(row.status).toBe('failed');
-      expect(JSON.stringify(database.prepare('SELECT payload_json FROM run_events').all())).toContain('Scheduler restarted');
-      expect(JSON.parse(row.provenance_json)).toMatchObject({ originalHermesStatus: 'unknown' });
+      }>;
+      expect(rows.map((row) => ({ status: row.status, provenance: JSON.parse(row.provenance_json) }))).toEqual([
+        expect.objectContaining({
+          status: 'failed',
+          provenance: expect.objectContaining({ originalHermesStatus: 'unknown', startedAtEvidence: 'claimed_at' }),
+        }),
+        expect.objectContaining({
+          status: 'failed',
+          provenance: expect.objectContaining({ originalHermesStatus: 'unknown', startedAtEvidence: 'started_at' }),
+        }),
+      ]);
+      const failedEvents = database.prepare("SELECT payload_json FROM run_events WHERE type = 'run.failed' ORDER BY run_id").all() as Array<{ payload_json: string }>;
+      expect(failedEvents.map(({ payload_json }) => JSON.parse(payload_json).provenance)).toEqual([
+        expect.objectContaining({ originalHermesStatus: 'unknown', startedAtEvidence: 'claimed_at' }),
+        expect.objectContaining({ originalHermesStatus: 'unknown', startedAtEvidence: 'started_at' }),
+      ]);
+      expect(JSON.stringify(failedEvents)).toContain('Scheduler restarted');
     } finally { database.close(); }
   });
 
@@ -134,6 +246,12 @@ describe('terminal Hermes manifest projection', () => {
       workdir: 'api_key=workdir-secret',
       status: 'failed',
       error: '{"authorization":"Digest username=\\"EscapedCron\\", nonce=\\"escaped-manifest-nonce\\", response=\\"escaped-manifest-response\\"","password":"nested-password","passwd":"nested-passwd","pwd":"nested-pwd"}',
+      provenance: {
+        source: 'Authorization: Digest username="provenance-user", nonce="provenance-nonce", response="provenance-response"',
+        evidence: 'cron.executions',
+        originalHermesStatus: 'failed',
+        startedAtEvidence: 'started_at',
+      } as unknown as ScheduledTaskOccurrenceManifest['provenance'],
     })];
     const source = { listScheduledTasks: vi.fn() };
     const listManifests = vi.fn().mockImplementation(async () => manifests);
@@ -158,6 +276,11 @@ describe('terminal Hermes manifest projection', () => {
       expect(persisted).not.toContain('EscapedCron');
       expect(persisted).not.toContain('escaped-manifest-nonce');
       expect(persisted).not.toContain('escaped-manifest-response');
+      expect(persisted).not.toContain('provenance-user');
+      expect(persisted).not.toContain('provenance-nonce');
+      expect(persisted).not.toContain('provenance-response');
+      const projectedProvenance = JSON.parse((database.prepare('SELECT provenance_json FROM mission_runs').get() as { provenance_json: string }).provenance_json);
+      expect(projectedProvenance.manifestProvenance.source).toBe('Authorization: [REDACTED]');
       expect(database.prepare('SELECT COUNT(*) AS count FROM mission_runs').get()).toEqual({ count: 1 });
     } finally { database.close(); }
   });

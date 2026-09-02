@@ -144,3 +144,22 @@
 - Typecheck serveur et client : exit 0.
 - `pnpm build` : serveur, client et assets, exit 0; 2 602 modules transformés. Le warning Vite historique sur le chunk principal reste inchangé.
 - `git diff --check` : exit 0.
+
+## Fix review round 5/5
+
+- `ScheduledTaskOccurrenceManifest` expose désormais une provenance typée limitée à `source`, `evidence`, `originalHermesStatus` et `startedAtEvidence`. Le parseur accepte uniquement le hook `indy-hermes-run-job-hook`, le ledger `cron.executions`, un statut original cohérent et la preuve `claimed_at` ou `started_at`; une clé étrangère, un enum inventé ou un statut contradictoire diffère le manifest entier. Les manifests historiques `completed`/`failed` sans détail restent lisibles, tandis qu’un terminal `unknown` exige la preuve complète afin de ne jamais perdre la distinction d’interruption.
+- La projection conserve l’objet de provenance nettoyé et ses discriminants dans `mission_runs.provenance_json`. Le repository propage le même objet nettoyé dans les événements `run.started` et `run.completed`/`run.failed`; l’API qui expose ces enregistrements bénéficie de la redaction centrale existante.
+
+### TDD du fix round 5
+
+- RED TypeScript : provenance valide supprimée par le parseur, enum/clé arbitraires acceptés, et `startedAtEvidence` absent de SQLite/événements.
+- GREEN TypeScript/Python : deux manifests interrompus réels, l’un jamais démarré (`claimed_at`) et l’autre déjà exécuté (`started_at`), restent distincts de l’écriture Python jusqu’aux lignes SQLite et aux événements; les chaînes de provenance injectées sont redacted avant persistance.
+
+### Vérifications du fix round 5
+
+- Ciblé TypeScript : 2 fichiers, 11 tests, 0 échec.
+- Python worker : scénario interrompu ciblé puis module complet, 41 tests, 0 échec.
+- `pnpm test` (binaire Vitest installé) : 25 fichiers, 217 tests, 0 échec.
+- Typecheck serveur et client : exit 0.
+- `pnpm build` : serveur, client et assets, exit 0; 2 602 modules transformés. Le warning Vite historique sur le chunk principal reste inchangé.
+- `git diff --check` : exit 0.

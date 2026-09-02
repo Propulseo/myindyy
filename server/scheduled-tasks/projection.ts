@@ -65,6 +65,34 @@ function ensureCronMission(database: Database, manifest: ScheduledTaskOccurrence
   );
 }
 
+function projectManifestProvenance(manifest: ScheduledTaskOccurrenceManifest): Readonly<Record<string, unknown>> {
+  const manifestProvenance = manifest.provenance ? {
+    source: redactSensitiveText(manifest.provenance.source),
+    evidence: redactSensitiveText(manifest.provenance.evidence),
+    originalHermesStatus: manifest.provenance.originalHermesStatus
+      ? redactSensitiveText(manifest.provenance.originalHermesStatus)
+      : null,
+    startedAtEvidence: manifest.provenance.startedAtEvidence
+      ? redactSensitiveText(manifest.provenance.startedAtEvidence)
+      : null,
+  } : null;
+  return {
+    source: 'indy-hermes-occurrence-manifest',
+    scheduledTaskId: redactSensitiveText(manifest.scheduledTaskId),
+    hermesRunId: redactSensitiveText(manifest.hermesRunId),
+    outputRef: manifest.outputRef ? redactSensitiveText(manifest.outputRef) : null,
+    manifestPath: manifest.manifestPath ? redactSensitiveText(manifest.manifestPath) : null,
+    dispatchToken: manifest.dispatchToken ? redactSensitiveText(manifest.dispatchToken) : null,
+    originalHermesStatus: redactSensitiveText(
+      manifest.provenance?.originalHermesStatus ?? manifest.hermesStatus,
+    ),
+    startedAtEvidence: manifest.provenance?.startedAtEvidence
+      ? redactSensitiveText(manifest.provenance.startedAtEvidence)
+      : null,
+    manifestProvenance,
+  };
+}
+
 export async function reconcileScheduledTaskOccurrences(
   database: Database,
   _source: ScheduledTaskOccurrenceSource,
@@ -97,15 +125,7 @@ export async function reconcileScheduledTaskOccurrences(
         status,
         finishReason,
         error: status === 'failed' ? redactSensitiveText(manifest.error || 'Hermes cron failed') : null,
-        provenance: {
-          source: 'indy-hermes-occurrence-manifest',
-          scheduledTaskId: redactSensitiveText(manifest.scheduledTaskId),
-          hermesRunId: redactSensitiveText(manifest.hermesRunId),
-          outputRef: manifest.outputRef ? redactSensitiveText(manifest.outputRef) : null,
-          manifestPath: manifest.manifestPath ? redactSensitiveText(manifest.manifestPath) : null,
-          dispatchToken: manifest.dispatchToken ? redactSensitiveText(manifest.dispatchToken) : null,
-          originalHermesStatus: manifest.hermesStatus,
-        },
+        provenance: projectManifestProvenance(manifest),
       });
       if (result.created) imported += 1;
   }
