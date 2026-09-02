@@ -1,6 +1,15 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { readFileSync, realpathSync } from 'node:fs';
-import { isAbsolute, relative, resolve } from 'node:path';
+import {
+  cpSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from 'node:fs';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { validateHermesRuntimeManifest } from './hermes-runtime-manifest.js';
 
@@ -16,6 +25,16 @@ interface SchedulerArtifact {
 interface PythonArtifactProbe {
   readonly hash?: unknown;
   readonly path?: unknown;
+}
+
+export interface PreparedHermesRuntime {
+  readonly environment: NodeJS.ProcessEnv;
+  readonly runtimeRoot: string;
+  readonly scratchRoot: string;
+}
+
+export interface HermesMaterializationHooks {
+  readonly afterSourceValidation?: (sourceRoot: string) => void;
 }
 
 export function extractSupportedSchedulerHash(workerContract: string): string {
@@ -41,7 +60,11 @@ function supportedHash(): string {
   return extractSupportedSchedulerHash(readFileSync(contractPath, 'utf8'));
 }
 
-function inspectImportedScheduler(python: string): { actualHash: string; sourcePath: string } {
+function inspectImportedScheduler(
+  python: string,
+  environment: NodeJS.ProcessEnv,
+  runtimeRoot: string,
+): { actualHash: string; sourcePath: string } {
   const probe = [
     'import hashlib, inspect, json',
     'import cron.scheduler as scheduler',
@@ -49,9 +72,14 @@ function inspectImportedScheduler(python: string): { actualHash: string; sourceP
     'assert path',
     'print(json.dumps({"path": path, "hash": hashlib.sha256(open(path, "rb").read()).hexdigest()}))',
   ].join('; ');
+  const probeEnvironment = { ...environment };
+  delete probeEnvironment.PYTHONHOME;
+  delete probeEnvironment.PYTHONPATH;
+  Object.assign(probeEnvironment, { PYTHONNOUSERSITE: '1', PYTHONSAFEPATH: '1' });
   const output = execFileSync(python, ['-c', probe], {
+    cwd: runtimeRoot,
     encoding: 'utf8',
-    env: process.env,
+    env: probeEnvironment,
     stdio: ['ignore', 'pipe', 'inherit'],
     timeout: 15_000,
   }).trim();
@@ -62,27 +90,109 @@ function inspectImportedScheduler(python: string): { actualHash: string; sourceP
   return { actualHash: parsed.hash, sourcePath: parsed.path };
 }
 
-export function validateMountedHermesRuntime(environment: NodeJS.ProcessEnv = process.env): void {
-  const python = environment.HERMES_PYTHON?.trim() ?? '';
-  const runtimeRoot = environment.HERMES_AGENT_DIR?.trim() ?? '';
+function pathIsWithin(root: string, candidate: string): boolean {
+  const within = relative(root, candidate);
+  return within === '' || (within !== '..' && !within.startsWith(`..${sep}`) && !isAbsolute(within));
+}
+
+export function materializeHermesRuntime(
+  environment: NodeJS.ProcessEnv = process.env,
+  hooks: HermesMaterializationHooks = {},
+): PreparedHermesRuntime {
+  const sourceRoot = environment.HERMES_SOURCE_DIR?.trim()
+    || environment.HERMES_AGENT_DIR?.trim()
+    || '';
+  const sourcePython = environment.HERMES_SOURCE_PYTHON?.trim()
+    || environment.HERMES_PYTHON?.trim()
+    || '';
   const manifestFile = environment.HERMES_RUNTIME_MANIFEST_FILE?.trim() ?? '';
-  if (!isAbsolute(python) || !isAbsolute(runtimeRoot) || !isAbsolute(manifestFile)) {
-    throw new Error('HERMES_PYTHON, HERMES_AGENT_DIR, and HERMES_RUNTIME_MANIFEST_FILE must be absolute mounted paths');
+  const privateParent = environment.HERMES_PRIVATE_RUNTIME_PARENT?.trim()
+    || join(tmpdir(), 'indy-private-hermes');
+  if (![sourceRoot, sourcePython, manifestFile, privateParent].every(isAbsolute)) {
+    throw new Error('Hermes source, Python, manifest, and private runtime parent must be absolute paths');
   }
-  validateHermesRuntimeManifest(runtimeRoot, manifestFile);
-  assertSchedulerArtifact({
-    ...inspectImportedScheduler(python),
-    runtimeRoot,
-    supportedHash: supportedHash(),
-  });
+
+  const resolvedSource = realpathSync(sourceRoot);
+  const resolvedSourcePython = realpathSync(sourcePython);
+  if (!pathIsWithin(resolvedSource, resolvedSourcePython)) {
+    throw new Error('Hermes source Python resolves outside the reviewed runtime');
+  }
+  const pythonRelativePath = relative(resolvedSource, resolvedSourcePython);
+  if (!pythonRelativePath || !pathIsWithin(resolvedSource, resolve(resolvedSource, pythonRelativePath))) {
+    throw new Error('Hermes source Python path is not a runtime entry');
+  }
+
+  mkdirSync(privateParent, { recursive: true, mode: 0o700 });
+  const resolvedPrivateParent = realpathSync(privateParent);
+  if (pathIsWithin(resolvedSource, resolvedPrivateParent) || pathIsWithin(resolvedPrivateParent, resolvedSource)) {
+    throw new Error('Hermes private runtime parent must be isolated from the bind source');
+  }
+
+  const scratchRoot = mkdtempSync(join(resolvedPrivateParent, 'hermes-'));
+  const runtimeRoot = join(scratchRoot, 'runtime');
+  const manifestSnapshot = join(scratchRoot, 'reviewed-manifest.json');
+  try {
+    copyFileSync(realpathSync(manifestFile), manifestSnapshot);
+    validateHermesRuntimeManifest(resolvedSource, manifestSnapshot);
+    hooks.afterSourceValidation?.(resolvedSource);
+    cpSync(resolvedSource, runtimeRoot, {
+      dereference: false,
+      preserveTimestamps: true,
+      recursive: true,
+      verbatimSymlinks: true,
+    });
+    validateHermesRuntimeManifest(runtimeRoot, manifestSnapshot);
+    const privatePython = join(runtimeRoot, pythonRelativePath);
+    const resolvedPrivatePython = realpathSync(privatePython);
+    if (!pathIsWithin(realpathSync(runtimeRoot), resolvedPrivatePython)) {
+      throw new Error('Private Hermes Python resolves outside the reviewed runtime copy');
+    }
+    const preparedEnvironment: NodeJS.ProcessEnv = {
+      ...environment,
+      HERMES_AGENT_DIR: runtimeRoot,
+      HERMES_PYTHON: privatePython,
+      PYTHONNOUSERSITE: '1',
+      PYTHONSAFEPATH: '1',
+    };
+    delete preparedEnvironment.PYTHONHOME;
+    delete preparedEnvironment.PYTHONPATH;
+    delete preparedEnvironment.PYTHONUSERBASE;
+    return {
+      environment: preparedEnvironment,
+      runtimeRoot,
+      scratchRoot,
+    };
+  } catch (error) {
+    rmSync(scratchRoot, { force: true, recursive: true });
+    throw error;
+  }
+}
+
+export function validateMountedHermesRuntime(
+  environment: NodeJS.ProcessEnv = process.env,
+): PreparedHermesRuntime {
+  const prepared = materializeHermesRuntime(environment);
+  try {
+    const python = prepared.environment.HERMES_PYTHON!;
+    const runtimeRoot = prepared.runtimeRoot;
+    assertSchedulerArtifact({
+      ...inspectImportedScheduler(python, prepared.environment, runtimeRoot),
+      runtimeRoot,
+      supportedHash: supportedHash(),
+    });
+    return prepared;
+  } catch (error) {
+    rmSync(prepared.scratchRoot, { force: true, recursive: true });
+    throw error;
+  }
 }
 
 async function runServer(): Promise<number> {
-  validateMountedHermesRuntime();
+  const prepared = validateMountedHermesRuntime();
   const serverEntry = fileURLToPath(new URL('./index.js', import.meta.url));
   const child = spawn(process.execPath, [serverEntry], {
     cwd: resolve(fileURLToPath(new URL('../..', import.meta.url))),
-    env: process.env,
+    env: prepared.environment,
     shell: false,
     stdio: 'inherit',
   });
@@ -94,10 +204,14 @@ async function runServer(): Promise<number> {
   process.on('SIGINT', forward);
 
   return await new Promise<number>((resolveExit, reject) => {
-    child.once('error', reject);
+    child.once('error', (error) => {
+      rmSync(prepared.scratchRoot, { force: true, recursive: true });
+      reject(error);
+    });
     child.once('exit', (code, signal) => {
       process.off('SIGTERM', forward);
       process.off('SIGINT', forward);
+      rmSync(prepared.scratchRoot, { force: true, recursive: true });
       resolveExit(code ?? (signal ? 1 : 0));
     });
   });

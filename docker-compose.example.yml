@@ -22,8 +22,9 @@ services:
       MINIONS_HOME: /var/lib/indy
       DB_PATH: /var/lib/indy/data/indy.db
       HERMES_HOME: /var/lib/hermes
-      HERMES_AGENT_DIR: /opt/hermes
-      HERMES_PYTHON: /opt/hermes/venv/bin/python
+      HERMES_SOURCE_DIR: /opt/hermes
+      HERMES_SOURCE_PYTHON: /opt/hermes/venv/bin/python
+      HERMES_PRIVATE_RUNTIME_PARENT: /run/indy-runtime
       HERMES_RUNTIME_MANIFEST_FILE: /run/indy-config/hermes-runtime-manifest.json
       HERMES_AGENT_RUN_LIMIT: "${HERMES_AGENT_RUN_LIMIT:-4}"
       HEARTBEAT_CONCURRENCY: "${HEARTBEAT_CONCURRENCY:-2}"
@@ -69,6 +70,7 @@ services:
         read_only: false
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=1700
+      - /run/indy-runtime:rw,nosuid,nodev,size=1g,uid=10001,gid=10001,mode=0700
     healthcheck:
       test: ["CMD", "node", "dist/server/server/healthcheck.js"]
       interval: 30s

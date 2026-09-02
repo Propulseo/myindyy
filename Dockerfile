@@ -50,7 +50,7 @@ RUN dpkg-deb --extract /tmp/ca-certificates.deb /tmp/ca-bootstrap \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid "${APP_GID}" indy \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" --home-dir /var/lib/indy --no-create-home --shell /usr/sbin/nologin indy \
-    && install -d -o indy -g indy -m 0700 /var/lib/indy /var/lib/hermes \
+    && install -d -o indy -g indy -m 0700 /var/lib/indy /var/lib/hermes /run/indy-runtime \
     && install -d -o indy -g indy -m 0755 /app
 
 WORKDIR /app
@@ -63,8 +63,9 @@ ENV NODE_ENV=production \
     MINIONS_HOME=/var/lib/indy \
     DB_PATH=/var/lib/indy/data/indy.db \
     HERMES_HOME=/var/lib/hermes \
-    HERMES_AGENT_DIR=/opt/hermes \
-    HERMES_PYTHON=/opt/hermes/venv/bin/python \
+    HERMES_SOURCE_DIR=/opt/hermes \
+    HERMES_SOURCE_PYTHON=/opt/hermes/venv/bin/python \
+    HERMES_PRIVATE_RUNTIME_PARENT=/run/indy-runtime \
     HERMES_RUNTIME_MANIFEST_FILE=/run/indy-config/hermes-runtime-manifest.json
 
 LABEL org.opencontainers.image.title="Indy Codex OAuth cockpit" \

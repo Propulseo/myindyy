@@ -76,7 +76,10 @@ jobs:
             const service = rendered.services.indy;
             if (service.environment.INDY_TRUSTED_PROXY_CIDRS !== "127.0.0.1/32,::1/128,172.20.0.1/32") process.exit(1);
             if (service.environment.HERMES_RUNTIME_MANIFEST_FILE !== "/run/indy-config/hermes-runtime-manifest.json") process.exit(1);
+            if (service.environment.HERMES_SOURCE_DIR !== "/opt/hermes") process.exit(1);
+            if (service.environment.HERMES_PRIVATE_RUNTIME_PARENT !== "/run/indy-runtime") process.exit(1);
             if (!service.configs.some((config) => config.target === "/run/indy-config/hermes-runtime-manifest.json")) process.exit(1);
+            if (!service.tmpfs.includes("/run/indy-runtime:rw,nosuid,nodev,size=1g,uid=10001,gid=10001,mode=0700")) process.exit(1);
           ' "$RUNNER_TEMP/indy-compose.json"
 
       - name: Build production image
@@ -86,6 +89,7 @@ jobs:
         run: |
           test "$(docker image inspect indy-ci:${{ github.sha }} --format '{{.Config.User}}')" = "indy:indy"
           docker image inspect indy-ci:${{ github.sha }} --format '{{json .Config.Healthcheck.Test}}' | grep -F 'dist/server/server/healthcheck.js'
-          ! docker image inspect indy-ci:${{ github.sha }} --format '{{json .Config.Env}}' | grep -E 'OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY' # indy-model-key-scan: allow-reference
+          # indy-model-key-scan: allow-reference
+          ! docker image inspect indy-ci:${{ github.sha }} --format '{{json .Config.Env}}' | grep -E 'OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY'
           test "$(docker image inspect indy-ci:${{ github.sha }} --format '{{index .Config.Labels "io.propulseo.indy.node-base-digest"}}')" = "sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b"
           test "$(docker image inspect indy-ci:${{ github.sha }} --format '{{index .Config.Labels "io.propulseo.indy.debian-snapshot"}}')" = "20260801T000000Z"

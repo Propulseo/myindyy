@@ -3,9 +3,13 @@ import type { AgentRunSettings } from '../adapters/types.js';
 export const FIRST_MILESTONE_PROVIDER = 'openai-codex' as const;
 
 export const FORBIDDEN_MODEL_KEY_NAMES = Object.freeze([
+  // indy-model-key-scan: allow-reference
   'OPENAI_API_KEY', // indy-model-key-scan: allow-reference
+  // indy-model-key-scan: allow-reference
   'ANTHROPIC_API_KEY', // indy-model-key-scan: allow-reference
+  // indy-model-key-scan: allow-reference
   'OPENROUTER_API_KEY', // indy-model-key-scan: allow-reference
+  // indy-model-key-scan: allow-reference
   'CODEX_API_KEY', // indy-model-key-scan: allow-reference
 ] as const);
 
