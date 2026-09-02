@@ -389,6 +389,36 @@ describe('operator run commands', () => {
     expect((await firstPromise).status).toBe(202);
   });
 
+  it('keeps worker credential diagnostics out of HTTP and the durable command result', async () => {
+    const current = startRun();
+    const diagnostic = [
+      'Authorization: Bearer http-bearer-secret',
+      'Authorization: Basic aHR0cC11c2VyOmh0dHAtcGFzcw==',
+      'Authorization: Digest username="http-digest-user", nonce="http-digest-nonce", response="http-digest-response"',
+      '{"token":"http-token-secret","credential":"http-credential-secret","password":"http-password-secret"}',
+    ].join('\n');
+    vi.spyOn(hermes, 'interruptChat').mockRejectedValue(new Error(diagnostic));
+
+    const response = await command('http-secret-boundary', {
+      type: 'interrupt', runId: current.runId, reason: 'safe reason',
+    });
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({
+      error: 'Could not execute operator command',
+      code: 'COMMAND_EXECUTION_FAILED',
+    });
+    const persisted = database.prepare(`
+      SELECT payload_json, effect_receipt_json, result_json
+      FROM operator_commands WHERE idempotency_key = ?
+    `).get('http-secret-boundary');
+    const exposed = JSON.stringify({ response: response.body, persisted });
+    for (const secret of [
+      'http-bearer-secret', 'aHR0cC11c2VyOmh0dHAtcGFzcw==',
+      'http-digest-user', 'http-digest-nonce', 'http-digest-response',
+      'http-token-secret', 'http-credential-secret', 'http-password-secret',
+    ]) expect(exposed).not.toContain(secret);
+  });
+
   it('rejects missing keys, client actors, stale runs, empty corrections, and incompatible states', async () => {
     const old = startRun();
     service.cancel(old.runId, 'superseded');
