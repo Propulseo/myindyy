@@ -94,6 +94,16 @@ function runtimeSettings(run: MissionRun): AgentRunSettings {
   };
 }
 
+function missionCommandBusy(): StoredHttpResult {
+  return {
+    httpStatus: 409,
+    body: {
+      error: 'Another operator command is already in progress for this mission',
+      code: 'MISSION_COMMAND_BUSY',
+    },
+  };
+}
+
 function loadCommandContext(
   database: Database,
   runService: RunService,
@@ -179,6 +189,11 @@ export function createRunsRouter(dependencies: RunsRouterDependencies): ExpressR
       });
     }
 
+    if (repository.getMissionCommandFence(missionId)) {
+      const busy = missionCommandBusy();
+      return res.status(busy.httpStatus).json(busy.body);
+    }
+
     const preflight = loadCommandContext(dependencies.database, runService, missionId, command);
     if (isStoredHttpResult(preflight)) {
       return res.status(preflight.httpStatus).json(preflight.body);
@@ -212,15 +227,17 @@ export function createRunsRouter(dependencies: RunsRouterDependencies): ExpressR
       commandType: command.type,
       payloadHash,
       payload: command,
+      expectedCurrentRunId: command.runId,
     });
     if (claim.status === 'conflict') {
       return res.status(409).json({ error: 'Idempotency-Key was already used for another command' });
     }
     if (claim.status === 'busy') {
-      return res.status(409).json({
-        error: 'Another operator command is already in progress for this mission',
-        code: 'MISSION_COMMAND_BUSY',
-      });
+      const busy = missionCommandBusy();
+      return res.status(busy.httpStatus).json(busy.body);
+    }
+    if (claim.status === 'stale') {
+      return res.status(409).json({ error: 'runId must be the current attempt for this mission' });
     }
     if (claim.status === 'duplicate') {
       if ((claim.command.status === 'completed' || claim.command.status === 'needs_reconciliation')

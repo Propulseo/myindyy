@@ -389,6 +389,46 @@ describe('operator run commands', () => {
     expect((await firstPromise).status).toBe(202);
   });
 
+  it('rejects a stale overlapping correction after another key advances the current attempt', async () => {
+    const current = startRun();
+    confirm(current.runId, 'native-overlap');
+    const runtimeStatus = await hermes.getRuntimeStatus();
+    let enteredAdmissions = 0;
+    let bothAdmissionsEntered!: () => void;
+    const admissionsEntered = new Promise<void>((resolve) => { bothAdmissionsEntered = resolve; });
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    const firstAdmission = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const secondAdmission = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    vi.spyOn(hermes, 'getRuntimeStatus').mockImplementation(async () => {
+      const admission = enteredAdmissions++ === 0 ? firstAdmission : secondAdmission;
+      if (enteredAdmissions === 2) bothAdmissionsEntered();
+      await admission;
+      return runtimeStatus;
+    });
+
+    const firstPromise = command('overlap-correct-a', {
+      type: 'correct', runId: current.runId, reason: 'first correction',
+    });
+    const secondPromise = command('overlap-correct-b', {
+      type: 'correct', runId: current.runId, reason: 'second correction',
+    });
+    await admissionsEntered;
+
+    releaseFirst();
+    const first = await firstPromise;
+    expect(first.status).toBe(202);
+    releaseSecond();
+    const second = await secondPromise;
+
+    expect(second.status).toBe(409);
+    expect(second.body).toEqual({ error: 'runId must be the current attempt for this mission' });
+    expect(repository.getCommand('overlap-correct-b')).toBeUndefined();
+    expect(repository.listMissionRuns('mission-1')).toHaveLength(2);
+    expect(hermes.interruptions).toHaveLength(1);
+    expect(launched).toHaveLength(1);
+  });
+
   it('keeps worker credential diagnostics out of HTTP and the durable command result', async () => {
     const current = startRun();
     const diagnostic = [
@@ -779,6 +819,71 @@ describe('operator run commands', () => {
     expect(response.status).toBe(409);
     expect(response.body).toEqual({ error: 'Cannot retry an active attempt' });
     expect(repository.getCommand('retry-unknown')).toBeUndefined();
+    expect(launched).toEqual([]);
+  });
+
+  it('returns the durable mission fence before unknown-state retry validation', async () => {
+    const current = startRun();
+    repository.updateRunStatus(current.runId, 'unknown');
+    repository.claimCommand({
+      idempotencyKey: 'unknown-fence', actorId: 'etienne', missionId: 'mission-1',
+      runId: current.runId, commandType: 'interrupt', payloadHash: 'unknown-fence-hash',
+    });
+    const owner = 'unknown-fence-owner';
+    expect(repository.leasePendingCommands({ owner, idempotencyKey: 'unknown-fence' })).toHaveLength(1);
+    repository.markCommandNeedsReconciliation({
+      idempotencyKey: 'unknown-fence', owner,
+      result: { httpStatus: 409, body: { code: 'COMMAND_OUTCOME_UNKNOWN' } },
+    });
+    const beforeRun = repository.getRunRecord(current.runId);
+    const beforeTask = database.prepare('SELECT * FROM tasks WHERE id = ?').get('mission-1');
+
+    const response = await command('retry-behind-unknown-fence', {
+      type: 'retry', runId: current.runId, reason: 'again',
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({
+      error: 'Another operator command is already in progress for this mission',
+      code: 'MISSION_COMMAND_BUSY',
+    });
+    expect(repository.getCommand('retry-behind-unknown-fence')).toBeUndefined();
+    expect(repository.getRunRecord(current.runId)).toEqual(beforeRun);
+    expect(database.prepare('SELECT * FROM tasks WHERE id = ?').get('mission-1')).toEqual(beforeTask);
+    expect(hermes.interruptions).toEqual([]);
+    expect(launched).toEqual([]);
+  });
+
+  it('returns the durable mission fence before stopped-mission validation', async () => {
+    const current = startRun();
+    service.complete(current.runId);
+    database.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run('mission-1');
+    repository.claimCommand({
+      idempotencyKey: 'done-fence', actorId: 'etienne', missionId: 'mission-1',
+      runId: current.runId, commandType: 'interrupt', payloadHash: 'done-fence-hash',
+    });
+    const owner = 'done-fence-owner';
+    expect(repository.leasePendingCommands({ owner, idempotencyKey: 'done-fence' })).toHaveLength(1);
+    repository.markCommandNeedsReconciliation({
+      idempotencyKey: 'done-fence', owner,
+      result: { httpStatus: 409, body: { code: 'COMMAND_OUTCOME_UNKNOWN' } },
+    });
+    const beforeRun = repository.getRunRecord(current.runId);
+    const beforeTask = database.prepare('SELECT * FROM tasks WHERE id = ?').get('mission-1');
+
+    const response = await command('stop-behind-done-fence', {
+      type: 'stop', runId: current.runId,
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({
+      error: 'Another operator command is already in progress for this mission',
+      code: 'MISSION_COMMAND_BUSY',
+    });
+    expect(repository.getCommand('stop-behind-done-fence')).toBeUndefined();
+    expect(repository.getRunRecord(current.runId)).toEqual(beforeRun);
+    expect(database.prepare('SELECT * FROM tasks WHERE id = ?').get('mission-1')).toEqual(beforeTask);
+    expect(hermes.interruptions).toEqual([]);
     expect(launched).toEqual([]);
   });
 

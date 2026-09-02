@@ -52,6 +52,7 @@ export interface ClaimCommandInput {
   readonly payloadHash: string;
   readonly payload?: unknown;
   readonly createdAt?: number;
+  readonly expectedCurrentRunId?: string;
 }
 
 export type OperatorCommandPhase =
@@ -87,10 +88,15 @@ export interface OperatorCommand {
   readonly nextAttemptAt: number;
 }
 
-export interface CommandClaimResult {
-  readonly status: 'claimed' | 'duplicate' | 'conflict' | 'busy';
-  readonly command: OperatorCommand;
-}
+export type CommandClaimResult =
+  | {
+      readonly status: 'claimed' | 'duplicate' | 'conflict' | 'busy';
+      readonly command: OperatorCommand;
+    }
+  | {
+      readonly status: 'stale';
+      readonly command: null;
+    };
 
 export interface CompleteCommandInput {
   readonly idempotencyKey: string;
@@ -160,6 +166,7 @@ export interface RunRepository {
   listRunEvents(runId: string): RunEvent[];
   hasInactiveBlockEvent(runId: string): boolean;
   findActiveRuns(missionId?: string): MissionRun[];
+  getMissionCommandFence(missionId: string): OperatorCommand | undefined;
   claimCommand(input: ClaimCommandInput): CommandClaimResult;
   getCommand(idempotencyKey: string): OperatorCommand | undefined;
   completeCommand(input: CompleteCommandInput): OperatorCommand;

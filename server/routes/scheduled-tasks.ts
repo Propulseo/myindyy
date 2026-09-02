@@ -616,6 +616,9 @@ export function createScheduledTasksRouter(
           code: 'IDEMPOTENCY_KEY_CONFLICT',
         });
       }
+      if (claim.status === 'stale') {
+        throw new Error('Cron command unexpectedly required a current run');
+      }
       const stored = storedCommandResult(claim.command.result);
       if (stored) return res.status(stored.statusCode).json(stored.body);
 

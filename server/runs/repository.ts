@@ -228,6 +228,12 @@ export function createRunRepository(
     ORDER BY created_at ASC, idempotency_key ASC
     LIMIT 1
   `);
+  const getLatestMissionRunId = database.prepare(`
+    SELECT id FROM mission_runs
+    WHERE mission_id = ?
+    ORDER BY attempt DESC, id DESC
+    LIMIT 1
+  `);
   const completeCommand = database.prepare(`
     UPDATE operator_commands
     SET status = 'completed', phase = 'completed', result_json = @result_json, completed_at = @completed_at,
@@ -401,6 +407,12 @@ export function createRunRepository(
       }) as OperatorCommandRow | undefined;
       if (active) return { status: 'busy', command: toCommand(active) };
     }
+    if (input.expectedCurrentRunId !== undefined) {
+      const latest = getLatestMissionRunId.get(input.missionId) as { id: string } | undefined;
+      if (latest?.id !== input.expectedCurrentRunId) {
+        return { status: 'stale', command: null };
+      }
+    }
     const result: RunResult = insertCommand.run({
       idempotency_key: input.idempotencyKey,
       actor_id: input.actorId,
@@ -516,6 +528,13 @@ export function createRunRepository(
         ? listActiveRuns.all()
         : listActiveRunsForMission.all(missionId);
       return (rows as MissionRunRow[]).map(toRun);
+    },
+
+    getMissionCommandFence(missionId: string): OperatorCommand | undefined {
+      const row = getActiveInteractiveMissionCommand.get({
+        mission_id: missionId,
+      }) as OperatorCommandRow | undefined;
+      return row ? toCommand(row) : undefined;
     },
 
     claimCommand(input: ClaimCommandInput): CommandClaimResult {
