@@ -5,6 +5,7 @@ import {
   readdirSync,
   readlinkSync,
   realpathSync,
+  statSync,
 } from 'node:fs';
 import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -126,6 +127,32 @@ function pathIsWithin(root: string, candidate: string): boolean {
     || (!pathWithinRoot.startsWith(`..${sep}`) && pathWithinRoot !== '..' && !isAbsolute(pathWithinRoot));
 }
 
+function validateSymlinkTargets(
+  runtimeRoot: string,
+  entries: readonly HermesRuntimeManifestEntry[],
+): void {
+  for (const entry of entries) {
+    if (entry.type !== 'symlink') continue;
+    const symlinkPath = join(runtimeRoot, ...entry.path.split('/'));
+    let resolvedTarget: string;
+    try {
+      resolvedTarget = realpathSync(symlinkPath);
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error
+        ? String((error as NodeJS.ErrnoException).code ?? '')
+        : '';
+      const problem = code === 'ELOOP' ? 'cyclic' : 'broken or cyclic';
+      throw new Error(`Hermes runtime symlink is ${problem}: ${entry.path}`);
+    }
+    if (!pathIsWithin(runtimeRoot, resolvedTarget)) {
+      throw new Error(`Hermes runtime symlink resolves outside the runtime: ${entry.path}`);
+    }
+    if (!statSync(resolvedTarget).isFile()) {
+      throw new Error(`Hermes runtime symlink must resolve to a regular file: ${entry.path}`);
+    }
+  }
+}
+
 export function validateHermesRuntimeManifest(runtimeRoot: string, manifestFile: string): void {
   if (!isAbsolute(runtimeRoot)) throw new Error('Hermes runtime root must be absolute');
   const resolvedRoot = realpathSync(runtimeRoot);
@@ -135,7 +162,9 @@ export function validateHermesRuntimeManifest(runtimeRoot: string, manifestFile:
   }
 
   const expected = readManifest(resolvedManifest);
-  const actualByPath = new Map(inventory(resolvedRoot).map((entry) => [entry.path, entry]));
+  const actualEntries = inventory(resolvedRoot);
+  validateSymlinkTargets(resolvedRoot, actualEntries);
+  const actualByPath = new Map(actualEntries.map((entry) => [entry.path, entry]));
   for (const entry of expected.entries) {
     const actual = actualByPath.get(entry.path);
     if (!actual) throw new Error(`Missing reviewed runtime entry: ${entry.path}`);

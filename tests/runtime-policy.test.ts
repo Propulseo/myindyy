@@ -27,14 +27,14 @@ describe('Codex OAuth runtime policy', () => {
 
   it('removes API-key provider credentials regardless of Windows environment-variable casing', () => {
     expect(sanitizeWorkerEnv({
-      OPENAI_API_KEY: 'openai-secret',
-      OpenAI_Api_Key: 'openai-mixed-secret',
-      ANTHROPIC_API_KEY: 'anthropic-secret',
-      anthropic_api_key: 'anthropic-lower-secret',
-      OPENROUTER_API_KEY: 'openrouter-secret',
-      Openrouter_Api_Key: 'openrouter-mixed-secret',
-      CODEX_API_KEY: 'codex-secret',
-      codex_api_key: 'codex-lower-secret',
+      OPENAI_API_KEY: 'openai-secret', // indy-model-key-scan: allow-reference
+      OpenAI_Api_Key: 'openai-mixed-secret', // indy-model-key-scan: allow-reference
+      ANTHROPIC_API_KEY: 'anthropic-secret', // indy-model-key-scan: allow-reference
+      anthropic_api_key: 'anthropic-lower-secret', // indy-model-key-scan: allow-reference
+      OPENROUTER_API_KEY: 'openrouter-secret', // indy-model-key-scan: allow-reference
+      Openrouter_Api_Key: 'openrouter-mixed-secret', // indy-model-key-scan: allow-reference
+      CODEX_API_KEY: 'codex-secret', // indy-model-key-scan: allow-reference
+      codex_api_key: 'codex-lower-secret', // indy-model-key-scan: allow-reference
       PATH: 'safe',
       SAFE_SETTING: 'retained',
     } as NodeJS.ProcessEnv)).toEqual({ PATH: 'safe', SAFE_SETTING: 'retained' });
@@ -42,10 +42,10 @@ describe('Codex OAuth runtime policy', () => {
 
   it('passes only the sanitized environment and Hermes worker flags to spawn', () => {
     expect(createWorkerEnvironment({
-      OpenAI_Api_Key: 'openai-mixed-secret',
-      anthropic_api_key: 'anthropic-lower-secret',
-      Openrouter_Api_Key: 'openrouter-mixed-secret',
-      codex_api_key: 'codex-lower-secret',
+      OpenAI_Api_Key: 'openai-mixed-secret', // indy-model-key-scan: allow-reference
+      anthropic_api_key: 'anthropic-lower-secret', // indy-model-key-scan: allow-reference
+      Openrouter_Api_Key: 'openrouter-mixed-secret', // indy-model-key-scan: allow-reference
+      codex_api_key: 'codex-lower-secret', // indy-model-key-scan: allow-reference
       PATH: 'safe',
       SAFE_SETTING: 'retained',
     } as NodeJS.ProcessEnv)).toEqual({

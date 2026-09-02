@@ -8,7 +8,7 @@ The supported scheduler bytes are immutable for this release:
 cron/scheduler.py SHA-256 = 5b4326fffe1b783fd2016a0c5c0bde21c3c8af613cc665897b9f48565d74e3c5
 ```
 
-The repository cannot reconstruct those exact reviewed Hermes bytes from a stable package coordinate. Do not install `latest`, infer compatibility from a version label, or let the container download Hermes. Prepare the runtime separately and mount it read-only. A complete reviewed manifest inventories every regular file by SHA-256 and every symlink by its exact target. The manifest is anchored outside the runtime mount at `/etc/indy/hermes-runtime-manifest.json`; startup rejects missing, changed, or additional entries before it executes mounted Python, then independently verifies the module actually imported as `cron.scheduler`. Record the upstream revision, retrieval URL, review date, and scheduler digest in `/opt/indy/hermes-runtime/REVIEWED-MANIFEST`; that provenance file is itself covered by the external manifest.
+The repository cannot reconstruct those exact reviewed Hermes bytes from a stable package coordinate. Do not install `latest`, infer compatibility from a version label, or let the container download Hermes. Prepare the runtime separately and mount it read-only. A complete reviewed manifest inventories every regular file by SHA-256 and every symlink by its exact target. Startup additionally requires each symlink to resolve to an inventoried regular file inside the runtime root; external, broken, cyclic, and directory symlinks fail closed. Create Python virtual environments with `python3 -m venv --copies`, not host-interpreter symlinks. The manifest is anchored outside the runtime mount at `/etc/indy/hermes-runtime-manifest.json`; startup rejects missing, changed, or additional entries before it executes mounted Python, then independently verifies the module actually imported as `cron.scheduler`. Record the upstream revision, retrieval URL, review date, and scheduler digest in `/opt/indy/hermes-runtime/REVIEWED-MANIFEST`; that provenance file is itself covered by the external manifest.
 
 ## Host and directory provisioning
 
@@ -48,7 +48,7 @@ sudo install -o root -g indy -m 0440 \
 rm -rf -- "$review_dir"
 ```
 
-The `diff` is a review input, not an ignorable check: explain every added, removed, changed, or retargeted entry before installing the candidate. Generate while the runtime is quiescent. Re-running the generator over identical bytes and symlink targets yields the same ordered JSON; do not let the service regenerate or approve its own manifest. Lock the runtime after approval:
+The `diff` is a review input, not an ignorable check: explain every added, removed, changed, or retargeted entry before installing the candidate. Generate while the runtime is quiescent. Re-running the generator over identical bytes and symlink targets yields the same ordered JSON; do not let the service regenerate or approve its own manifest. The generator records link text for review, while the startup validator resolves every link and enforces the in-runtime regular-file rule. Lock the runtime after approval:
 
 ```bash
 sudo chown -R root:indy /opt/indy/hermes-runtime
@@ -155,12 +155,12 @@ VPS validation — inspect the created container configuration and the environme
 ```bash
 container_id="$(docker compose -f docker-compose.example.yml ps -q indy)"
 if docker inspect "$container_id" --format '{{range .Config.Env}}{{println .}}{{end}}' \
-  | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then
+  | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then # indy-model-key-scan: allow-reference
   echo 'forbidden model API key exists in container configuration' >&2
   exit 1
 fi
 if docker compose -f docker-compose.example.yml exec -T indy env \
-  | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then
+  | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then # indy-model-key-scan: allow-reference
   echo 'forbidden model API key exists in the running container environment' >&2
   exit 1
 fi
@@ -350,8 +350,8 @@ docker compose -f docker-compose.example.yml up -d
 docker compose -f docker-compose.example.yml exec -T indy node dist/server/server/healthcheck.js
 docker compose -f docker-compose.example.yml exec -T indy node dist/server/server/readinesscheck.js
 container_id="$(docker compose -f docker-compose.example.yml ps -q indy)"
-if docker inspect "$container_id" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then exit 1; fi
-if docker compose -f docker-compose.example.yml exec -T indy env | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then exit 1; fi
+if docker inspect "$container_id" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then exit 1; fi # indy-model-key-scan: allow-reference
+if docker compose -f docker-compose.example.yml exec -T indy env | grep -Eq '^(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY)='; then exit 1; fi # indy-model-key-scan: allow-reference
 curl -fsS https://indy.example.com/api/runtime | jq -e \
   '.provider == "openai-codex" and .profileId == "etienne-openai" and .authState == "connected" and (.models | length > 0)'
 sudo sqlite3 /srv/indy/state/data/indy.db 'PRAGMA integrity_check;'

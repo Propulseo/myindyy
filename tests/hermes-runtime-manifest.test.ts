@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -69,5 +69,51 @@ describe('reviewed Hermes runtime manifest', () => {
 
     expect(() => validateHermesRuntimeManifest(fixture.runtimeRoot, manifestFile))
       .toThrow(/unreviewed runtime entry: hermes_cli\/injected\.py/i);
+  });
+
+  it('rejects an unchanged symlink path when its external target changes after generation', async () => {
+    const { createHermesRuntimeManifest, validateHermesRuntimeManifest } = await import(
+      '../server/hermes-runtime-manifest.js'
+    );
+    const fixture = runtimeFixture();
+    const externalTarget = join(fixture.parent, 'outside-runtime.py');
+    writeFileSync(externalTarget, '# external v1\n', 'utf8');
+    symlinkSync(externalTarget, join(fixture.runtimeRoot, 'external.py'), 'file');
+    const manifestFile = join(fixture.parent, 'reviewed-manifest.json');
+    writeFileSync(manifestFile, JSON.stringify(createHermesRuntimeManifest(fixture.runtimeRoot)), 'utf8');
+    writeFileSync(externalTarget, '# external v2\n', 'utf8');
+
+    expect(() => validateHermesRuntimeManifest(fixture.runtimeRoot, manifestFile))
+      .toThrow(/symlink.*outside.*runtime/i);
+  });
+
+  it('accepts a stable symlink to an inventoried regular file inside the runtime', async () => {
+    const { createHermesRuntimeManifest, validateHermesRuntimeManifest } = await import(
+      '../server/hermes-runtime-manifest.js'
+    );
+    const fixture = runtimeFixture();
+    symlinkSync('run_agent.py', join(fixture.runtimeRoot, 'runner-link.py'), 'file');
+    const manifestFile = join(fixture.parent, 'reviewed-manifest.json');
+    writeFileSync(manifestFile, JSON.stringify(createHermesRuntimeManifest(fixture.runtimeRoot)), 'utf8');
+
+    expect(() => validateHermesRuntimeManifest(fixture.runtimeRoot, manifestFile)).not.toThrow();
+  });
+
+  it.each([
+    ['broken', 'missing.py', 'broken'],
+    ['cyclic', 'cycle-b.py', 'cyclic'],
+  ])('rejects a %s runtime symlink', async (kind, target, expected) => {
+    const { createHermesRuntimeManifest, validateHermesRuntimeManifest } = await import(
+      '../server/hermes-runtime-manifest.js'
+    );
+    const fixture = runtimeFixture();
+    const symlink = join(fixture.runtimeRoot, kind === 'broken' ? 'broken.py' : 'cycle-a.py');
+    symlinkSync(target, symlink, 'file');
+    if (kind === 'cyclic') symlinkSync('cycle-a.py', join(fixture.runtimeRoot, 'cycle-b.py'), 'file');
+    const manifestFile = join(fixture.parent, 'reviewed-manifest.json');
+    writeFileSync(manifestFile, JSON.stringify(createHermesRuntimeManifest(fixture.runtimeRoot)), 'utf8');
+
+    expect(() => validateHermesRuntimeManifest(fixture.runtimeRoot, manifestFile))
+      .toThrow(new RegExp(expected, 'i'));
   });
 });

@@ -86,6 +86,6 @@ jobs:
         run: |
           test "$(docker image inspect indy-ci:${{ github.sha }} --format '{{.Config.User}}')" = "indy:indy"
           docker image inspect indy-ci:${{ github.sha }} --format '{{json .Config.Healthcheck.Test}}' | grep -F 'dist/server/server/healthcheck.js'
-          ! docker image inspect indy-ci:${{ github.sha }} --format '{{json .Config.Env}}' | grep -E 'OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY'
+          ! docker image inspect indy-ci:${{ github.sha }} --format '{{json .Config.Env}}' | grep -E 'OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|CODEX_API_KEY' # indy-model-key-scan: allow-reference
           test "$(docker image inspect indy-ci:${{ github.sha }} --format '{{index .Config.Labels "io.propulseo.indy.node-base-digest"}}')" = "sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b"
           test "$(docker image inspect indy-ci:${{ github.sha }} --format '{{index .Config.Labels "io.propulseo.indy.debian-snapshot"}}')" = "20260801T000000Z"
