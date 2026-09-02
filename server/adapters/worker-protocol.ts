@@ -10,6 +10,7 @@ import type {
   ContextUsage,
 } from '../../shared/types.js';
 import type { AgentRunSettings } from './types.js';
+import type { ScheduledTaskDispatchReceipt } from './types.js';
 
 export type RuntimeAuthState = 'connected' | 'expired' | 'missing' | 'error';
 
@@ -40,6 +41,7 @@ export type WorkerRequest =
   | { id: string; type: 'scheduledTasks.pause'; scheduledTaskId: string; reason?: string }
   | { id: string; type: 'scheduledTasks.resume'; scheduledTaskId: string }
   | { id: string; type: 'scheduledTasks.run'; scheduledTaskId: string; dispatchToken?: string }
+  | { id: string; type: 'scheduledTasks.dispatchReceipt.get'; scheduledTaskId: string; dispatchToken: string }
   | { id: string; type: 'scheduledTasks.remove'; scheduledTaskId: string }
   | { id: string; type: 'scheduledTasks.tick' }
   | { id: string; type: 'session.messages.get'; sessionId: string; taskId?: string }
@@ -89,6 +91,7 @@ export type WorkerResult =
   | WorkerRuntimeStatus
   | { scheduledTasks: ScheduledTask[] }
   | { scheduledTask: ScheduledTask | null }
+  | { dispatchReceipt: ScheduledTaskDispatchReceipt | null }
   | { executed: number }
   | { messages: TaskMessage[] }
   | { session: SessionMetadata | null }

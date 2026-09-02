@@ -9,14 +9,16 @@ import type {
   CronOccurrenceUpsertResult,
   CreateRunInput,
   FinishRunRecordInput,
+  LeasePendingCommandsInput,
   MissionRun,
   OperatorCommand,
   RunEvent,
   RunRepository,
   RunRepositoryOptions,
+  ReleaseCommandLeaseInput,
   ReconciledMissionRunStatus,
 } from './types.js';
-import { serializeRedacted } from '../security/redaction.js';
+import { redactSensitiveText, serializeRedacted } from '../security/redaction.js';
 
 export type { RunRepository } from './types.js';
 
@@ -56,6 +58,10 @@ interface OperatorCommandRow {
   result_json: string | null;
   created_at: number;
   completed_at: number | null;
+  lease_owner: string | null;
+  lease_expires_at: number | null;
+  attempt_count: number;
+  next_attempt_at: number;
 }
 
 function serializeRedactedEventPayload(payload: Readonly<Record<string, unknown>>): string {
@@ -103,6 +109,10 @@ function toCommand(row: OperatorCommandRow): OperatorCommand {
     result: row.result_json === null ? null : JSON.parse(row.result_json),
     createdAt: row.created_at,
     completedAt: row.completed_at,
+    leaseOwner: row.lease_owner,
+    leaseExpiresAt: row.lease_expires_at,
+    attemptCount: row.attempt_count ?? 0,
+    nextAttemptAt: row.next_attempt_at ?? 0,
   };
 }
 
@@ -195,13 +205,48 @@ export function createRunRepository(
   );
   const completeCommand = database.prepare(`
     UPDATE operator_commands
-    SET status = 'completed', result_json = @result_json, completed_at = @completed_at
+    SET status = 'completed', result_json = @result_json, completed_at = @completed_at,
+        lease_owner = NULL, lease_expires_at = NULL
     WHERE idempotency_key = @idempotency_key AND status = 'claimed'
   `);
   const listPendingCommands = database.prepare(`
     SELECT * FROM operator_commands
     WHERE status = 'claimed' AND (? IS NULL OR command_type = ?)
     ORDER BY created_at ASC, idempotency_key ASC
+  `);
+  const listLeaseCandidates = database.prepare(`
+    SELECT idempotency_key FROM operator_commands
+    WHERE status = 'claimed'
+      AND next_attempt_at <= @now
+      AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= @now)
+      AND (@command_type IS NULL OR command_type = @command_type)
+      AND (@idempotency_key IS NULL OR idempotency_key = @idempotency_key)
+    ORDER BY created_at ASC, idempotency_key ASC
+    LIMIT @limit
+  `);
+  const acquireCommandLease = database.prepare(`
+    UPDATE operator_commands
+    SET lease_owner = @owner,
+        lease_expires_at = @lease_expires_at,
+        attempt_count = attempt_count + 1
+    WHERE idempotency_key = @idempotency_key
+      AND status = 'claimed'
+      AND next_attempt_at <= @now
+      AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= @now)
+  `);
+  const releaseCommandLease = database.prepare(`
+    UPDATE operator_commands
+    SET lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = @next_attempt_at
+    WHERE idempotency_key = @idempotency_key
+      AND status = 'claimed'
+      AND lease_owner = @owner
+  `);
+  const nudgeCommandRetry = database.prepare(`
+    UPDATE operator_commands
+    SET next_attempt_at = MIN(next_attempt_at, @at)
+    WHERE idempotency_key = @idempotency_key
+      AND status = 'claimed'
+      AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= @at)
   `);
   const nextMissionAttempt = database.prepare(`
     SELECT COALESCE(MAX(attempt), 0) + 1 AS attempt
@@ -231,16 +276,16 @@ export function createRunRepository(
       session_id: input.sessionId,
       session_confirmed_at: input.startedAt,
       attempt,
-      provider: input.provider,
-      model: input.model,
+      provider: redactSensitiveText(input.provider),
+      model: redactSensitiveText(input.model),
       reasoning_effort: input.reasoningEffort,
       status: input.status,
       started_at: input.startedAt,
       last_activity_at: input.finishedAt,
       finished_at: input.finishedAt,
-      finish_reason: input.finishReason,
+      finish_reason: redactSensitiveText(input.finishReason),
       occurrence_key: input.occurrenceKey,
-      workdir: input.workdir,
+      workdir: input.workdir ? redactSensitiveText(input.workdir) : null,
       provenance_json: serializeRedactedEventPayload(input.provenance),
     });
     if (result.changes === 0) {
@@ -316,6 +361,30 @@ export function createRunRepository(
         : row.payload_hash === input.payloadHash ? 'duplicate' : 'conflict',
       command: toCommand(row),
     };
+  });
+
+  const leasePendingCommandsTransaction = database.transaction((input: LeasePendingCommandsInput): OperatorCommand[] => {
+    const at = input.now ?? now();
+    const leaseMs = Math.max(1, input.leaseMs ?? 30_000);
+    const limit = Math.max(1, Math.min(input.limit ?? 8, 100));
+    const candidates = listLeaseCandidates.all({
+      now: at,
+      command_type: input.commandType ?? null,
+      idempotency_key: input.idempotencyKey ?? null,
+      limit,
+    }) as Array<{ idempotency_key: string }>;
+    const leased: OperatorCommand[] = [];
+    for (const candidate of candidates) {
+      const result = acquireCommandLease.run({
+        idempotency_key: candidate.idempotency_key,
+        owner: input.owner,
+        now: at,
+        lease_expires_at: at + leaseMs,
+      });
+      if (result.changes === 0) continue;
+      leased.push(toCommand(getCommand.get(candidate.idempotency_key) as OperatorCommandRow));
+    }
+    return leased;
   });
 
   function getRunRecord(runId: string): MissionRun | undefined {
@@ -398,6 +467,11 @@ export function createRunRepository(
       return claimCommandTransaction(input);
     },
 
+    getCommand(idempotencyKey: string): OperatorCommand | undefined {
+      const row = getCommand.get(idempotencyKey) as OperatorCommandRow | undefined;
+      return row ? toCommand(row) : undefined;
+    },
+
     completeCommand(input: CompleteCommandInput): OperatorCommand {
       const result = completeCommand.run({
         idempotency_key: input.idempotencyKey,
@@ -412,6 +486,22 @@ export function createRunRepository(
 
     listPendingCommands(commandType?: string): OperatorCommand[] {
       return (listPendingCommands.all(commandType ?? null, commandType ?? null) as OperatorCommandRow[]).map(toCommand);
+    },
+
+    leasePendingCommands(input: LeasePendingCommandsInput): OperatorCommand[] {
+      return leasePendingCommandsTransaction(input);
+    },
+
+    releaseCommandLease(input: ReleaseCommandLeaseInput): boolean {
+      return releaseCommandLease.run({
+        idempotency_key: input.idempotencyKey,
+        owner: input.owner,
+        next_attempt_at: input.nextAttemptAt,
+      }).changes > 0;
+    },
+
+    nudgeCommandRetry(idempotencyKey: string, at = now()): boolean {
+      return nudgeCommandRetry.run({ idempotency_key: idempotencyKey, at }).changes > 0;
     },
 
     upsertCronOccurrence(input: CronOccurrenceInput): CronOccurrenceUpsertResult {

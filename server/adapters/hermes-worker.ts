@@ -15,7 +15,13 @@ import type {
   SessionMetadata,
   TaskMessage,
 } from '../../shared/types.js';
-import type { AgentAdapter, AgentRunOptions, AgentRunSettings, StreamEvent } from './types.js';
+import type {
+  AgentAdapter,
+  AgentRunOptions,
+  AgentRunSettings,
+  ScheduledTaskDispatchReceipt,
+  StreamEvent,
+} from './types.js';
 import type {
   WorkerEvent,
   WorkerRequest,
@@ -596,17 +602,29 @@ export class HermesWorkerAdapter implements AgentAdapter {
 
   async runScheduledTask(scheduledTaskId: string, dispatchToken?: string): Promise<{
     scheduledTask: ScheduledTask | null;
-    dispatchReceipt: { token: string; state: 'accepted' | 'missing' } | null;
+    dispatchReceipt: ScheduledTaskDispatchReceipt | null;
   }> {
     const result = await this.client.request<{
       scheduledTask: ScheduledTask | null;
-      dispatchReceipt?: { token: string; state: 'accepted' | 'missing' };
+      dispatchReceipt?: ScheduledTaskDispatchReceipt;
     }>({
       type: 'scheduledTasks.run',
       scheduledTaskId,
       dispatchToken,
     });
     return { scheduledTask: result.scheduledTask, dispatchReceipt: result.dispatchReceipt ?? null };
+  }
+
+  async getScheduledTaskDispatchReceipt(
+    scheduledTaskId: string,
+    dispatchToken: string,
+  ): Promise<ScheduledTaskDispatchReceipt | null> {
+    const result = await this.client.request<{ dispatchReceipt: ScheduledTaskDispatchReceipt | null }>({
+      type: 'scheduledTasks.dispatchReceipt.get',
+      scheduledTaskId,
+      dispatchToken,
+    });
+    return result.dispatchReceipt;
   }
 
   async removeScheduledTask(scheduledTaskId: string): Promise<boolean> {

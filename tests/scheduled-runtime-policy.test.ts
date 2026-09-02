@@ -6,7 +6,11 @@ import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import type { ScheduledTask, ScheduledTaskInput } from '../shared/types.js';
 import type { RuntimeStatus } from '../server/runtime/hermes-runtime.js';
-import { createScheduledTasksRouter, recoverPendingCronDispatches } from '../server/routes/scheduled-tasks.js';
+import {
+  createScheduledTasksRouter,
+  recoverPendingCronDispatches,
+  startCronDispatchRecoveryLoop,
+} from '../server/routes/scheduled-tasks.js';
 import { createDatabase } from '../server/db/index.js';
 import { createRunRepository, type RunRepository } from '../server/runs/repository.js';
 import {
@@ -199,6 +203,7 @@ function routeFixture(overrides: {
     )),
     pauseScheduledTask: vi.fn(),
     resumeScheduledTask: vi.fn(),
+    getScheduledTaskDispatchReceipt: vi.fn().mockResolvedValue(null),
     runScheduledTask: vi.fn().mockImplementation(async (_id: string, dispatchToken: string) => ({
       scheduledTask: task,
       dispatchReceipt: { token: dispatchToken, state: 'accepted' as const },
@@ -431,6 +436,123 @@ describe('scheduled task HTTP policy boundary', () => {
     } finally { database.close(); }
   });
 
+  it('replays an accepted Hermes receipt before task lookup or fresh policy after a crash', async () => {
+    const database = createDatabase(':memory:');
+    const runRepository = createRunRepository(database);
+    const { adapter, app } = routeFixture({ runRepository });
+    adapter.getScheduledTaskDispatchReceipt.mockImplementation(async (_id: string, token: string) => ({
+      token, scheduledTaskId: 'cron-policy-1', state: 'accepted' as const, acceptedAt: '2026-09-02T08:00:00Z',
+    }));
+    adapter.getScheduledTask.mockRejectedValue(new Error('deleted'));
+    adapter.getRuntimeStatus.mockRejectedValue(new Error('expired'));
+    try {
+      const response = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'accepted-before-lookup');
+
+      expect(response.status).toBe(202);
+      expect(response.body).toMatchObject({ pending: true, dispatchAccepted: true });
+      expect(adapter.getScheduledTask).not.toHaveBeenCalled();
+      expect(adapter.getRuntimeStatus).not.toHaveBeenCalled();
+      expect(adapter.runScheduledTask).not.toHaveBeenCalled();
+    } finally { database.close(); }
+  });
+
+  it('replays a failed Hermes receipt before mutable state and redacts its stored response', async () => {
+    const database = createDatabase(':memory:');
+    const runRepository = createRunRepository(database);
+    const { adapter, app } = routeFixture({ runRepository });
+    adapter.getScheduledTaskDispatchReceipt.mockImplementation(async (_id: string, token: string) => ({
+      token,
+      scheduledTaskId: 'cron-policy-1',
+      state: 'failed' as const,
+      failedAt: '2026-09-02T08:00:00Z',
+      code: 'bad_request',
+      status: 400,
+      message: 'Authorization: Basic failed-receipt-secret',
+    }));
+    adapter.getScheduledTask.mockRejectedValue(new Error('deleted'));
+    adapter.getRuntimeStatus.mockRejectedValue(new Error('expired'));
+    try {
+      const first = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'failed-before-lookup');
+      const replay = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'failed-before-lookup');
+
+      expect(first.status).toBe(400);
+      expect(replay.body).toEqual(first.body);
+      expect(first.text).not.toContain('failed-receipt-secret');
+      expect(adapter.getScheduledTaskDispatchReceipt).toHaveBeenCalledOnce();
+      expect(adapter.getScheduledTask).not.toHaveBeenCalled();
+      expect(adapter.getRuntimeStatus).not.toHaveBeenCalled();
+      expect(adapter.runScheduledTask).not.toHaveBeenCalled();
+    } finally { database.close(); }
+  });
+
+  it('stores deterministic worker refusal and replays it instead of pending forever', async () => {
+    const database = createDatabase(':memory:');
+    const runRepository = createRunRepository(database);
+    const { adapter, app } = routeFixture({ runRepository });
+    adapter.runScheduledTask.mockRejectedValue(Object.assign(new Error('terminal'), { code: 'bad_request' }));
+    try {
+      const first = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'permanent-worker-refusal');
+      const replay = await request(app).post('/api/scheduled-tasks/cron-policy-1/run')
+        .set('Idempotency-Key', 'permanent-worker-refusal');
+
+      expect(first.status).toBe(400);
+      expect(replay.status).toBe(400);
+      expect(replay.body).toEqual(first.body);
+      expect(adapter.runScheduledTask).toHaveBeenCalledOnce();
+      expect(runRepository.listPendingCommands('cron.run')).toHaveLength(0);
+    } finally { database.close(); }
+  });
+
+  it('leases a pending command so concurrent recovery never double-dispatches', async () => {
+    const database = createDatabase(':memory:');
+    const runRepository = createRunRepository(database);
+    const { adapter, registry } = routeFixture({ runRepository });
+    runRepository.claimCommand({
+      idempotencyKey: 'concurrent-recovery', actorId: 'etienne', missionId: 'cron:cron-policy-1',
+      commandType: 'cron.run', payloadHash: 'same',
+    });
+    let release!: () => void;
+    adapter.runScheduledTask.mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => resolve({
+        scheduledTask: scheduledTaskRecord(fixture().valid),
+        dispatchReceipt: { token: 'token', state: 'accepted' as const },
+      });
+    }));
+    try {
+      const first = recoverPendingCronDispatches(adapter as never, runRepository, registry);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const second = recoverPendingCronDispatches(adapter as never, runRepository, registry);
+      release();
+      await Promise.all([first, second]);
+      expect(adapter.runScheduledTask).toHaveBeenCalledOnce();
+    } finally { database.close(); }
+  });
+
+  it('passively retries transient startup failure with bounded non-overlapping recovery', async () => {
+    vi.useFakeTimers();
+    const database = createDatabase(':memory:');
+    const runRepository = createRunRepository(database);
+    const { adapter, registry } = routeFixture({ runRepository });
+    runRepository.claimCommand({
+      idempotencyKey: 'loop-recovery', actorId: 'etienne', missionId: 'cron:cron-policy-1',
+      commandType: 'cron.run', payloadHash: 'same',
+    });
+    adapter.getScheduledTaskDispatchReceipt.mockRejectedValueOnce(new Error('worker unavailable'));
+    try {
+      const loop = startCronDispatchRecoveryLoop(adapter as never, runRepository, registry, { intervalMs: 100 });
+      await loop.ready;
+      expect(runRepository.listPendingCommands('cron.run')).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(adapter.runScheduledTask).toHaveBeenCalledOnce();
+      expect(runRepository.listPendingCommands('cron.run')).toHaveLength(0);
+      loop.stop();
+    } finally { vi.useRealTimers(); database.close(); }
+  });
+
   it('returns 409 when a manual idempotency key is reused with a different payload', async () => {
     const database = createDatabase(':memory:');
     const runRepository = createRunRepository(database, { now: () => 100 });
@@ -537,6 +659,30 @@ describe('scheduled task HTTP policy boundary', () => {
     expect(serialized).not.toContain('hidden-value');
     expect(serialized).not.toContain('delivery-secret');
     expect(response.body.scheduledTasks[0].lastError).toContain('[REDACTED]');
+  });
+
+  it('redacts Basic authorization and a credential-bearing scheduled task name before HTTP projection', async () => {
+    const paths = fixture();
+    const task = {
+      ...scheduledTaskRecord(paths.valid),
+      name: 'Authorization: Basic dXNlcjpwYXNz',
+      lastError: '{"authorization":"Digest username=secret-fixture"}',
+      deliver: 'credential=delivery-provenance-secret',
+      origin: { chat_name: 'Authorization: Basic origin-provenance-secret' },
+      contextFrom: ['api_key=context-provenance-secret'],
+      skills: ['secret=skill-provenance-secret'],
+    };
+    const { app } = routeFixture({ task });
+
+    const response = await request(app).get('/api/scheduled-tasks');
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(response.body)).not.toContain('dXNlcjpwYXNz');
+    expect(JSON.stringify(response.body)).not.toContain('secret-fixture');
+    expect(JSON.stringify(response.body)).not.toContain('delivery-provenance-secret');
+    expect(JSON.stringify(response.body)).not.toContain('origin-provenance-secret');
+    expect(JSON.stringify(response.body)).not.toContain('context-provenance-secret');
+    expect(JSON.stringify(response.body)).not.toContain('skill-provenance-secret');
+    expect(response.body.scheduledTasks[0].name).toContain('[REDACTED]');
   });
 
   it('returns a typed generic mutation error without leaking a Hermes credential message', async () => {

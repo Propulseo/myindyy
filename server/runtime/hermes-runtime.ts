@@ -6,7 +6,12 @@ import type {
   ScheduledTask,
   ScheduledTaskInput,
 } from '../../shared/types.js';
-import type { AgentRunOptions, AgentRunSettings, StreamEvent } from '../adapters/types.js';
+import type {
+  AgentRunOptions,
+  AgentRunSettings,
+  ScheduledTaskDispatchReceipt,
+  StreamEvent,
+} from '../adapters/types.js';
 import { HermesWorkerAdapter } from '../adapters/hermes-worker.js';
 import type { RuntimeAuthState } from '../adapters/worker-protocol.js';
 import { assertAllowedRuntime, RuntimePolicyError } from './policy.js';
@@ -176,8 +181,14 @@ export class HermesOAuthRuntime extends HermesWorkerAdapter {
 
   async runScheduledTask(scheduledTaskId: string, dispatchToken?: string): Promise<{
     scheduledTask: ScheduledTask | null;
-    dispatchReceipt: { token: string; state: 'accepted' | 'missing' } | null;
+    dispatchReceipt: ScheduledTaskDispatchReceipt | null;
   }> {
+    if (dispatchToken) {
+      const receipt = await super.getScheduledTaskDispatchReceipt(scheduledTaskId, dispatchToken);
+      if (receipt && receipt.state !== 'prepared') {
+        return { scheduledTask: null, dispatchReceipt: receipt };
+      }
+    }
     const scheduledTask = await super.getScheduledTask(scheduledTaskId);
     if (!scheduledTask) return { scheduledTask: null, dispatchReceipt: null };
     assertAllowedRuntime({ provider: scheduledTask.provider, model: scheduledTask.model, reasoningEffort: scheduledTask.reasoningEffort });

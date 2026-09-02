@@ -61,5 +61,9 @@ CREATE TABLE IF NOT EXISTS operator_commands (
   status           TEXT NOT NULL,
   result_json      TEXT,
   created_at       INTEGER NOT NULL,
-  completed_at     INTEGER
+  completed_at     INTEGER,
+  lease_owner      TEXT,
+  lease_expires_at INTEGER,
+  attempt_count    INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at  INTEGER NOT NULL DEFAULT 0
 );

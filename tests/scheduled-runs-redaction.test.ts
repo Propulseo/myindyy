@@ -18,7 +18,7 @@ describe('scheduled run HTTP projection redaction', () => {
     mkdirSync(dir, { recursive: true });
     const outputRef = join(dir, 'run-1.output.json');
     writeFileSync(outputRef, JSON.stringify({
-      body: 'Bearer output-secret password=hunter2 credential=fixture-secret {"access_token":"json-token","credential":"json-credential"}',
+      body: 'Bearer output-secret Authorization: Basic dXNlcjpwYXNz password=hunter2 credential=fixture-secret {"access_token":"json-token","credential":"json-credential","authorization":"Digest json-auth-secret"}',
     }));
     writeFileSync(join(dir, 'run-1.json'), JSON.stringify({
       schemaVersion: 1, hermesRunId: 'run-1', scheduledTaskId: 'cron-1', scheduledTaskName: 'Cron',
@@ -37,6 +37,8 @@ describe('scheduled run HTTP projection redaction', () => {
     expect(serialized).not.toContain('fixture-secret');
     expect(serialized).not.toContain('json-token');
     expect(serialized).not.toContain('json-credential');
+    expect(serialized).not.toContain('dXNlcjpwYXNz');
+    expect(serialized).not.toContain('json-auth-secret');
     expect(serialized).toContain('[REDACTED]');
   });
 });

@@ -35,6 +35,18 @@ export interface StreamEvent {
   interrupted?: boolean;
 }
 
+export interface ScheduledTaskDispatchReceipt {
+  readonly token: string;
+  readonly scheduledTaskId: string;
+  readonly state: 'prepared' | 'accepted' | 'failed' | 'missing';
+  readonly acceptedAt?: string;
+  readonly failedAt?: string;
+  readonly occurrenceId?: string;
+  readonly code?: string;
+  readonly message?: string;
+  readonly status?: number;
+}
+
 export interface AgentAdapter {
   chat(
     sessionId: string,
@@ -98,8 +110,13 @@ export interface AgentAdapter {
 
   runScheduledTask(scheduledTaskId: string, dispatchToken?: string): Promise<{
     scheduledTask: ScheduledTask | null;
-    dispatchReceipt: { token: string; state: 'accepted' | 'missing' } | null;
+    dispatchReceipt: ScheduledTaskDispatchReceipt | null;
   }>;
+
+  getScheduledTaskDispatchReceipt(
+    scheduledTaskId: string,
+    dispatchToken: string,
+  ): Promise<ScheduledTaskDispatchReceipt | null>;
 
   removeScheduledTask(scheduledTaskId: string): Promise<boolean>;
 

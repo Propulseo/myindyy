@@ -64,6 +64,10 @@ export interface OperatorCommand {
   readonly result: unknown | null;
   readonly createdAt: number;
   readonly completedAt: number | null;
+  readonly leaseOwner: string | null;
+  readonly leaseExpiresAt: number | null;
+  readonly attemptCount: number;
+  readonly nextAttemptAt: number;
 }
 
 export interface CommandClaimResult {
@@ -75,6 +79,21 @@ export interface CompleteCommandInput {
   readonly idempotencyKey: string;
   readonly result: unknown;
   readonly completedAt?: number;
+}
+
+export interface LeasePendingCommandsInput {
+  readonly owner: string;
+  readonly commandType?: string;
+  readonly idempotencyKey?: string;
+  readonly now?: number;
+  readonly leaseMs?: number;
+  readonly limit?: number;
+}
+
+export interface ReleaseCommandLeaseInput {
+  readonly idempotencyKey: string;
+  readonly owner: string;
+  readonly nextAttemptAt: number;
 }
 
 export interface CronOccurrenceInput {
@@ -110,8 +129,12 @@ export interface RunRepository {
   hasInactiveBlockEvent(runId: string): boolean;
   findActiveRuns(missionId?: string): MissionRun[];
   claimCommand(input: ClaimCommandInput): CommandClaimResult;
+  getCommand(idempotencyKey: string): OperatorCommand | undefined;
   completeCommand(input: CompleteCommandInput): OperatorCommand;
   listPendingCommands(commandType?: string): OperatorCommand[];
+  leasePendingCommands(input: LeasePendingCommandsInput): OperatorCommand[];
+  releaseCommandLease(input: ReleaseCommandLeaseInput): boolean;
+  nudgeCommandRetry(idempotencyKey: string, at?: number): boolean;
   upsertCronOccurrence(input: CronOccurrenceInput): CronOccurrenceUpsertResult;
 }
 

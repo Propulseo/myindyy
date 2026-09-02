@@ -5,6 +5,7 @@ import {
   listScheduledTaskOccurrenceManifests,
   type ScheduledTaskOccurrenceManifest,
 } from './manifests.js';
+import { redactSensitiveText } from '../security/redaction.js';
 
 export interface ScheduledTaskOccurrenceSource {
   listScheduledTasks(includeDisabled?: boolean, limit?: number): Promise<ScheduledTask[]>;
@@ -54,10 +55,10 @@ function ensureCronMission(database: Database, manifest: ScheduledTaskOccurrence
       updated_at = excluded.updated_at
   `).run(
     cronMissionId(manifest.scheduledTaskId),
-    manifest.scheduledTaskName || manifest.scheduledTaskId,
+    redactSensitiveText(manifest.scheduledTaskName || manifest.scheduledTaskId),
     'Projection de l’identité du cron Hermes; Hermes reste la source du planning.',
-    manifest.model,
-    manifest.provider,
+    redactSensitiveText(manifest.model),
+    redactSensitiveText(manifest.provider),
     manifest.reasoningEffort,
     at,
     at,
@@ -87,22 +88,22 @@ export async function reconcileScheduledTaskOccurrences(
         missionId: cronMissionId(manifest.scheduledTaskId),
         occurrenceKey,
         sessionId: occurrenceKey,
-        provider: manifest.provider,
-        model: manifest.model,
+        provider: redactSensitiveText(manifest.provider),
+        model: redactSensitiveText(manifest.model),
         reasoningEffort: manifest.reasoningEffort,
-        workdir: manifest.workdir,
+        workdir: manifest.workdir ? redactSensitiveText(manifest.workdir) : null,
         startedAt,
         finishedAt,
         status,
         finishReason,
-        error: status === 'failed' ? (manifest.error || 'Hermes cron failed') : null,
+        error: status === 'failed' ? redactSensitiveText(manifest.error || 'Hermes cron failed') : null,
         provenance: {
           source: 'indy-hermes-occurrence-manifest',
-          scheduledTaskId: manifest.scheduledTaskId,
-          hermesRunId: manifest.hermesRunId,
-          outputRef: manifest.outputRef,
-          manifestPath: manifest.manifestPath,
-          dispatchToken: manifest.dispatchToken,
+          scheduledTaskId: redactSensitiveText(manifest.scheduledTaskId),
+          hermesRunId: redactSensitiveText(manifest.hermesRunId),
+          outputRef: manifest.outputRef ? redactSensitiveText(manifest.outputRef) : null,
+          manifestPath: manifest.manifestPath ? redactSensitiveText(manifest.manifestPath) : null,
+          dispatchToken: manifest.dispatchToken ? redactSensitiveText(manifest.dispatchToken) : null,
         },
       });
       if (result.created) imported += 1;

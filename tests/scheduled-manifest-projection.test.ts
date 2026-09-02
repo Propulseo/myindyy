@@ -106,7 +106,14 @@ describe('terminal Hermes manifest projection', () => {
 
   it('redacts manifest errors/provenance and leaves durable tombstones after source files disappear', async () => {
     const database = createDatabase(':memory:');
-    let manifests = [manifest({ status: 'failed', error: 'Bearer oauth-secret token=hidden' })];
+    let manifests = [manifest({
+      scheduledTaskName: 'Authorization: Basic dXNlcjpwYXNz',
+      provider: 'Authorization: Digest provider-secret',
+      model: 'credential=model-secret',
+      workdir: 'api_key=workdir-secret',
+      status: 'failed',
+      error: 'Bearer oauth-secret token=hidden',
+    })];
     const source = { listScheduledTasks: vi.fn() };
     const listManifests = vi.fn().mockImplementation(async () => manifests);
     try {
@@ -114,11 +121,16 @@ describe('terminal Hermes manifest projection', () => {
       manifests = [];
       await reconcileScheduledTaskOccurrences(database, source, { listManifests });
       const persisted = JSON.stringify({
-        runs: database.prepare('SELECT provenance_json FROM mission_runs').all(),
+        tasks: database.prepare('SELECT title, agent_provider, agent_model FROM tasks').all(),
+        runs: database.prepare('SELECT provider, model, workdir, finish_reason, provenance_json FROM mission_runs').all(),
         events: database.prepare('SELECT payload_json FROM run_events').all(),
       });
       expect(persisted).not.toContain('oauth-secret');
       expect(persisted).not.toContain('hidden');
+      expect(persisted).not.toContain('provider-secret');
+      expect(persisted).not.toContain('model-secret');
+      expect(persisted).not.toContain('workdir-secret');
+      expect(persisted).not.toContain('dXNlcjpwYXNz');
       expect(database.prepare('SELECT COUNT(*) AS count FROM mission_runs').get()).toEqual({ count: 1 });
     } finally { database.close(); }
   });

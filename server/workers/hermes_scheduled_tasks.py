@@ -7,6 +7,7 @@ shape normalization, and a background ticker thread.
 from __future__ import annotations
 
 import json
+import inspect
 import os
 import re
 import sys
@@ -32,12 +33,19 @@ _HOOKED_SCHEDULER: Any = None
 _ORIGINAL_RUN_JOB: Any = None
 _ORIGINAL_FALLBACK_CHAIN: Any = None
 _NO_FALLBACK_CONTEXT: ContextVar[bool] = ContextVar("indy_cron_no_fallback", default=False)
+_OCCURRENCE_DISPATCH_TOKEN: ContextVar[str | None] = ContextVar("indy_cron_dispatch_token", default=None)
 
 _OAUTH_PROVIDER = "openai-codex"
 _OAUTH_PROFILE = "etienne-openai"
 _KNOWN_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+_QUOTED_AUTHORIZATION = re.compile(
+    r'''(?i)((?:"|')(?:proxy[_-]?)?authorization(?:"|')\s*:\s*)(?:"[^"]*"|'[^']*')'''
+)
+_PLAIN_AUTHORIZATION = re.compile(
+    r'''(?i)((?:proxy[_-]?)?authorization\s*[:=]\s*)(?:[A-Za-z][A-Za-z0-9+._-]*\s+)?[^\s,;}\]]+'''
+)
 _SENSITIVE_TEXT = re.compile(
-    r'''(?i)(bearer\s+)[^\s,;]+|((?:"|')?(?:(?:access[_-]?)?token|api[_-]?key|secret|credential|authorization|password)(?:"|')?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)'''
+    r'''(?i)(bearer\s+)[^\s,;]+|((?:"|')?(?:(?:access[_-]?)?token|api[_-]?key|secret|credential|password)(?:"|')?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)'''
 )
 
 
@@ -46,7 +54,8 @@ def _utc_now() -> str:
 
 
 def _redact_text(value: Any) -> str:
-    raw = str(value or "")
+    raw = _QUOTED_AUTHORIZATION.sub(r'\1"[REDACTED]"', str(value or ""))
+    raw = _PLAIN_AUTHORIZATION.sub(r"\1[REDACTED]", raw)
 
     def replace(match: re.Match[str]) -> str:
         if match.group(1):
@@ -192,6 +201,27 @@ def _read_dispatch_receipt(dispatch_token: str) -> dict[str, Any] | None:
         return None
 
 
+def get_scheduled_task_dispatch_receipt(job_id: Any, dispatch_token: Any) -> dict[str, Any]:
+    scheduled_task_id = _validate_path_segment(job_id, "Scheduled task ID")
+    token = _validate_path_segment(dispatch_token, "Dispatch token")
+    receipt = _read_dispatch_receipt(token)
+    if receipt is not None and receipt.get("scheduledTaskId") != scheduled_task_id:
+        raise WorkerError("Dispatch token belongs to another scheduled task.", code="bad_request")
+    return {"dispatchReceipt": receipt}
+
+
+def _failed_dispatch_receipt(token: str, scheduled_task_id: str, code: str, message: str, status: int) -> dict[str, Any]:
+    return {
+        "token": token,
+        "scheduledTaskId": scheduled_task_id,
+        "state": "failed",
+        "failedAt": _utc_now(),
+        "code": code,
+        "message": _redact_text(message),
+        "status": status,
+    }
+
+
 def _before_dispatch_job_update() -> None:
     """Crash-test seam immediately before Hermes's atomic job mutation."""
 
@@ -224,12 +254,12 @@ def _prepare_occurrence(
         "schemaVersion": 1,
         "hermesRunId": execution_id,
         "scheduledTaskId": job_id,
-        "scheduledTaskName": string_or_none(job.get("name")) or job_id,
+        "scheduledTaskName": _redact_text(string_or_none(job.get("name")) or job_id),
         "provider": provider,
         "model": model,
         "reasoningEffort": effort,
         "workdir": workdir,
-        "dispatchToken": string_or_none(job.get("indy_dispatch_token")),
+        "dispatchToken": _OCCURRENCE_DISPATCH_TOKEN.get(),
         "outputRef": str(output_ref),
         "refusal": refusal,
     })
@@ -287,41 +317,86 @@ def _finalize_pending_manifests_once() -> int:
     return finalized
 
 
+def _associate_dispatch_token_with_occurrence(job: dict[str, Any], execution_id: str) -> str | None:
+    token = string_or_none(job.get("indy_dispatch_token"))
+    job_id = string_or_none(job.get("id"))
+    if not token or not job_id:
+        return None
+    import cron.jobs as jobs
+
+    with jobs._jobs_lock():
+        receipt = _read_dispatch_receipt(token)
+        if not isinstance(receipt, dict) or receipt.get("scheduledTaskId") != job_id or receipt.get("state") != "accepted":
+            return None
+        associated = string_or_none(receipt.get("occurrenceId"))
+        current = jobs.get_job(job_id)
+        if associated:
+            if isinstance(current, dict) and current.get("indy_dispatch_token") == token:
+                jobs.update_job(job_id, {"indy_dispatch_token": None})
+            return token if associated == execution_id else None
+        if not isinstance(current, dict) or current.get("indy_dispatch_token") != token:
+            return None
+        # Persist the exact occurrence association before clearing the job
+        # field. If the process dies between these writes, the next occurrence
+        # sees the association and cannot inherit the token.
+        _atomic_replace_json(_dispatch_receipt_path(token), {
+            **receipt,
+            "occurrenceId": execution_id,
+            "consumedAt": _utc_now(),
+        })
+        jobs.update_job(job_id, {"indy_dispatch_token": None})
+        return token
+
+
 def _controlled_run_job(job: Any, *args: Any, **kwargs: Any) -> Any:
     original = _ORIGINAL_RUN_JOB
     if original is None:
         raise RuntimeError("Hermes scheduled task hook is not installed")
     candidate = job if isinstance(job, dict) else {}
-    execution_id = (
-        string_or_none(kwargs.get("execution_id"))
-        or string_or_none(candidate.get("execution_id"))
-        or str(uuid.uuid4())
-    )
-    runtime, refusal = _execution_policy(candidate)
-    if refusal is not None:
-        fallback_runtime = {
-            "provider": string_or_none(candidate.get("provider")),
-            "model": string_or_none(candidate.get("model")),
-            "reasoningEffort": string_or_none(candidate.get("reasoning_effort")),
-            "workdir": string_or_none(candidate.get("workdir")),
-        }
-        message = f"{refusal['code']}: {refusal['message']}"
-        output_ref = _prepare_occurrence(candidate, execution_id, fallback_runtime, refusal)
-        _write_occurrence_output(output_ref, message)
-        return False, message, "", message
-    output_ref = _prepare_occurrence(candidate, execution_id, runtime, None)
+    execution_id = string_or_none(kwargs.get("execution_id")) or string_or_none(candidate.get("execution_id"))
+    if not execution_id:
+        raise RuntimeError("Hermes cron direct execution denied: durable execution_id is unavailable")
+    dispatch_token = _associate_dispatch_token_with_occurrence(candidate, execution_id)
+    dispatch_context = _OCCURRENCE_DISPATCH_TOKEN.set(dispatch_token)
     try:
-        no_fallback = _NO_FALLBACK_CONTEXT.set(True)
+        runtime, refusal = _execution_policy(candidate)
+        if refusal is not None:
+            fallback_runtime = {
+                "provider": string_or_none(candidate.get("provider")),
+                "model": string_or_none(candidate.get("model")),
+                "reasoningEffort": string_or_none(candidate.get("reasoning_effort")),
+                "workdir": string_or_none(candidate.get("workdir")),
+            }
+            message = f"{refusal['code']}: {refusal['message']}"
+            output_ref = _prepare_occurrence(candidate, execution_id, fallback_runtime, refusal)
+            _write_occurrence_output(output_ref, message)
+            return False, message, "", message
+        output_ref = _prepare_occurrence(candidate, execution_id, runtime, None)
         try:
-            result = original(job, *args, **kwargs)
-        finally:
-            _NO_FALLBACK_CONTEXT.reset(no_fallback)
-    except Exception as exc:
-        _write_occurrence_output(output_ref, exc)
-        raise
-    output = result[1] if isinstance(result, tuple) and len(result) > 1 else result
-    _write_occurrence_output(output_ref, output)
-    return result
+            no_fallback = _NO_FALLBACK_CONTEXT.set(True)
+            try:
+                result = original(job, *args, **kwargs)
+            finally:
+                _NO_FALLBACK_CONTEXT.reset(no_fallback)
+        except Exception as exc:
+            _write_occurrence_output(output_ref, exc)
+            raise
+        output = result[1] if isinstance(result, tuple) and len(result) > 1 else result
+        _write_occurrence_output(output_ref, output)
+        return result
+    finally:
+        _OCCURRENCE_DISPATCH_TOKEN.reset(dispatch_context)
+
+
+def _validate_execution_hook_contract(scheduler: Any, _jobs: Any = None) -> bool:
+    runner = getattr(scheduler, "run_job", None)
+    if not callable(runner):
+        return False
+    try:
+        parameters = inspect.signature(runner).parameters
+    except (TypeError, ValueError):
+        return False
+    return "job" in parameters
 
 
 def install_scheduled_task_execution_hook() -> None:
@@ -332,6 +407,8 @@ def install_scheduled_task_execution_hook() -> None:
     with _SCHEDULED_TASKS_HOOK_LOCK:
         if _HOOKED_SCHEDULER is scheduler and scheduler.run_job is _controlled_run_job:
             return
+        if not _validate_execution_hook_contract(scheduler):
+            raise RuntimeError("Unsupported Hermes cron scheduler contract; scheduled execution is disabled")
         _ORIGINAL_RUN_JOB = scheduler.run_job
         scheduler.run_job = _controlled_run_job
         original_fallback = getattr(scheduler, "get_fallback_chain", None)
@@ -553,10 +630,16 @@ def trigger_scheduled_task(job_id: Any, dispatch_token: Any = None) -> dict[str,
     _validate_path_segment(token, "Dispatch token")
     receipt_path = _dispatch_receipt_path(token)
     with jobs._jobs_lock():
+        receipt = _read_dispatch_receipt(token)
+        if receipt is not None and receipt.get("scheduledTaskId") != scheduled_task_id:
+            raise WorkerError("Dispatch token belongs to another scheduled task.", code="bad_request")
+        if isinstance(receipt, dict) and receipt.get("state") in {"accepted", "failed"}:
+            return {"scheduledTask": None, "dispatchReceipt": receipt}
         current = jobs.get_job(scheduled_task_id)
         if current is None:
-            return {"scheduledTask": None, "dispatchReceipt": {"token": token, "state": "missing"}}
-        receipt = _read_dispatch_receipt(token)
+            failed = _failed_dispatch_receipt(token, scheduled_task_id, "not_found", "Scheduled task not found.", 404)
+            _atomic_replace_json(receipt_path, failed)
+            return {"scheduledTask": None, "dispatchReceipt": failed}
         if current.get("indy_dispatch_token") == token:
             accepted = {
                 "token": token,
@@ -576,20 +659,27 @@ def trigger_scheduled_task(job_id: Any, dispatch_token: Any = None) -> dict[str,
             _atomic_replace_json(receipt_path, prepared)
             _before_dispatch_job_update()
             if jobs.is_terminal_job(current):
-                raise WorkerError("Scheduled task is terminal.", code="bad_request")
+                failed = _failed_dispatch_receipt(token, scheduled_task_id, "bad_request", "Scheduled task is terminal.", 400)
+                _atomic_replace_json(receipt_path, failed)
+                return {"scheduledTask": _normalize_scheduled_task(current), "dispatchReceipt": failed}
             manual_run_at = _utc_now()
             # Persist manual fire and idempotency token in the same Hermes
             # jobs.json mutation while holding Hermes's cross-process lock.
-            updated = jobs.update_job(scheduled_task_id, {
-                "enabled": True,
-                "state": "scheduled",
-                "paused_at": None,
-                "paused_reason": None,
-                "next_run_at": manual_run_at,
-                "manual_run_at": manual_run_at,
-                "manual_run_prompt": None,
-                "indy_dispatch_token": token,
-            })
+            try:
+                updated = jobs.update_job(scheduled_task_id, {
+                    "enabled": True,
+                    "state": "scheduled",
+                    "paused_at": None,
+                    "paused_reason": None,
+                    "next_run_at": manual_run_at,
+                    "manual_run_at": manual_run_at,
+                    "manual_run_prompt": None,
+                    "indy_dispatch_token": token,
+                })
+            except ValueError as exc:
+                failed = _failed_dispatch_receipt(token, scheduled_task_id, "bad_request", str(exc), 400)
+                _atomic_replace_json(receipt_path, failed)
+                return {"scheduledTask": None, "dispatchReceipt": failed}
             _after_dispatch_job_update()
             accepted = {**prepared, "state": "accepted", "acceptedAt": _utc_now()}
             _atomic_replace_json(receipt_path, accepted)
@@ -649,6 +739,9 @@ def start_scheduled_task_ticker() -> None:
     with _SCHEDULED_TASKS_TICKER_LOCK:
         if _SCHEDULED_TASKS_TICKER_STARTED:
             return
+        # Synchronous fail-closed installation: no ticker thread exists and
+        # the worker cannot enter its request loop if Hermes is incompatible.
+        install_scheduled_task_execution_hook()
         thread = threading.Thread(target=_scheduled_tasks_ticker_loop, name="hermes-scheduled-tasks-ticker", daemon=True)
         thread.start()
         _SCHEDULED_TASKS_TICKER_STARTED = True

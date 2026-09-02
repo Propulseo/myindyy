@@ -71,3 +71,31 @@
 - `pnpm test`: 25 fichiers, 207 tests, 0 échec.
 - `pnpm build`: serveur, client et assets, exit 0; 2 602 modules transformés. Le warning Vite historique sur le chunk principal reste inchangé.
 - `git diff --check`: exit 0.
+
+## Fix review round 2/5
+
+- Le hook d’admission est installé synchroniquement avant le thread ticker et avant la boucle de requêtes du worker. Une signature Hermes incompatible empêche le worker de démarrer; aucun chemin ne retombe sur le runner original. Le hook consomme l’ID réel de `cron.executions` transporté par le job réclamé. L’appel direct qui n’expose pas cet ID est explicitement refusé, sans UUID fabriqué ni manifeste mensonger.
+- Le replay du receipt durable précède maintenant tout lookup du job, du profil ou du catalogue dans Node et Python. Un receipt `accepted` ou `failed` exact reste donc rejouable après suppression/renommage du job ou expiration OAuth; un token attaché à une autre tâche échoue fermé.
+- L’outbox SQLite possède des leases transactionnels, compte les tentatives et conserve la prochaine échéance. Les erreurs worker déterministes deviennent des réponses terminales rejouables. Les indisponibilités transitoires restent `202 pending`; une boucle passive bornée, sans chevauchement et avec backoff reprend les commandes déjà réclamées. Un retry utilisateur peut avancer une commande libre mais ne vole jamais le lease d’un propriétaire actif.
+- Sous `cron.jobs._jobs_lock`, le token manuel est associé une seule fois à l’ID d’occurrence réel puis retiré du job. Le receipt est écrit avant le retrait : un crash intermédiaire ne permet pas à une occurrence automatique ultérieure d’hériter du token. Un `ContextVar` transporte cette association exacte jusqu’au manifeste.
+- La redaction centrale TypeScript/Python couvre désormais l’intégralité des credentials `Authorization` (Basic, Digest et autres schémas), les champs structurés et les valeurs de provenance. Le nom de tâche et le snapshot provider/modèle/workdir sont nettoyés avant manifeste, SQLite et projection HTTP/UI.
+
+### TDD du fix round 2
+
+- RED/GREEN Python : installation précoce, échec d’installation, garde contre la signature Hermes, ID durable direct, replay receipt avant job, consommation one-shot du token, concurrence tick et redaction Basic/Digest.
+- RED/GREEN API/outbox : receipt avant policy, failure durable, lease concurrent, reprise après indisponibilité transitoire et boucle sans chevauchement.
+- RED/GREEN projection/sécurité : credentials dans nom, config, erreurs, JSON et output complet absents de SQLite et des réponses HTTP.
+
+### Vérifications du fix round 2
+
+- Ciblé TypeScript : 3 fichiers, 66 tests, 0 échec.
+- Python worker ciblé : 17 tests, 0 échec; module complet : 32 tests, 0 échec.
+- `pnpm test` (binaire Vitest installé) : 25 fichiers, 213 tests, 0 échec.
+- Typecheck serveur et client : exit 0.
+- `pnpm build` : serveur, client et assets, exit 0; 2 602 modules transformés. Le warning Vite historique sur le chunk principal reste inchangé.
+- `git diff --check` : exit 0.
+
+### Préoccupations
+
+- Le fallback documenté est volontairement fail-closed : les appels directs internes qui ne rendent pas disponible l’ID durable Hermes sont refusés. Les exécutions supportées passent par le ticker/API Hermes et conservent l’ID ledger réel.
+- La boucle de reprise d’outbox n’est pas un scheduler de cron : elle ne calcule aucune échéance de tâche et ne déclenche que des commandes manuelles déjà réclamées avec leur token durable.

@@ -34,6 +34,7 @@ from hermes_sessions import (
 )
 from hermes_scheduled_tasks import (
     create_scheduled_task,
+    get_scheduled_task_dispatch_receipt,
     get_scheduled_task,
     list_scheduled_tasks,
     pause_scheduled_task,
@@ -1722,6 +1723,8 @@ def _handle_request(request: dict[str, Any]) -> None:
             _result(request_id, resume_scheduled_task(request.get("scheduledTaskId")))
         elif request_type == "scheduledTasks.run":
             _result(request_id, trigger_scheduled_task(request.get("scheduledTaskId"), request.get("dispatchToken")))
+        elif request_type == "scheduledTasks.dispatchReceipt.get":
+            _result(request_id, get_scheduled_task_dispatch_receipt(request.get("scheduledTaskId"), request.get("dispatchToken")))
         elif request_type == "scheduledTasks.remove":
             _result(request_id, remove_scheduled_task(request.get("scheduledTaskId")))
         elif request_type == "scheduledTasks.tick":

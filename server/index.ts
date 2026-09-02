@@ -13,7 +13,10 @@ import {
   startScheduledTaskOccurrenceReconciler,
   type ScheduledTaskOccurrenceReconciler,
 } from './scheduled-tasks/projection.js';
-import { recoverPendingCronDispatches } from './routes/scheduled-tasks.js';
+import {
+  startCronDispatchRecoveryLoop,
+  type CronDispatchRecoveryLoop,
+} from './routes/scheduled-tasks.js';
 
 const PORT = parseInt(process.env.PORT || '6969', 10);
 const PORT_FALLBACK_ATTEMPTS = 20;
@@ -22,6 +25,7 @@ const httpServer = createServer(app);
 let closeFrontend: FrontendCleanup = () => {};
 let runWatchdog: ReturnType<typeof setInterval> | null = null;
 let scheduledOccurrenceReconciler: ScheduledTaskOccurrenceReconciler | null = null;
+let cronDispatchRecoveryLoop: CronDispatchRecoveryLoop | null = null;
 let shuttingDown = false;
 
 type ShutdownReason = NodeJS.Signals | 'startup-error';
@@ -80,12 +84,15 @@ async function main() {
   }
 
   const runRepository = createRunRepository(db);
-  await recoverPendingCronDispatches(adapter, runRepository).catch((error) => {
-    console.error(
-      'Hermes cron dispatch outbox recovery failed:',
-      error instanceof Error ? error.message : error,
-    );
+  cronDispatchRecoveryLoop = startCronDispatchRecoveryLoop(adapter, runRepository, undefined, {
+    onError: (error) => {
+      console.error(
+        'Hermes cron dispatch outbox recovery failed:',
+        error instanceof Error ? error.message : error,
+      );
+    },
   });
+  await cronDispatchRecoveryLoop.ready;
   await reconcileActiveRuns(runRepository, adapter);
   runWatchdog = startRunWatchdog(runRepository, adapter);
   scheduledOccurrenceReconciler = startScheduledTaskOccurrenceReconciler(db, adapter, {
@@ -145,6 +152,8 @@ async function shutdown(reason: ShutdownReason, exitCode = 0): Promise<void> {
   }
   scheduledOccurrenceReconciler?.stop();
   scheduledOccurrenceReconciler = null;
+  cronDispatchRecoveryLoop?.stop();
+  cronDispatchRecoveryLoop = null;
 
   for (const result of results) {
     if (result.status === 'rejected') console.error(result.reason);
