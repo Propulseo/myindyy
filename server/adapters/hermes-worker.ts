@@ -117,12 +117,14 @@ export function createWorkerArguments(
   environment: NodeJS.ProcessEnv = PROCESS_ENVIRONMENT,
 ): string[] {
   if (environment.INDY_HERMES_RUNTIME_GUARD !== '1') return [script];
+  const runtimeRoot = environment.HERMES_AGENT_DIR?.trim() || dirname(script);
   const bootstrap = [
     'import runpy,sys',
     'sys.path.insert(0,sys.argv[1])',
-    'runpy.run_path(sys.argv[2],run_name="__main__")',
+    'sys.path.insert(0,sys.argv[2])',
+    'runpy.run_path(sys.argv[3],run_name="__main__")',
   ].join(';');
-  return ['-I', '-c', bootstrap, dirname(script), script];
+  return ['-I', '-c', bootstrap, runtimeRoot, dirname(script), script];
 }
 
 type WorkerRequestInput = WorkerRequest extends infer Request
