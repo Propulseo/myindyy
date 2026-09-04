@@ -115,4 +115,29 @@ describe('Codex OAuth runtime policy', () => {
 
     expect(output.trim()).toBe('reviewed-runtime');
   });
+
+  it('does not expose bootstrap paths as worker command-line arguments', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'indy-python-worker-argv-'));
+    const runtimeRoot = join(directory, 'runtime');
+    const worker = join(directory, 'worker.py');
+    mkdirSync(runtimeRoot);
+    writeFileSync(worker, [
+      'import argparse',
+      'parser = argparse.ArgumentParser()',
+      'parser.parse_args()',
+      'print("clean-worker-argv")',
+      '',
+    ].join('\n'));
+    const python = process.platform === 'win32' ? 'python' : 'python3';
+
+    const output = execFileSync(python, createWorkerArguments(worker, {
+      HERMES_AGENT_DIR: runtimeRoot,
+      INDY_HERMES_RUNTIME_GUARD: '1',
+    }), {
+      encoding: 'utf8',
+      env: createWorkerEnvironment({ PATH: process.env.PATH }),
+    });
+
+    expect(output.trim()).toBe('clean-worker-argv');
+  });
 });

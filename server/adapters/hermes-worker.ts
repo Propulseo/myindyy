@@ -122,7 +122,9 @@ export function createWorkerArguments(
     'import runpy,sys',
     'sys.path.insert(0,sys.argv[1])',
     'sys.path.insert(0,sys.argv[2])',
-    'runpy.run_path(sys.argv[3],run_name="__main__")',
+    'script=sys.argv[3]',
+    'sys.argv=[script]',
+    'runpy.run_path(script,run_name="__main__")',
   ].join(';');
   return ['-I', '-c', bootstrap, runtimeRoot, dirname(script), script];
 }
