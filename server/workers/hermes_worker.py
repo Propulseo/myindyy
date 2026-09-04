@@ -849,7 +849,7 @@ def _runtime_profile_id(runtime: dict[str, Any]) -> str | None:
     if callable(current_fn):
         try:
             current = current_fn()
-            return string_or_none(getattr(current, "id", None))
+            return string_or_none(getattr(current, "label", None))
         except Exception:
             return None
     return None

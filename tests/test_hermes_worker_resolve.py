@@ -146,6 +146,15 @@ def _sensitive_keys(value, path=""):
 
 
 class RuntimeStatusTest(unittest.TestCase):
+    def test_projects_the_operator_label_instead_of_the_opaque_credential_id(self):
+        credential = types.SimpleNamespace(id="e033d5", label="etienne-openai")
+        pool = types.SimpleNamespace(current=lambda: credential)
+
+        self.assertEqual(
+            hermes_worker._runtime_profile_id({"credential_pool": pool}),
+            "etienne-openai",
+        )
+
     def test_projects_parser_does_not_invent_efforts_when_catalog_omits_metadata(self):
         groups = {
             "Codex OAuth": [{
