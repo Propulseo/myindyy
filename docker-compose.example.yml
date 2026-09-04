@@ -70,7 +70,7 @@ services:
         read_only: false
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=1700
-      - /run/indy-runtime:rw,nosuid,nodev,size=1g,uid=10001,gid=10001,mode=0700
+      - /run/indy-runtime:rw,exec,nosuid,nodev,size=1g,uid=10001,gid=10001,mode=0700
     healthcheck:
       test: ["CMD", "node", "dist/server/server/healthcheck.js"]
       interval: 30s

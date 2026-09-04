@@ -67,23 +67,28 @@ function supportedHash(): string {
   return extractSupportedSchedulerHash(readFileSync(contractPath, 'utf8'));
 }
 
-function inspectImportedScheduler(
-  python: string,
-  environment: NodeJS.ProcessEnv,
-  runtimeRoot: string,
-): { actualHash: string; sourcePath: string } {
+export function createSchedulerProbeArguments(runtimeRoot: string): string[] {
   const probe = [
-    'import hashlib, inspect, json',
+    'import hashlib, inspect, json, sys',
+    'sys.path.insert(0, sys.argv[1])',
     'import cron.scheduler as scheduler',
     'path = inspect.getsourcefile(scheduler)',
     'assert path',
     'print(json.dumps({"path": path, "hash": hashlib.sha256(open(path, "rb").read()).hexdigest()}))',
   ].join('; ');
+  return ['-I', '-c', probe, runtimeRoot];
+}
+
+function inspectImportedScheduler(
+  python: string,
+  environment: NodeJS.ProcessEnv,
+  runtimeRoot: string,
+): { actualHash: string; sourcePath: string } {
   const probeEnvironment = { ...environment };
   delete probeEnvironment.PYTHONHOME;
   delete probeEnvironment.PYTHONPATH;
   Object.assign(probeEnvironment, { PYTHONNOUSERSITE: '1', PYTHONSAFEPATH: '1' });
-  const output = execFileSync(python, ['-I', '-c', probe], {
+  const output = execFileSync(python, createSchedulerProbeArguments(runtimeRoot), {
     cwd: runtimeRoot,
     encoding: 'utf8',
     env: probeEnvironment,

@@ -79,7 +79,7 @@ jobs:
             if (service.environment.HERMES_SOURCE_DIR !== "/opt/hermes") process.exit(1);
             if (service.environment.HERMES_PRIVATE_RUNTIME_PARENT !== "/run/indy-runtime") process.exit(1);
             if (!service.configs.some((config) => config.target === "/run/indy-config/hermes-runtime-manifest.json" && String(config.uid) === "0" && String(config.gid) === "0" && String(config.mode) === "0444")) process.exit(1);
-            if (!service.tmpfs.includes("/run/indy-runtime:rw,nosuid,nodev,size=1g,uid=10001,gid=10001,mode=0700")) process.exit(1);
+            if (!service.tmpfs.includes("/run/indy-runtime:rw,exec,nosuid,nodev,size=1g,uid=10001,gid=10001,mode=0700")) process.exit(1);
           ' "$RUNNER_TEMP/indy-compose.json"
 
       - name: Build production image

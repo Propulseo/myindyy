@@ -16,6 +16,7 @@ import {
 } from '../server/adapters/hermes-worker.js';
 import {
   assertSchedulerArtifact,
+  createSchedulerProbeArguments,
   extractSupportedSchedulerHash,
   validateMountedHermesRuntime,
 } from '../server/container-entrypoint.js';
@@ -24,6 +25,18 @@ import { createHermesRuntimeManifest } from '../server/hermes-runtime-manifest.j
 const SUPPORTED_HASH = '5b4326fffe1b783fd2016a0c5c0bde21c3c8af613cc665897b9f48565d74e3c5';
 
 describe('container Hermes artifact gate', () => {
+  it('adds the reviewed runtime root explicitly when probing under isolated Python', () => {
+    const runtimeRoot = '/run/indy-runtime/hermes-reviewed/runtime';
+    const arguments_ = createSchedulerProbeArguments(runtimeRoot);
+
+    expect(arguments_[0]).toBe('-I');
+    expect(arguments_.at(-1)).toBe(runtimeRoot);
+    expect(arguments_[2]).toContain('sys.path.insert(0, sys.argv[1])');
+    expect(arguments_[2].indexOf('sys.path.insert')).toBeLessThan(
+      arguments_[2].indexOf('import cron.scheduler'),
+    );
+  });
+
   it('derives the supported hash from the worker contract instead of accepting a version label', () => {
     expect(extractSupportedSchedulerHash(`
       _SUPPORTED_SCHEDULER_SHA256 = "${SUPPORTED_HASH}"
