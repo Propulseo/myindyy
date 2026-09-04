@@ -880,6 +880,16 @@ def _runtime_catalog_models(groups: dict[str, list[dict[str, Any]]]) -> list[dic
                     effort for effort in raw_efforts
                     if isinstance(effort, str) and effort in ALLOWED_REASONING
                 ]
+            else:
+                try:
+                    from agent.reasoning_effort import codex_supported_efforts
+
+                    efforts = [
+                        effort for effort in codex_supported_efforts(model_id)
+                        if effort in ALLOWED_REASONING
+                    ]
+                except Exception:
+                    efforts = []
             projected.append({
                 "id": model_id,
                 "label": string_or_none(model.get("label")) or model_id,

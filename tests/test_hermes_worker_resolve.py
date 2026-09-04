@@ -155,21 +155,26 @@ class RuntimeStatusTest(unittest.TestCase):
             "etienne-openai",
         )
 
-    def test_projects_parser_does_not_invent_efforts_when_catalog_omits_metadata(self):
+    def test_uses_the_reviewed_hermes_codex_effort_policy_when_catalog_omits_metadata(self):
         groups = {
             "Codex OAuth": [{
-                "id": "gpt-account-model",
-                "label": "Account model",
+                "id": "@openai-codex:gpt-5.6-sol",
+                "label": "gpt-5.6-sol",
                 "provider": "openai-codex",
                 "source": "catalog",
             }],
         }
+        reasoning_module = types.ModuleType("agent.reasoning_effort")
+        reasoning_module.codex_supported_efforts = lambda _model: (
+            "none", "low", "medium", "high", "xhigh", "max"
+        )
 
-        self.assertEqual(hermes_worker._runtime_catalog_models(groups), [{
-            "id": "gpt-account-model",
-            "label": "Account model",
-            "reasoningEfforts": [],
-        }])
+        with patch.dict(sys.modules, {"agent.reasoning_effort": reasoning_module}):
+            self.assertEqual(hermes_worker._runtime_catalog_models(groups), [{
+                "id": "@openai-codex:gpt-5.6-sol",
+                "label": "gpt-5.6-sol",
+                "reasoningEfforts": ["none", "low", "medium", "high", "xhigh"],
+            }])
 
     def test_run_loop_never_prints_an_untrusted_exception_or_traceback(self):
         stderr = io.StringIO()
